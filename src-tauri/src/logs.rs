@@ -135,29 +135,56 @@ pub async fn start(
 mod tests {
     use super::*;
 
-    #[tokio::test]
-    async fn stopping_an_unknown_stream_is_harmless() {
-        // Component teardown can fire more than once; a second stop must not panic.
-        stop("never-started");
-        stop("never-started");
-        assert_eq!(active_count(), 0);
+    /// The registry is process-wide, so tests that assert on it cannot run beside each
+    /// other. Serialising them here is cheaper and clearer than making the registry
+    /// injectable purely for the tests.
+    static SERIAL: Mutex<()> = Mutex::new(());
+
+    fn is_active(stream_id: &str) -> bool {
+        registry().lock().unwrap().contains_key(stream_id)
+    }
+
+    fn register(stream_id: &str) {
+        let task = tokio::spawn(async { std::future::pending::<()>().await });
+        registry().lock().unwrap().insert(stream_id.to_string(), task.abort_handle());
     }
 
     #[tokio::test]
-    async fn registered_streams_are_counted_and_cleared() {
-        let task = tokio::spawn(async { std::future::pending::<()>().await });
-        registry().lock().unwrap().insert("one".into(), task.abort_handle());
-        assert_eq!(active_count(), 1);
+    async fn stopping_an_unknown_stream_is_harmless() {
+        let _guard = SERIAL.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+        // Component teardown can fire more than once; a second stop must not panic.
+        stop("never-started");
+        stop("never-started");
+        assert!(!is_active("never-started"));
+    }
 
-        stop("one");
-        assert_eq!(active_count(), 0);
+    #[tokio::test]
+    async fn a_registered_stream_is_tracked_until_it_is_stopped() {
+        let _guard = SERIAL.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+        register("tracked");
+        assert!(is_active("tracked"));
+
+        stop("tracked");
+        assert!(!is_active("tracked"));
+    }
+
+    #[tokio::test]
+    async fn stopping_one_stream_leaves_the_others_running() {
+        let _guard = SERIAL.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+        register("keep");
+        register("drop");
+
+        stop("drop");
+        assert!(is_active("keep"));
+        assert!(!is_active("drop"));
+        stop("keep");
     }
 
     #[tokio::test]
     async fn stop_all_clears_every_stream() {
+        let _guard = SERIAL.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
         for id in ["a", "b", "c"] {
-            let task = tokio::spawn(async { std::future::pending::<()>().await });
-            registry().lock().unwrap().insert(id.into(), task.abort_handle());
+            register(id);
         }
         assert_eq!(active_count(), 3);
 

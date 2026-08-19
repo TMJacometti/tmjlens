@@ -4,6 +4,7 @@ mod cluster;
 mod logs;
 mod network;
 mod settings;
+mod workload_list;
 mod workloads;
 
 use kube::{
@@ -12,7 +13,8 @@ use kube::{
     Api, Client,
 };
 use k8s_openapi::api::{
-    apps::v1::Deployment,
+    apps::v1::{DaemonSet, Deployment, ReplicaSet, StatefulSet},
+    batch::v1::{CronJob, Job},
     authorization::v1::{ResourceAttributes, SelfSubjectAccessReview, SelfSubjectAccessReviewSpec},
     core::v1::{Event, Namespace, Node, Pod, Service},
     networking::v1::Ingress,
@@ -417,6 +419,43 @@ async fn export_deployment_yaml(
     workloads::export_raw(client, &workloads::deployment_path(&namespace, &deployment_name)).await
 }
 
+/// Deleting a controller through one command rather than one per kind. Foreground
+/// propagation is the default so the pods go with it, which is what the operator means.
+#[tauri::command]
+async fn delete_workload(
+    context: String,
+    namespace: String,
+    kind: String,
+    name: String,
+) -> Result<(), String> {
+    let client = client_for_context(&context).await?;
+    let params = DeleteParams::foreground();
+
+    macro_rules! remove {
+        ($type:ty) => {{
+            let api: Api<$type> = Api::namespaced(client, &namespace);
+            api.delete(&name, &params).await.map_err(|e| e.to_string())?;
+        }};
+    }
+
+    match kind.as_str() {
+        "Deployment" => remove!(Deployment),
+        "StatefulSet" => remove!(StatefulSet),
+        "DaemonSet" => remove!(DaemonSet),
+        "ReplicaSet" => remove!(ReplicaSet),
+        "Job" => remove!(Job),
+        "CronJob" => remove!(CronJob),
+        other => return Err(format!("Deleting a {other} is not implemented")),
+    }
+    Ok(())
+}
+
+#[tauri::command]
+async fn list_workloads(context: String, namespace: String) -> Result<workload_list::WorkloadInventory, String> {
+    let client = client_for_context(&context).await?;
+    workload_list::collect(client, &namespace).await
+}
+
 #[tauri::command]
 async fn get_network_overview(context: String, namespace: String) -> Result<network::NetworkOverview, String> {
     let client = client_for_context(&context).await?;
@@ -480,6 +519,26 @@ async fn get_resource_yaml(
         }
         "Deployment" => {
             let api: Api<Deployment> = Api::namespaced(client, &namespace);
+            serde_yaml::to_string(&api.get(&resource_name).await.map_err(|e| e.to_string())?)
+        }
+        "StatefulSet" => {
+            let api: Api<StatefulSet> = Api::namespaced(client, &namespace);
+            serde_yaml::to_string(&api.get(&resource_name).await.map_err(|e| e.to_string())?)
+        }
+        "DaemonSet" => {
+            let api: Api<DaemonSet> = Api::namespaced(client, &namespace);
+            serde_yaml::to_string(&api.get(&resource_name).await.map_err(|e| e.to_string())?)
+        }
+        "ReplicaSet" => {
+            let api: Api<ReplicaSet> = Api::namespaced(client, &namespace);
+            serde_yaml::to_string(&api.get(&resource_name).await.map_err(|e| e.to_string())?)
+        }
+        "Job" => {
+            let api: Api<Job> = Api::namespaced(client, &namespace);
+            serde_yaml::to_string(&api.get(&resource_name).await.map_err(|e| e.to_string())?)
+        }
+        "CronJob" => {
+            let api: Api<CronJob> = Api::namespaced(client, &namespace);
             serde_yaml::to_string(&api.get(&resource_name).await.map_err(|e| e.to_string())?)
         }
         "Service" => {
@@ -548,6 +607,17 @@ async fn apply_resource_yaml(
         "Deployment" => {
             replace_from_yaml(Api::<Deployment>::namespaced(client, &namespace), &resource_name, &yaml).await
         }
+        "StatefulSet" => {
+            replace_from_yaml(Api::<StatefulSet>::namespaced(client, &namespace), &resource_name, &yaml).await
+        }
+        "DaemonSet" => {
+            replace_from_yaml(Api::<DaemonSet>::namespaced(client, &namespace), &resource_name, &yaml).await
+        }
+        "ReplicaSet" => {
+            replace_from_yaml(Api::<ReplicaSet>::namespaced(client, &namespace), &resource_name, &yaml).await
+        }
+        "Job" => replace_from_yaml(Api::<Job>::namespaced(client, &namespace), &resource_name, &yaml).await,
+        "CronJob" => replace_from_yaml(Api::<CronJob>::namespaced(client, &namespace), &resource_name, &yaml).await,
         "Service" => {
             replace_from_yaml(Api::<Service>::namespaced(client, &namespace), &resource_name, &yaml).await
         }
@@ -901,6 +971,8 @@ fn main() {
             list_deployments,
             get_deployment_detail,
             get_network_overview,
+            list_workloads,
+            delete_workload,
             export_deployment_yaml,
             list_namespace_snapshot,
             list_created_today,

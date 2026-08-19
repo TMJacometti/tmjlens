@@ -311,3 +311,17 @@
   font: 11.5px/1.65 "JetBrains Mono", Consolas, monospace;
   white-space: pre;
 }
+
+.wl-no-target {
+  flex: 1;
+  font-size: 10.5px;
+}
+
+.wl-meaning {
+  max-width: 34ch;
+}
+
+.wl-image {
+  max-width: 30ch;
+  overflow-wrap: anywhere;
+}

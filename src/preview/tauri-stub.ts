@@ -128,6 +128,20 @@ status:
   loadBalancer: {}
 `;
 
+const WORKLOAD_INVENTORY = {
+  rows: [
+    { kind: 'Deployment', name: 'fraud-scoring', namespace: 'payments', ready: 1, desired: 4, unit: 'replicas', detail: '1 of 4 replicas ready', health: 'serious', suspended: false, images: ['registry.internal/fraud:2.14.0', 'envoyproxy/envoy:v1.29.1'], age: '12d' },
+    { kind: 'StatefulSet', name: 'postgres', namespace: 'payments', ready: 0, desired: 2, unit: 'replicas', detail: '0 of 2 replicas ready, in order', health: 'critical', suspended: false, images: ['postgres:16.3'], age: '90d' },
+    { kind: 'DaemonSet', name: 'fluent-bit', namespace: 'payments', ready: 5, desired: 7, unit: 'nodes', detail: '5 of 7 eligible nodes ready, 1 misscheduled', health: 'serious', suspended: false, images: ['fluent/fluent-bit:3.0.7'], age: '210d' },
+    { kind: 'Job', name: 'ledger-backfill-29187360', namespace: 'payments', ready: 0, desired: 1, unit: 'completions', detail: '0 of 1 completions, 4 failed attempt(s)', health: 'critical', suspended: false, images: ['registry.internal/backfill:1.4.2'], age: '3h' },
+    { kind: 'CronJob', name: 'nightly-reconcile', namespace: 'payments', ready: 0, desired: 0, unit: 'active runs', detail: 'suspended · 0 3 * * * · last run 19h ago', health: 'warning', suspended: true, images: ['registry.internal/reconcile:3.1.0'], age: '120d' },
+    { kind: 'Deployment', name: 'checkout-api', namespace: 'payments', ready: 3, desired: 3, unit: 'replicas', detail: '3 of 3 replicas ready', health: 'good', suspended: false, images: ['registry.internal/checkout:5.2.1'], age: '31d' },
+    { kind: 'CronJob', name: 'hourly-export', namespace: 'payments', ready: 1, desired: 1, unit: 'active runs', detail: '0 * * * * · last run 12m ago', health: 'good', suspended: false, images: ['registry.internal/export:2.0.0'], age: '88d' },
+    { kind: 'Job', name: 'schema-migrate-29187100', namespace: 'payments', ready: 1, desired: 1, unit: 'completions', detail: 'completed 1 of 1', health: 'good', suspended: false, images: ['registry.internal/migrate:5.2.1'], age: '2d' },
+  ],
+  degraded_collectors: [],
+};
+
 type Internals = {
   invoke: (command: string, args?: unknown) => Promise<unknown>;
   transformCallback: (callback: (payload: unknown) => void, once?: boolean) => number;
@@ -212,6 +226,8 @@ export function installTauriStub() {
           listeners.delete((args as { eventId: number }).eventId);
           return null;
         }
+        case 'list_workloads':
+          return WORKLOAD_INVENTORY;
         case 'load_settings':
           return { context_environments: {}, confirm_destructive_in_production: true };
         case 'save_settings':
