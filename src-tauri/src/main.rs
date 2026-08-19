@@ -1,6 +1,7 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
 mod cluster;
+mod network;
 mod settings;
 mod workloads;
 
@@ -12,7 +13,8 @@ use kube::{
 use k8s_openapi::api::{
     apps::v1::Deployment,
     authorization::v1::{ResourceAttributes, SelfSubjectAccessReview, SelfSubjectAccessReviewSpec},
-    core::v1::{Event, Namespace, Node, Pod},
+    core::v1::{Event, Namespace, Node, Pod, Service},
+    networking::v1::Ingress,
 };
 use serde::Serialize;
 use serde_json::json;
@@ -415,6 +417,12 @@ async fn export_deployment_yaml(
 }
 
 #[tauri::command]
+async fn get_network_overview(context: String, namespace: String) -> Result<network::NetworkOverview, String> {
+    let client = client_for_context(&context).await?;
+    network::collect(client, &namespace).await
+}
+
+#[tauri::command]
 async fn delete_pod(context: String, namespace: String, pod_name: String) -> Result<(), String> {
     let client = client_for_context(&context).await?;
     let api: Api<Pod> = Api::namespaced(client, &namespace);
@@ -439,10 +447,55 @@ async fn get_resource_yaml(
             let api: Api<Deployment> = Api::namespaced(client, &namespace);
             serde_yaml::to_string(&api.get(&resource_name).await.map_err(|e| e.to_string())?)
         }
+        "Service" => {
+            let api: Api<Service> = Api::namespaced(client, &namespace);
+            serde_yaml::to_string(&api.get(&resource_name).await.map_err(|e| e.to_string())?)
+        }
+        "Ingress" => {
+            let api: Api<Ingress> = Api::namespaced(client, &namespace);
+            serde_yaml::to_string(&api.get(&resource_name).await.map_err(|e| e.to_string())?)
+        }
         _ => return Err(format!("YAML view is not implemented for {resource_kind}")),
     };
 
     yaml.map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+/// Saves an edited document back with `replace`, not server-side apply.
+///
+/// Server-side apply would make tmjLens the field manager of every field in the
+/// document, taking ownership away from whatever created the resource — Helm, Argo,
+/// Flux — and turning the next reconcile into a fight over drift. `replace` also
+/// carries the `resourceVersion` the editor loaded, so a change made by someone else
+/// in the meantime is reported as a conflict instead of being silently overwritten.
+async fn replace_from_yaml<K>(api: Api<K>, name: &str, yaml: &str) -> Result<String, String>
+where
+    K: Clone
+        + std::fmt::Debug
+        + serde::de::DeserializeOwned
+        + Serialize
+        + kube::Resource<DynamicType = ()>,
+{
+    let object: K = serde_yaml::from_str(yaml)
+        .map_err(|error| format!("This is not a valid {} document: {error}", K::kind(&())))?;
+
+    let updated = api
+        .replace(name, &kube::api::PostParams::default(), &object)
+        .await
+        .map_err(|error| match &error {
+            kube::Error::Api(response) if response.code == 409 => format!(
+                "{name} changed in the cluster since it was loaded, so the edit was not applied. \
+                 Reload it, reapply the change, and save again.\n\n{}",
+                response.message
+            ),
+            kube::Error::Api(response) if response.code == 422 => {
+                format!("Kubernetes rejected the document: {}", response.message)
+            }
+            _ => error.to_string(),
+        })?;
+
+    serde_yaml::to_string(&updated).map_err(|error| error.to_string())
 }
 
 #[tauri::command]
@@ -453,28 +506,20 @@ async fn apply_resource_yaml(
     resource_name: String,
     yaml: String,
 ) -> Result<String, String> {
-    let patch_value: serde_json::Value = serde_yaml::from_str(&yaml).map_err(|e| e.to_string())?;
     let client = client_for_context(&context).await?;
-    let params = PatchParams::apply("tmjlens");
 
     match resource_kind.as_str() {
-        "Pod" => {
-            let api: Api<Pod> = Api::namespaced(client, &namespace);
-            let resource = api
-                .patch(&resource_name, &params, &Patch::Apply(patch_value))
-                .await
-                .map_err(|e| e.to_string())?;
-            serde_yaml::to_string(&resource).map_err(|e| e.to_string())
-        }
+        "Pod" => replace_from_yaml(Api::<Pod>::namespaced(client, &namespace), &resource_name, &yaml).await,
         "Deployment" => {
-            let api: Api<Deployment> = Api::namespaced(client, &namespace);
-            let resource = api
-                .patch(&resource_name, &params, &Patch::Apply(patch_value))
-                .await
-                .map_err(|e| e.to_string())?;
-            serde_yaml::to_string(&resource).map_err(|e| e.to_string())
+            replace_from_yaml(Api::<Deployment>::namespaced(client, &namespace), &resource_name, &yaml).await
         }
-        _ => Err(format!("YAML apply is not implemented for {resource_kind}")),
+        "Service" => {
+            replace_from_yaml(Api::<Service>::namespaced(client, &namespace), &resource_name, &yaml).await
+        }
+        "Ingress" => {
+            replace_from_yaml(Api::<Ingress>::namespaced(client, &namespace), &resource_name, &yaml).await
+        }
+        _ => Err(format!("YAML editing is not implemented for {resource_kind}")),
     }
 }
 
@@ -818,6 +863,7 @@ fn main() {
             check_permission,
             list_deployments,
             get_deployment_detail,
+            get_network_overview,
             export_deployment_yaml,
             list_namespace_snapshot,
             list_created_today,

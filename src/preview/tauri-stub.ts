@@ -100,6 +100,34 @@ status:
   readyReplicas: 1
 `;
 
+const SERVICE_YAML = `apiVersion: v1
+kind: Service
+metadata:
+  creationTimestamp: "2026-07-19T09:14:02Z"
+  labels:
+    app: fraud-scoring
+  name: fraud-scoring
+  namespace: payments
+  resourceVersion: "88213764"
+  uid: 4f2c7a10-9d3e-4c5b-8a71-2b6e0d9f1a34
+spec:
+  clusterIP: 10.96.201.7
+  internalTrafficPolicy: Cluster
+  ipFamilies:
+  - IPv4
+  ports:
+  - name: http
+    port: 8080
+    protocol: TCP
+    targetPort: 8080
+  selector:
+    app: fraud-scoring
+  sessionAffinity: None
+  type: ClusterIP
+status:
+  loadBalancer: {}
+`;
+
 type Internals = { invoke: (command: string, args?: unknown) => Promise<unknown> };
 
 export function installTauriStub() {
@@ -115,6 +143,12 @@ export function installTauriStub() {
           return DEPLOYMENT_DETAIL;
         case 'export_deployment_yaml':
           return DEPLOYMENT_YAML;
+        case 'get_resource_yaml':
+          return SERVICE_YAML;
+        case 'apply_resource_yaml':
+          return SERVICE_YAML;
+        case 'save_bytes_to_downloads':
+          return 'C:\Users\operator\Downloads\preview.yaml';
         case 'load_settings':
           return { context_environments: {}, confirm_destructive_in_production: true };
         case 'save_settings':

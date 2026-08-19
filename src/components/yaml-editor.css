@@ -1,0 +1,131 @@
+.yaml-scrim {
+  position: fixed;
+  inset: 0;
+  z-index: 260;
+  background: #05070ac0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 28px;
+}
+
+.yaml-panel {
+  width: min(1080px, 100%);
+  height: 100%;
+  max-height: 100%;
+  display: flex;
+  flex-direction: column;
+  background: #0f1319;
+  border: 1px solid #272d37;
+  border-radius: 10px;
+  box-shadow: 0 22px 60px #000a;
+  overflow: hidden;
+}
+
+.yaml-head {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 16px;
+  padding: 16px 18px;
+  border-bottom: 1px solid #272d37;
+}
+
+.yaml-head h2 {
+  margin: 0 0 4px;
+  font-size: 15px;
+  overflow-wrap: anywhere;
+}
+
+.yaml-head p {
+  margin: 0;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  font-size: 11.5px;
+  color: var(--viz-muted);
+}
+
+/* An unsaved edit is stated in words, not by a coloured dot alone. */
+.yaml-dirty {
+  padding: 2px 8px;
+  border-radius: 99px;
+  background: #2a1f0a;
+  border: 1px solid #56411a;
+  color: #f0b95c;
+  font-size: 10px;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  white-space: nowrap;
+}
+
+.yaml-actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+}
+
+.yaml-actions .viz-primary:disabled {
+  opacity: 0.45;
+  cursor: not-allowed;
+}
+
+.yaml-lead {
+  margin: 0;
+  padding: 12px 18px 0;
+  font-size: 11px;
+  line-height: 1.55;
+  color: var(--viz-muted);
+  max-width: 100ch;
+}
+
+.yaml-lead code {
+  font-family: "JetBrains Mono", Consolas, monospace;
+  color: var(--viz-ink-2);
+}
+
+.yaml-error {
+  margin: 12px 18px 0;
+  padding: 11px 13px;
+  border: 1px solid #562326;
+  border-radius: 7px;
+  background: #2a1114;
+  color: #ff9b95;
+  font-size: 12px;
+  line-height: 1.5;
+  white-space: pre-wrap;
+  max-height: 180px;
+  overflow: auto;
+}
+
+.yaml-area {
+  flex: 1;
+  min-height: 0;
+  margin: 12px 0 0;
+  padding: 16px 18px;
+  border: 0;
+  border-top: 1px solid #272d37;
+  outline: 0;
+  resize: none;
+  background: #0d1015;
+  color: #c7cdd6;
+  font: 12px/1.65 "JetBrains Mono", Consolas, monospace;
+  white-space: pre;
+  tab-size: 2;
+}
+
+.yaml-area:read-only {
+  color: #97a0ad;
+}
+
+@media (max-width: 720px) {
+  .yaml-scrim {
+    padding: 0;
+  }
+  .yaml-panel {
+    border-radius: 0;
+    border: 0;
+  }
+}
