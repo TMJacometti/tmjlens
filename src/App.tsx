@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState } from 'react';
 import { invoke } from '@tauri-apps/api/core';
 import {
-  BarChart3, Box, ChevronDown, CircleAlert, Download, FileCog, Gauge, GitBranch, HardDrive,
+  BarChart3, Box, ChevronDown, CircleAlert, DatabaseBackup, Download, FileCog, Gauge, GitBranch, HardDrive,
   Layers3, ListTree, Network, Search, Server, Settings, Terminal,
   Trash2, Workflow, X, XCircle
 } from 'lucide-react';
@@ -15,6 +15,8 @@ import { LogViewer } from './components/logs/LogViewer';
 import { PortForwardPanel } from './components/portforward/PortForwardPanel';
 import { ExecTerminal } from './components/exec/ExecTerminal';
 import type { NetworkOverview } from './types/network';
+import { VeleroPage } from './components/velero/VeleroPage';
+import type { VeleroStatus } from './types/velero';
 import { DeploymentDetailPanel } from './components/workloads/DeploymentDetailPanel';
 import { textToBase64 } from './lib/encoding';
 import { usePodWatch } from './lib/usePodWatch';
@@ -41,6 +43,10 @@ export function App() {
   const [isLoadingInventory, setIsLoadingInventory] = useState(false);
   const [selectedDeployment, setSelectedDeployment] = useState('');
   const [isExportingDeployment, setIsExportingDeployment] = useState(false);
+  const [velero, setVelero] = useState<VeleroStatus | null>(null);
+  const [veleroError, setVeleroError] = useState('');
+  const [isLoadingVelero, setIsLoadingVelero] = useState(false);
+  const [veleroCapabilities, setVeleroCapabilities] = useState({ backup: false, restore: false });
   const [network, setNetwork] = useState<NetworkOverview | null>(null);
   const [networkError, setNetworkError] = useState('');
   const [isLoadingNetwork, setIsLoadingNetwork] = useState(false);
@@ -112,7 +118,7 @@ export function App() {
   };
 
   const refreshCapabilities = async (targetContext: string, targetNamespace: string) => {
-    const check = (verb: string, resource: string, subresource?: string) => invoke<boolean>('check_permission', { context: targetContext, namespace: targetNamespace, verb, resource, subresource }).catch(() => false);
+    const check = (verb: string, resource: string, subresource?: string) => invoke<boolean>('check_permission', { context: targetContext, namespace: targetNamespace, verb, resource, subresource, group: null }).catch(() => false);
     const [deletePods, deleteDeployments, patchDeployments, patchPods, patchServices, patchIngresses, portForward, podExec] = await Promise.all([
       check('delete', 'pods'), check('delete', 'deployments'), check('patch', 'deployments'), check('patch', 'pods'),
       check('patch', 'services'), check('patch', 'ingresses'), check('create', 'pods', 'portforward'), check('create', 'pods', 'exec'),
@@ -123,7 +129,7 @@ export function App() {
   // Nodes are cluster-scoped, so the access review is sent with an empty namespace.
   const refreshNodeCapabilities = async (targetContext: string) => {
     const check = (verb: string, resource: string, subresource?: string) =>
-      invoke<boolean>('check_permission', { context: targetContext, namespace: '', verb, resource, subresource }).catch(() => false);
+      invoke<boolean>('check_permission', { context: targetContext, namespace: '', verb, resource, subresource, group: null }).catch(() => false);
     const [patchNodes, deleteNodes, evictPods] = await Promise.all([
       check('patch', 'nodes'), check('delete', 'nodes'), check('create', 'pods', 'eviction'),
     ]);
@@ -249,6 +255,53 @@ export function App() {
     setSelectedContainer(container);
   };
 
+  /**
+   * Velero's objects live in Velero's own namespace, not the one selected in the
+   * toolbar, so this load is deliberately independent of the namespace picker.
+   */
+  const loadVelero = async () => {
+    setIsLoadingVelero(true);
+    try {
+      const status = await invoke<VeleroStatus>('get_velero_status', { context, veleroNamespace: null });
+      setVelero(status);
+      setVeleroError('');
+      if (status.installed) {
+        const check = (verb: string, resource: string) =>
+          invoke<boolean>('check_permission', { context, namespace: status.namespace, verb, resource, subresource: null, group: 'velero.io' }).catch(() => false);
+        const [backup, restore] = await Promise.all([check('create', 'backups'), check('create', 'restores')]);
+        setVeleroCapabilities({ backup, restore });
+      }
+    } catch (error) {
+      setVeleroError(String(error));
+    } finally {
+      setIsLoadingVelero(false);
+    }
+  };
+
+  const createVeleroBackup = async (request: { name: string; includedNamespaces: string[]; ttlHours: number; storageLocation: string | null; includeVolumes: boolean }) => {
+    if (!velero) return;
+    const created = await invoke<string>('create_velero_backup', {
+      context, veleroNamespace: velero.namespace, name: request.name,
+      includedNamespaces: request.includedNamespaces, ttlHours: request.ttlHours,
+      storageLocation: request.storageLocation, includeVolumes: request.includeVolumes,
+    });
+    notify('Backup requested', `Velero is taking ${created}. Refresh to watch it finish.`, 'good');
+    await loadVelero();
+  };
+
+  const createVeleroRestore = async (request: { name: string; backupName: string; includedNamespaces: string[] }) => {
+    if (!velero) return;
+    // A restore writes into the live cluster, so it goes through the same confirmation
+    // as a delete — which, in a context marked Production, means typing the context name.
+    if (!confirmDestructive(`Restore ${request.backupName} into this cluster? Velero will create the resources it holds.`)) return;
+    const created = await invoke<string>('create_velero_restore', {
+      context, veleroNamespace: velero.namespace, name: request.name,
+      backupName: request.backupName, includedNamespaces: request.includedNamespaces,
+    });
+    notify('Restore requested', `Velero is running ${created}. Watch it under Restores.`, 'good');
+    await loadVelero();
+  };
+
   const loadNetwork = async () => {
     setIsLoadingNetwork(true);
     try {
@@ -344,6 +397,7 @@ export function App() {
     { id: 'go-overview', label: 'Go to Cluster Overview', group: 'Navigate', run: () => setActive('Cluster Overview') },
     { id: 'go-workloads', label: 'Go to Workloads', group: 'Navigate', run: () => setActive('Workloads') },
     { id: 'go-network', label: 'Go to Network', group: 'Navigate', run: () => setActive('Network') },
+    { id: 'go-velero', label: 'Go to Velero backups', group: 'Navigate', run: () => setActive('Velero') },
     { id: 'go-events', label: 'Go to Events', group: 'Navigate', run: () => setActive('Events') },
     { id: 'go-reports', label: 'Go to Reports', group: 'Navigate', run: () => setActive('Reports') },
     { id: 'open-settings', label: 'Open Settings', group: 'App', run: () => setShowSettings(true) },
@@ -436,6 +490,7 @@ export function App() {
 
   useEffect(() => {
     if (active === 'Network') void loadNetwork();
+    if (active === 'Velero') void loadVelero();
     if (active === 'Workloads' && workloadView === 'Deployments') void loadInventory();
     if (active === 'Reports') void loadCreatedToday();
     if (active === 'Cluster Overview') {
@@ -460,9 +515,9 @@ export function App() {
     </header>
     <div className="body"><aside className="sidebar"><div className="section-title">CLUSTER</div>
       <Nav icon={<Gauge size={16}/>} label="Cluster Overview" active={active === 'Cluster Overview'} onClick={() => setActive('Cluster Overview')} /><Nav icon={<Workflow size={16}/>} label="Workloads" active={active === 'Workloads'} onClick={() => setActive('Workloads')} /><Nav icon={<Network size={16}/>} label="Network" active={active === 'Network'} onClick={() => setActive('Network')} /><Nav icon={<HardDrive size={16}/>} label="Storage" active={active === 'Storage'} onClick={() => setActive('Storage')} /><Nav icon={<FileCog size={16}/>} label="Configuration" active={active === 'Configuration'} onClick={() => setActive('Configuration')} /><Nav icon={<Server size={16}/>} label="Nodes" active={active === 'Nodes'} onClick={() => setActive('Nodes')} /><Nav icon={<CircleAlert size={16}/>} label="Events" active={active === 'Events'} onClick={() => setActive('Events')} /><Nav icon={<BarChart3 size={16}/>} label="Reports" active={active === 'Reports'} onClick={() => setActive('Reports')} />
-      <div className="section-title aws">CLOUD</div><Nav icon={<Network size={16}/>} label="Load Balancers"/><Nav icon={<Box size={16}/>} label="Node Pools"/><div className="section-title plugins">PLUGINS</div><Nav icon={<Terminal size={16}/>} label="Helm"/><Nav icon={<Workflow size={16}/>} label="Argo CD"/>
+      <div className="section-title aws">CLOUD</div><Nav icon={<Network size={16}/>} label="Load Balancers"/><Nav icon={<Box size={16}/>} label="Node Pools"/><div className="section-title plugins">PLUGINS</div><Nav icon={<DatabaseBackup size={16}/>} label="Velero" active={active === 'Velero'} onClick={() => setActive('Velero')} /><Nav icon={<Terminal size={16}/>} label="Helm"/><Nav icon={<Workflow size={16}/>} label="Argo CD"/>
     </aside><main className="main"><div className="breadcrumbs">Cluster / {namespace} / {active}</div><div className="title-row"><div><h1>{active}</h1><p>Live Kubernetes resources from <b>{context}</b></p></div></div>
-      {showEvents ? <EventsPanel events={events} onRefresh={refreshEvents}/> : active === 'Network' ? <NetworkPage data={network} loading={isLoadingNetwork} error={networkError} onRefresh={() => void loadNetwork()} onEditYaml={(kind, name) => setYamlTarget({ kind, name })}/> : active === 'Workloads' ? <><WorkloadsPage view={workloadView} onViewChange={setWorkloadView} pods={pods} deployments={deployments} selectedPod={selectedPod} selectedDeployment={selectedDeployment} capabilities={{ deletePods: capabilities.deletePods, deleteDeployments: capabilities.deleteDeployments, patchDeployments: capabilities.patchDeployments }} onSelectPod={selectPod} onSelectDeployment={(name) => { setSelectedDeployment(name); setShowDetail(false); }} onDeletePod={(name) => void deletePod(name)} onExportPodLogs={(name) => void exportLogsFor(name)} onDeleteDeployment={(name) => void deleteDeployment(name)} onScaleDeployment={(name) => void scaleDeployment(name)} onRestartDeployment={(name) => void restartDeployment(name)} onExportDeployment={(name) => void exportDeployment(name)} podsLive={podWatch.live}
+      {showEvents ? <EventsPanel events={events} onRefresh={refreshEvents}/> : active === 'Velero' ? <VeleroPage status={velero} loading={isLoadingVelero} error={veleroError} namespaces={namespaces} canBackup={veleroCapabilities.backup} canRestore={veleroCapabilities.restore} onRefresh={() => void loadVelero()} onCreateBackup={createVeleroBackup} onCreateRestore={createVeleroRestore}/> : active === 'Network' ? <NetworkPage data={network} loading={isLoadingNetwork} error={networkError} onRefresh={() => void loadNetwork()} onEditYaml={(kind, name) => setYamlTarget({ kind, name })}/> : active === 'Workloads' ? <><WorkloadsPage view={workloadView} onViewChange={setWorkloadView} pods={pods} deployments={deployments} selectedPod={selectedPod} selectedDeployment={selectedDeployment} capabilities={{ deletePods: capabilities.deletePods, deleteDeployments: capabilities.deleteDeployments, patchDeployments: capabilities.patchDeployments }} onSelectPod={selectPod} onSelectDeployment={(name) => { setSelectedDeployment(name); setShowDetail(false); }} onDeletePod={(name) => void deletePod(name)} onExportPodLogs={(name) => void exportLogsFor(name)} onDeleteDeployment={(name) => void deleteDeployment(name)} onScaleDeployment={(name) => void scaleDeployment(name)} onRestartDeployment={(name) => void restartDeployment(name)} onExportDeployment={(name) => void exportDeployment(name)} podsLive={podWatch.live}
       controllers={<WorkloadInventoryTable inventory={inventory} loading={isLoadingInventory} error={inventoryError}
         selected={selectedDeployment ? `Deployment/${selectedDeployment}` : ''} canDelete={capabilities.deleteDeployments}
         onSelect={(row) => { if (row.kind === 'Deployment') { setSelectedDeployment(row.name); } else { setYamlTarget({ kind: row.kind, name: row.name }); } }}

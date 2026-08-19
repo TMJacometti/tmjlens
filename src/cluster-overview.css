@@ -132,6 +132,18 @@
   cursor: pointer;
 }
 
+/* Explained errors arrive as paragraphs. Collapsing them would run the cause, the
+   fix and the raw text together into one block. */
+.viz-callout p {
+  white-space: pre-line;
+}
+
+.viz-toggle:disabled,
+.viz-toggle[aria-disabled='true'] {
+  opacity: 0.4;
+  cursor: not-allowed;
+}
+
 .viz-primary:disabled {
   opacity: 0.55;
   cursor: progress;
