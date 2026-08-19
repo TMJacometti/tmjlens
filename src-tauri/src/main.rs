@@ -1,6 +1,7 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
 mod cluster;
+mod configuration;
 mod exec;
 mod graph;
 mod logs;
@@ -554,6 +555,74 @@ async fn get_relation_graph(
 ) -> Result<graph::RelationGraph, String> {
     let client = client_for_context(&context).await?;
     graph::for_deployment(client, &namespace, &deployment_name).await
+}
+
+#[tauri::command]
+async fn get_configuration(
+    context: String,
+    namespace: String,
+) -> Result<configuration::ConfigurationOverview, String> {
+    let client = client_for_context(&context).await?;
+    configuration::overview(client, &namespace).await
+}
+
+/// One key, asked for explicitly. The list never carries values.
+#[tauri::command]
+async fn reveal_secret_key(
+    context: String,
+    namespace: String,
+    name: String,
+    key: String,
+) -> Result<configuration::RevealedValue, String> {
+    let client = client_for_context(&context).await?;
+    configuration::reveal_secret_key(client, &namespace, &name, &key).await
+}
+
+#[tauri::command]
+async fn read_config_map_key(
+    context: String,
+    namespace: String,
+    name: String,
+    key: String,
+) -> Result<configuration::RevealedValue, String> {
+    let client = client_for_context(&context).await?;
+    configuration::read_config_map_key(client, &namespace, &name, &key).await
+}
+
+#[tauri::command]
+async fn write_secret_key(
+    context: String,
+    namespace: String,
+    name: String,
+    key: String,
+    value: String,
+) -> Result<(), String> {
+    let client = client_for_context(&context).await?;
+    configuration::write_secret_key(client, &namespace, &name, &key, &value).await
+}
+
+#[tauri::command]
+async fn write_config_map_key(
+    context: String,
+    namespace: String,
+    name: String,
+    key: String,
+    value: String,
+) -> Result<(), String> {
+    let client = client_for_context(&context).await?;
+    configuration::write_config_map_key(client, &namespace, &name, &key, &value).await
+}
+
+#[tauri::command]
+async fn delete_configuration_key(
+    context: String,
+    namespace: String,
+    kind: String,
+    name: String,
+    key: String,
+) -> Result<(), String> {
+    let client = client_for_context(&context).await?;
+    configuration::delete_key(client, &namespace, &kind, &name, &key).await
 }
 
 #[tauri::command]
@@ -1153,6 +1222,12 @@ fn main() {
             get_network_overview,
             list_workloads,
             search_cluster,
+            get_configuration,
+            reveal_secret_key,
+            read_config_map_key,
+            write_secret_key,
+            write_config_map_key,
+            delete_configuration_key,
             get_velero_status,
             create_velero_backup,
             create_velero_restore,

@@ -1,0 +1,441 @@
+/*
+ * Configuration screen. Built on the shared viz-* primitives and tokens so it reads as
+ * the same product as the cluster, workloads, network and Velero screens.
+ */
+.cfg-page {
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+  padding-bottom: 40px;
+}
+
+.cfg-page.is-refreshing {
+  opacity: 0.62;
+  transition: opacity 120ms ease-out;
+}
+
+.cfg-kpis {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(190px, 1fr));
+  gap: 12px;
+}
+
+@media (min-width: 1100px) {
+  .cfg-kpis {
+    grid-template-columns: repeat(4, 1fr);
+  }
+}
+
+.cfg-degraded {
+  margin: 6px 0 0;
+  padding-left: 18px;
+  font-size: 12px;
+}
+
+/* ---------- findings ---------- */
+
+.cfg-findings {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.cfg-finding {
+  border: 1px solid var(--viz-line, #272d37);
+  border-left-width: 3px;
+  border-radius: 7px;
+  background: #12161d;
+}
+
+.cfg-finding summary {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 8px 12px;
+  cursor: pointer;
+  list-style: none;
+  font-size: 12.5px;
+}
+
+/* The default triangle sits out of line with the badge; a chevron is drawn instead. */
+.cfg-finding summary::-webkit-details-marker {
+  display: none;
+}
+
+.cfg-finding summary::after {
+  content: '›';
+  margin-left: auto;
+  color: var(--viz-muted);
+  font-size: 15px;
+  transform: rotate(90deg);
+  flex: 0 0 auto;
+}
+
+.cfg-finding[open] summary::after {
+  transform: rotate(270deg);
+}
+
+.cfg-finding summary:hover {
+  background: #171c24;
+}
+
+.cfg-finding-critical { border-left-color: var(--viz-critical, #b3403c); }
+.cfg-finding-serious { border-left-color: var(--viz-serious, #c2673a); }
+.cfg-finding-warning { border-left-color: var(--viz-warning, #c9a227); }
+
+.cfg-finding strong {
+  font-size: 12.5px;
+  flex: 0 0 auto;
+}
+
+.cfg-finding p {
+  margin: 0;
+  padding: 0 14px 12px 12px;
+  font-size: 12px;
+  color: var(--viz-muted);
+  line-height: 1.5;
+  max-width: 760px;
+}
+
+/* The objects named by the finding, trimmed to one line so the row stays scannable. */
+.cfg-finding-targets {
+  font-size: 11.5px;
+  color: var(--viz-muted);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  min-width: 0;
+}
+
+/* ---------- toolbar ---------- */
+
+.cfg-toolbar {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 14px;
+  flex-wrap: wrap;
+}
+
+.cfg-toolbar-right {
+  display: flex;
+  align-items: center;
+  gap: 9px;
+}
+
+/* Ten tabs do not fit one row on a laptop, so they wrap rather than scroll away. */
+.cfg-switch {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+  max-width: 900px;
+}
+
+.cfg-switch button {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 6px 11px;
+  border-radius: 6px;
+  border: 1px solid var(--viz-line, #272d37);
+  background: #12161d;
+  color: var(--viz-muted);
+  font-size: 12px;
+  cursor: pointer;
+}
+
+.cfg-switch button:hover {
+  color: #e7eaf0;
+  background: #181d25;
+}
+
+.cfg-switch button.active {
+  color: #fff;
+  background: #232a34;
+  border-color: #3a434f;
+}
+
+.cfg-dot {
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  flex: 0 0 auto;
+}
+
+.cfg-dot-critical { background: var(--viz-critical, #b3403c); }
+.cfg-dot-serious { background: var(--viz-serious, #c2673a); }
+.cfg-dot-warning { background: var(--viz-warning, #c9a227); }
+
+/* The dot is a shortcut to the tab, never the only carrier of the state: the table
+   behind it states the same thing in words. */
+.viz-sr {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  padding: 0;
+  margin: -1px;
+  overflow: hidden;
+  clip: rect(0, 0, 0, 0);
+  white-space: nowrap;
+  border: 0;
+}
+
+/* ---------- tables ---------- */
+
+.cfg-lead {
+  display: flex;
+  align-items: flex-start;
+  gap: 7px;
+  margin: 0;
+  font-size: 12px;
+  color: var(--viz-muted);
+  line-height: 1.5;
+  max-width: 860px;
+}
+
+.cfg-row {
+  cursor: pointer;
+}
+
+.cfg-row:hover {
+  background: #171c24;
+}
+
+.cfg-link {
+  border: 0;
+  background: none;
+  padding: 0;
+  color: #8ab4f8;
+  font: inherit;
+  cursor: pointer;
+  text-align: left;
+}
+
+.cfg-row:hover .cfg-link {
+  text-decoration: underline;
+}
+
+.cfg-tag {
+  display: inline-block;
+  margin-left: 7px;
+  padding: 1px 7px;
+  border-radius: 99px;
+  border: 1px solid var(--viz-line, #272d37);
+  font-size: 10.5px;
+  color: var(--viz-muted);
+  white-space: nowrap;
+}
+
+.cfg-consumers,
+.cfg-description,
+.cfg-metrics,
+.cfg-rules,
+.cfg-service,
+.cfg-holder {
+  max-width: 260px;
+  overflow-wrap: anywhere;
+  font-size: 11.5px;
+}
+
+.cfg-orphan {
+  color: var(--viz-warning-text, #e0b25a);
+  font-size: 11.5px;
+}
+
+.cfg-strict {
+  color: var(--viz-warning-text, #e0b25a);
+}
+
+.cfg-purpose {
+  font-size: 12px;
+}
+
+.cfg-type,
+.cfg-reason {
+  font-size: 11px;
+  margin-top: 2px;
+  max-width: 280px;
+  overflow-wrap: anywhere;
+}
+
+.cfg-reason {
+  color: var(--viz-muted);
+  line-height: 1.45;
+}
+
+/* ---------- quotas ---------- */
+
+.cfg-quotas {
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+}
+
+.cfg-quota-head {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin-bottom: 7px;
+  font-size: 13px;
+}
+
+.cfg-meter {
+  position: relative;
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  min-width: 160px;
+}
+
+.cfg-meter-fill {
+  height: 8px;
+  border-radius: 3px;
+  background: var(--viz-good, #4f8a5b);
+  min-width: 2px;
+  transition: width 160ms ease-out;
+}
+
+.cfg-meter-warning { background: var(--viz-warning, #c9a227); }
+.cfg-meter-serious { background: var(--viz-serious, #c2673a); }
+.cfg-meter-critical { background: var(--viz-critical, #b3403c); }
+
+.cfg-meter-label {
+  font-size: 11.5px;
+  color: var(--viz-muted);
+  white-space: nowrap;
+}
+
+/* ---------- key panel ---------- */
+
+.cfg-panel {
+  width: min(880px, 100%);
+  max-height: 100%;
+  display: flex;
+  flex-direction: column;
+  background: #0f1319;
+  border: 1px solid #272d37;
+  border-radius: 10px;
+  box-shadow: 0 22px 60px #000a;
+  overflow: hidden;
+}
+
+.cfg-panel h2 {
+  margin: 0 0 4px;
+  font-size: 15px;
+  overflow-wrap: anywhere;
+}
+
+.cfg-panel-body {
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+  padding: 18px;
+  overflow-y: auto;
+}
+
+.cfg-secret-note {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+  margin: 0;
+  padding: 10px 12px;
+  border: 1px solid var(--viz-line, #272d37);
+  border-radius: 7px;
+  background: #12161d;
+  font-size: 11.5px;
+  color: var(--viz-muted);
+  line-height: 1.5;
+}
+
+.cfg-keys {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.cfg-key {
+  border: 1px solid var(--viz-line, #272d37);
+  border-radius: 7px;
+  padding: 11px 12px;
+  background: #12161d;
+}
+
+.cfg-key.is-editing {
+  border-color: #3a434f;
+  background: #151a22;
+}
+
+.cfg-key-head {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-wrap: wrap;
+  margin-bottom: 8px;
+}
+
+.cfg-key-name {
+  font-size: 12.5px;
+  overflow-wrap: anywhere;
+}
+
+.cfg-key-size {
+  font-size: 11px;
+}
+
+.cfg-key-actions {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin-left: auto;
+  flex-wrap: wrap;
+}
+
+.cfg-binary {
+  font-size: 11px;
+}
+
+.cfg-value {
+  margin: 0;
+  padding: 9px 10px;
+  border-radius: 5px;
+  background: #0b0e13;
+  font-size: 11.5px;
+  line-height: 1.5;
+  max-height: 260px;
+  overflow: auto;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
+.cfg-value.is-masked {
+  color: var(--viz-muted);
+  letter-spacing: 2px;
+}
+
+.cfg-editor {
+  width: 100%;
+  padding: 9px 10px;
+  border-radius: 5px;
+  border: 1px solid #3a434f;
+  background: #0b0e13;
+  color: inherit;
+  font-size: 11.5px;
+  line-height: 1.55;
+  resize: vertical;
+}
+
+.cfg-encode-note {
+  margin: 6px 0 0;
+  font-size: 11px;
+  color: var(--viz-muted);
+}
+
+.cfg-edit-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+  margin-top: 10px;
+}

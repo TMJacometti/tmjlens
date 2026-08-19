@@ -9,6 +9,7 @@ import { LogsPreview } from './LogsPreview';
 import { PalettePreview } from './PalettePreview';
 import { PortForwardPreview } from './PortForwardPreview';
 import { VeleroPreview } from './VeleroPreview';
+import { ConfigurationPreview } from './ConfigurationPreview';
 import { installTauriStub } from './tauri-stub';
 import { awsFixture, azureFixture } from './fixture';
 import '../styles.css';
@@ -46,7 +47,9 @@ if (view === 'settings') {
   root.render(
     <div className="app" style={{ height: 'auto', overflow: 'visible' }}>
       <main className="main" style={{ overflow: 'visible' }}>
-        {view === 'velero' || view === 'velero-absent' || view === 'velero-expired' ? (
+        {view === 'config' ? (
+          <ConfigurationPreview />
+        ) : view === 'velero' || view === 'velero-absent' || view === 'velero-expired' ? (
           <VeleroPreview installed={view === 'velero'} expired={view === 'velero-expired'} />
         ) : view === 'forward' ? (
           <PortForwardPreview />
