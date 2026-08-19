@@ -16,3 +16,7 @@ playwright-report/
 # Generated build metadata
 *.tsbuildinfo
 src-tauri/gen/schemas/
+
+# tsc output for the Vite config (tsconfig.node.json)
+src/vite.config.js
+src/vite.config.d.ts
