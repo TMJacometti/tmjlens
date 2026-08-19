@@ -1,6 +1,6 @@
 import { useMemo, useState } from 'react';
 import {
-  Activity, Boxes, Cpu, Gauge, Layers, MapPin, MemoryStick, RefreshCw, Server, ShieldAlert, X,
+  Activity, Boxes, Cpu, FileText, Gauge, Layers, MapPin, MemoryStick, RefreshCw, Server, ShieldAlert, X,
 } from 'lucide-react';
 import {
   CapacityAxis, ChartCard, DataTable, HealthRing, RankedBars, SeverityBadge,
@@ -23,6 +23,8 @@ type Props = {
   capabilities: NodeCapabilities;
   onRefresh: () => void;
   onNodeAction: (action: NodeAction, nodeName: string) => void;
+  onGenerateReport: () => void;
+  generatingReport: boolean;
 };
 
 function healthSeverity(score: number): Severity {
@@ -32,7 +34,16 @@ function healthSeverity(score: number): Severity {
   return 'critical';
 }
 
-export function ClusterOverviewPage({ data, loading, error, capabilities, onRefresh, onNodeAction }: Props) {
+export function ClusterOverviewPage({
+  data,
+  loading,
+  error,
+  capabilities,
+  onRefresh,
+  onNodeAction,
+  onGenerateReport,
+  generatingReport,
+}: Props) {
   const [selectedNode, setSelectedNode] = useState<string | null>(null);
   const [showUtilisationTable, setShowUtilisationTable] = useState(false);
   const [showZoneTable, setShowZoneTable] = useState(false);
@@ -104,7 +115,13 @@ export function ClusterOverviewPage({ data, loading, error, capabilities, onRefr
 
   return (
     <div className={`cluster-page${loading ? ' is-refreshing' : ''}`}>
-      <IdentityStrip data={data} onRefresh={onRefresh} loading={loading} />
+      <IdentityStrip
+        data={data}
+        onRefresh={onRefresh}
+        loading={loading}
+        onGenerateReport={onGenerateReport}
+        generatingReport={generatingReport}
+      />
 
       {data.degraded_collectors.length > 0 && (
         <div className="viz-callout viz-callout-warning">
@@ -764,7 +781,19 @@ function MiniMeter({
   );
 }
 
-function IdentityStrip({ data, onRefresh, loading }: { data: ClusterOverview; onRefresh: () => void; loading: boolean }) {
+function IdentityStrip({
+  data,
+  onRefresh,
+  loading,
+  onGenerateReport,
+  generatingReport,
+}: {
+  data: ClusterOverview;
+  onRefresh: () => void;
+  loading: boolean;
+  onGenerateReport: () => void;
+  generatingReport: boolean;
+}) {
   const plane = data.control_plane;
   const chips: { icon: React.ReactNode; label: string; value: string }[] = [
     { icon: <Server size={13} />, label: 'Distribution', value: plane.distribution },
@@ -793,6 +822,10 @@ function IdentityStrip({ data, onRefresh, loading }: { data: ClusterOverview; on
       </div>
       <div className="cluster-identity-actions">
         <code title={plane.endpoint}>{plane.endpoint}</code>
+        <button type="button" className="viz-toggle" onClick={onGenerateReport} disabled={generatingReport || loading}>
+          <FileText size={14} aria-hidden />
+          {generatingReport ? 'Building…' : 'Generate report'}
+        </button>
         <button type="button" className="viz-primary" onClick={onRefresh} disabled={loading}>
           <RefreshCw size={14} className={loading ? 'is-spinning' : undefined} aria-hidden />
           {loading ? 'Reading…' : 'Refresh'}
