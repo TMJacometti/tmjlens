@@ -1,6 +1,7 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
 mod cluster;
+mod settings;
 
 use kube::{
     api::{DeleteParams, ListParams, LogParams, Patch, PatchParams},
@@ -257,6 +258,65 @@ async fn get_pod_logs(
     }
 }
 
+fn config_dir(app: &tauri::AppHandle) -> Result<std::path::PathBuf, String> {
+    use tauri::Manager;
+    app.path()
+        .app_config_dir()
+        .map_err(|error| format!("Unable to locate the configuration folder: {error}"))
+}
+
+#[tauri::command]
+async fn load_settings(app: tauri::AppHandle) -> Result<settings::AppSettings, String> {
+    let directory = config_dir(&app)?;
+    tokio::task::spawn_blocking(move || settings::load(&directory))
+        .await
+        .map_err(|error| format!("Settings task failed: {error}"))
+}
+
+#[tauri::command]
+async fn save_settings(app: tauri::AppHandle, settings: settings::AppSettings) -> Result<(), String> {
+    let directory = config_dir(&app)?;
+    tokio::task::spawn_blocking(move || settings::save(&directory, &settings))
+        .await
+        .map_err(|error| format!("Settings task failed: {error}"))?
+}
+
+#[tauri::command]
+async fn read_kubeconfig(app: tauri::AppHandle) -> Result<settings::KubeconfigView, String> {
+    let directory = config_dir(&app)?;
+    tokio::task::spawn_blocking(move || settings::read_view(&settings::load(&directory)))
+        .await
+        .map_err(|error| format!("Kubeconfig task failed: {error}"))?
+}
+
+/// Changing the current context rewrites the file kubectl also reads, so the client
+/// cache is dropped afterwards to avoid serving connections built from the old state.
+#[tauri::command]
+async fn set_current_context(name: String) -> Result<(), String> {
+    tokio::task::spawn_blocking(move || settings::set_current_context(&name))
+        .await
+        .map_err(|error| format!("Kubeconfig task failed: {error}"))??;
+    clear_client_cache();
+    Ok(())
+}
+
+#[tauri::command]
+async fn set_context_namespace(context: String, namespace: Option<String>) -> Result<(), String> {
+    tokio::task::spawn_blocking(move || settings::set_context_namespace(&context, namespace))
+        .await
+        .map_err(|error| format!("Kubeconfig task failed: {error}"))??;
+    clear_client_cache();
+    Ok(())
+}
+
+fn clear_client_cache() {
+    if let Some(cache) = CLIENT_CACHE.get() {
+        if let Ok(mut cache) = cache.lock() {
+            cache.clear();
+        }
+    }
+}
+
 /// Strips any directory component, so a caller can never escape the target folder.
 fn safe_file_stem(name: &str) -> String {
     let stem = std::path::Path::new(name)
@@ -293,6 +353,39 @@ async fn save_to_downloads(
             std::fs::create_dir_all(parent).map_err(|error| format!("Unable to create {}: {error}", parent.display()))?;
         }
         std::fs::write(&target, contents).map_err(|error| format!("Unable to write {}: {error}", target.display()))?;
+        Ok(target.to_string_lossy().to_string())
+    })
+    .await
+    .map_err(|error| format!("Write task failed: {error}"))?
+}
+
+/// Writes a binary file into Downloads. The payload arrives base64-encoded because
+/// a raw byte array crosses the IPC boundary as JSON numbers, roughly quadrupling a
+/// document that is already hundreds of kilobytes.
+#[tauri::command]
+async fn save_bytes_to_downloads(
+    app: tauri::AppHandle,
+    file_name: String,
+    extension: String,
+    base64_contents: String,
+) -> Result<String, String> {
+    use base64::Engine;
+    use tauri::Manager;
+
+    let bytes = base64::engine::general_purpose::STANDARD
+        .decode(base64_contents.as_bytes())
+        .map_err(|error| format!("The document could not be decoded: {error}"))?;
+    let directory = app
+        .path()
+        .download_dir()
+        .map_err(|error| format!("Unable to locate the Downloads folder: {error}"))?;
+    let extension = safe_file_stem(&extension);
+    let target = directory.join(format!("{}.{extension}", safe_file_stem(&file_name)));
+
+    tokio::task::spawn_blocking(move || {
+        std::fs::create_dir_all(&directory)
+            .map_err(|error| format!("Unable to create {}: {error}", directory.display()))?;
+        std::fs::write(&target, bytes).map_err(|error| format!("Unable to write {}: {error}", target.display()))?;
         Ok(target.to_string_lossy().to_string())
     })
     .await
@@ -685,6 +778,12 @@ fn main() {
     tauri::Builder::default()
         .invoke_handler(tauri::generate_handler![
             save_to_downloads,
+            save_bytes_to_downloads,
+            load_settings,
+            save_settings,
+            read_kubeconfig,
+            set_current_context,
+            set_context_namespace,
             current_context,
             list_kube_contexts,
             list_namespaces,

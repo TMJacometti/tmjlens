@@ -7,6 +7,9 @@ import {
 } from 'lucide-react';
 import { ActionMenu } from './components/ActionMenu';
 import { Toast, ToastMessage } from './components/Toast';
+import { SettingsPanel } from './components/settings/SettingsPanel';
+import { EnvironmentBadge, EnvironmentStripe } from './components/settings/EnvironmentBadge';
+import { environmentMeta, type AppSettings, type EnvironmentId } from './types/settings';
 import { ClusterOverviewPage, NodeCapabilities } from './components/cluster/ClusterOverviewPage';
 import type { ClusterOverview, NodeAction } from './types/cluster';
 
@@ -45,8 +48,35 @@ export function App() {
   const [yamlError, setYamlError] = useState('');
   const [showDetail, setShowDetail] = useState(false);
   const [toast, setToast] = useState<ToastMessage | null>(null);
+  const [settings, setSettings] = useState<AppSettings>({ context_environments: {}, confirm_destructive_in_production: true });
+  const [showSettings, setShowSettings] = useState(false);
+  const [isGeneratingReport, setIsGeneratingReport] = useState(false);
   const [capabilities, setCapabilities] = useState<Capabilities>({ deletePods: false, deleteDeployments: false, patchDeployments: false, patchPods: false });
   const refreshGeneration = useRef(0);
+
+  const notify = (text: string, detail: string | undefined, tone: 'good' | 'bad') => setToast({ text, detail, tone });
+
+  const currentEnvironment: EnvironmentId = settings.context_environments[context] ?? 'unset';
+
+  /**
+   * Destructive confirmation, scaled to the blast radius. A context marked Production
+   * asks for its name to be typed, which a reflexive Enter cannot satisfy; every other
+   * environment keeps the ordinary confirm, with the environment named in the prompt.
+   */
+  const confirmDestructive = (message: string): boolean => {
+    if (currentEnvironment === 'production' && settings.confirm_destructive_in_production) {
+      const typed = window.prompt(`${message}\n\nThis context is marked PRODUCTION.\nType the context name to confirm:\n\n${context}`);
+      if (typed === null) return false;
+      if (typed.trim() !== context) {
+        notify('Confirmation did not match', 'The context name was not typed exactly, so nothing was changed.', 'bad');
+        return false;
+      }
+      return true;
+    }
+    const meta = environmentMeta(currentEnvironment);
+    const prefix = currentEnvironment === 'unset' ? '' : `[${meta.label}] `;
+    return window.confirm(`${prefix}${message}`);
+  };
 
   const refreshCapabilities = async (targetContext: string, targetNamespace: string) => {
     const check = (verb: string, resource: string) => invoke<boolean>('check_permission', { context: targetContext, namespace: targetNamespace, verb, resource }).catch(() => false);
@@ -94,7 +124,7 @@ export function App() {
   const selectPod = (podName: string) => { setSelectedPod(podName); setLogs(''); setYaml(''); setEditedYaml(''); setYamlError(''); setShowDetail(true); };
 
   const deletePod = async (podName: string) => {
-    if (!window.confirm(`Delete pod ${podName}? Kubernetes may recreate it.`)) return;
+    if (!confirmDestructive(`Delete pod ${podName}? Kubernetes may recreate it.`)) return;
     await invoke('delete_pod', { context, namespace, podName });
     await refreshResources(context, namespace);
     for (const delay of [400, 800, 1200]) {
@@ -104,7 +134,7 @@ export function App() {
   };
 
   const deleteDeployment = async (deploymentName: string) => {
-    if (!window.confirm(`Delete deployment ${deploymentName}?`)) return;
+    if (!confirmDestructive(`Delete deployment ${deploymentName}?`)) return;
     await invoke('delete_deployment', { context, namespace, deploymentName });
     await refreshResources(context, namespace);
   };
@@ -119,7 +149,7 @@ export function App() {
   };
 
   const restartDeployment = async (deploymentName: string) => {
-    if (!window.confirm(`Rollout restart deployment ${deploymentName}?`)) return;
+    if (!confirmDestructive(`Rollout restart deployment ${deploymentName}?`)) return;
     await invoke('restart_deployment', { context, namespace, deploymentName });
     await refreshResources(context, namespace);
   };
@@ -150,9 +180,34 @@ export function App() {
     }
   };
 
+  /**
+   * Builds the executive PDF in the frontend and hands the bytes to Rust to write.
+   * The document is drawn from the same snapshot already on screen, so the report can
+   * never disagree with what was reviewed before pressing the button.
+   */
+  const generateReport = async () => {
+    if (!clusterOverview) return;
+    setIsGeneratingReport(true);
+    try {
+      const { buildClusterReport, reportFileName } = await import('./lib/report');
+      const pdf = buildClusterReport(clusterOverview, currentEnvironment);
+      const base64 = pdf.output('datauristring').split(',')[1];
+      const path = await invoke<string>('save_bytes_to_downloads', {
+        fileName: reportFileName(clusterOverview),
+        extension: 'pdf',
+        base64Contents: base64,
+      });
+      notify('Executive report saved', path, 'good');
+    } catch (error) {
+      notify('Could not build the report', String(error), 'bad');
+    } finally {
+      setIsGeneratingReport(false);
+    }
+  };
+
   const nodeAction = async (action: NodeAction, nodeName: string) => {
     const messages = { cordon: `Cordon node ${nodeName}?`, uncordon: `Uncordon node ${nodeName}?`, drain: `Drain node ${nodeName}? Pods will be evicted.`, delete: `Delete node ${nodeName}?` };
-    if (!window.confirm(messages[action])) return;
+    if (!confirmDestructive(messages[action])) return;
     try {
       if (action === 'delete') await invoke('delete_node', { context, nodeName });
       else if (action === 'drain') await invoke('drain_node', { context, nodeName });
@@ -186,7 +241,7 @@ export function App() {
   };
 
   const applyPodYaml = async () => {
-    if (!window.confirm(`Apply YAML changes to pod ${selectedPod}?`)) return;
+    if (!confirmDestructive(`Apply YAML changes to pod ${selectedPod}?`)) return;
     try {
       const result = await invoke<string>('apply_resource_yaml', { context, namespace, resourceKind: 'Pod', resourceName: selectedPod, yaml: editedYaml });
       setYaml(result); setEditedYaml(result); setYamlError('');
@@ -197,7 +252,14 @@ export function App() {
   };
 
   useEffect(() => {
-    const loadData = async () => {
+    void reloadContexts();
+    void invoke<AppSettings>('load_settings').then(setSettings).catch(() => undefined);
+  }, []);
+
+  /** Re-reads the kubeconfig into the shell. Also runs after Settings edits the file,
+   *  so the context and namespace shown here follow what kubectl would now use. */
+  async function reloadContexts() {
+    {
       const [contextResult, contextListResult] = await Promise.allSettled([
         invoke<{ name: string; namespace?: string }>('current_context'),
         invoke<TauriContext[]>('list_kube_contexts'),
@@ -219,9 +281,8 @@ export function App() {
 
       await refreshResources(initialContext, initialNamespace);
       void refreshCapabilities(initialContext, initialNamespace);
-    };
-    void loadData();
-  }, []);
+    }
+  }
 
   const handleContextChange = async (nextContext: string) => {
     setContext(nextContext);
@@ -253,23 +314,27 @@ export function App() {
 
   const showEvents = active === 'Events';
   if (active === 'Reports') {
-    return <div className="app"><header className="topbar"><div className="brand"><span className="shark">🦈</span> tmjLens</div><span className="muted">{context}</span><div className="spacer"/><button className="selector" onClick={() => setActive('Workloads')}>Back to Workloads</button></header><main className="main report-screen"><div className="breadcrumbs">Cluster / {context} / Reports</div><div className="title-row"><div><h1>Reports</h1><p>Resources created today in this cluster context</p></div><button className="primary" onClick={() => void loadCreatedToday()}>Refresh report</button></div><ReportsPanel items={reportItems} loading={isLoadingReport} onRefresh={loadCreatedToday}/></main></div>;
+    return <div className="app"><EnvironmentStripe environment={currentEnvironment}/><header className="topbar"><div className="brand"><span className="shark">🦈</span> tmjLens</div><span className="muted">{context}</span><div className="spacer"/><button className="selector" onClick={() => setActive('Workloads')}>Back to Workloads</button></header><main className="main report-screen"><div className="breadcrumbs">Cluster / {context} / Reports</div><div className="title-row"><div><h1>Reports</h1><p>Resources created today in this cluster context</p></div><button className="primary" onClick={() => void loadCreatedToday()}>Refresh report</button></div><ReportsPanel items={reportItems} loading={isLoadingReport} onRefresh={loadCreatedToday}/></main></div>;
   }
   if (active === 'Cluster Overview') {
-    return <div className="app"><header className="topbar"><div className="brand"><span className="shark">🦈</span> tmjLens</div><span className="muted">{context}</span><div className="spacer"/><button className="selector" onClick={() => setActive('Workloads')}>Back to Workloads</button></header><main className="main report-screen"><div className="breadcrumbs">Cluster / {context} / Overview</div><div className="title-row"><div><h1>Cluster Overview</h1><p>Cluster health, capacity, and node operations for <b>{context}</b></p></div></div><ClusterOverviewPage data={clusterOverview} loading={isLoadingCluster} error={clusterError} capabilities={nodeCapabilities} onRefresh={() => void loadClusterOverview()} onNodeAction={nodeAction}/></main></div>;
+    return <div className="app"><EnvironmentStripe environment={currentEnvironment}/><header className="topbar"><div className="brand"><span className="shark">🦈</span> tmjLens</div><span className="muted">{context}</span><div className="spacer"/><button className="selector" onClick={() => setActive('Workloads')}>Back to Workloads</button></header><main className="main report-screen"><div className="breadcrumbs">Cluster / {context} / Overview</div><div className="title-row"><div><h1>Cluster Overview</h1><p>Cluster health, capacity, and node operations for <b>{context}</b></p></div></div><ClusterOverviewPage data={clusterOverview} loading={isLoadingCluster} error={clusterError} capabilities={nodeCapabilities} onRefresh={() => void loadClusterOverview()} onNodeAction={nodeAction} onGenerateReport={() => void generateReport()} generatingReport={isGeneratingReport}/></main></div>;
   }
   return <div className="app">
+    <EnvironmentStripe environment={currentEnvironment}/>
     <header className="topbar"><div className="brand"><span className="shark">🦈</span> tmjLens</div>
-      <label className="selector"><GitBranch size={15}/><select value={context} onChange={(event) => void handleContextChange(event.target.value)}>{contexts.map((entry) => <option key={entry} value={entry}>{entry}</option>)}</select><ChevronDown size={14}/></label>
+      <label className="selector"><GitBranch size={15}/><select value={context} onChange={(event) => void handleContextChange(event.target.value)}>{contexts.map((entry) => <option key={entry} value={entry}>{entry}</option>)}</select><ChevronDown size={14}/></label><EnvironmentBadge environment={currentEnvironment}/>
       <label className="selector"><Layers3 size={15}/><span>ns:</span><select value={namespace} onChange={(event) => void handleNamespaceChange(event.target.value)}>{namespaces.map((entry) => <option key={entry} value={entry}>{entry}</option>)}</select><ChevronDown size={14}/></label>
-      <div className="spacer"/><button className="icon-btn" title="Search"><Search size={17}/></button><button className="icon-btn" title="Settings"><Settings size={17}/></button>
+      <div className="spacer"/><button className="icon-btn" title="Search"><Search size={17}/></button><button className="icon-btn" title="Settings" onClick={() => setShowSettings(true)}><Settings size={17}/></button>
     </header>
     <div className="body"><aside className="sidebar"><div className="section-title">CLUSTER</div>
       <Nav icon={<Gauge size={16}/>} label="Cluster Overview" active={active === 'Cluster Overview'} onClick={() => setActive('Cluster Overview')} /><Nav icon={<Workflow size={16}/>} label="Workloads" active={active === 'Workloads'} onClick={() => setActive('Workloads')} /><Nav icon={<Network size={16}/>} label="Network" active={active === 'Network'} onClick={() => setActive('Network')} /><Nav icon={<HardDrive size={16}/>} label="Storage" active={active === 'Storage'} onClick={() => setActive('Storage')} /><Nav icon={<FileCog size={16}/>} label="Configuration" active={active === 'Configuration'} onClick={() => setActive('Configuration')} /><Nav icon={<Server size={16}/>} label="Nodes" active={active === 'Nodes'} onClick={() => setActive('Nodes')} /><Nav icon={<CircleAlert size={16}/>} label="Events" active={active === 'Events'} onClick={() => setActive('Events')} /><Nav icon={<BarChart3 size={16}/>} label="Reports" active={active === 'Reports'} onClick={() => setActive('Reports')} />
       <div className="section-title aws">CLOUD</div><Nav icon={<Network size={16}/>} label="Load Balancers"/><Nav icon={<Box size={16}/>} label="Node Pools"/><div className="section-title plugins">PLUGINS</div><Nav icon={<Terminal size={16}/>} label="Helm"/><Nav icon={<Workflow size={16}/>} label="Argo CD"/>
     </aside><main className="main"><div className="breadcrumbs">Cluster / {namespace} / {active}</div><div className="title-row"><div><h1>{active}</h1><p>Live Kubernetes resources from <b>{context}</b></p></div></div>
       {showEvents ? <EventsPanel events={events} onRefresh={refreshEvents}/> : active === 'Workloads' ? <><div className="view-switch"><button className={workloadView === 'Pods' ? 'active' : ''} onClick={() => setWorkloadView('Pods')}>Pods ({pods.length})</button><button className={workloadView === 'Deployments' ? 'active' : ''} onClick={() => setWorkloadView('Deployments')}>Deployments ({deployments.length})</button></div>{workloadView === 'Pods' ? <PodsPanel pods={pods} selectedPod={selectedPod} onSelect={selectPod} onDelete={capabilities.deletePods ? deletePod : undefined} onExport={(podName) => void exportLogsFor(podName)}/> : <DeploymentsPanel deployments={deployments} onDelete={capabilities.deleteDeployments ? deleteDeployment : undefined} onScale={capabilities.patchDeployments ? scaleDeployment : undefined} onRestart={capabilities.patchDeployments ? restartDeployment : undefined}/>} {showDetail && selectedPod && <PodDetail pod={pods.find((pod) => pod.name === selectedPod)} namespace={namespace} containers={containers} events={events} selectedContainer={selectedContainer} setSelectedContainer={setSelectedContainer} onLoadLogs={() => void loadPodLogs(selectedPod, selectedContainer)} onLoadYaml={() => void loadPodYaml()} onApplyYaml={capabilities.patchPods ? () => void applyPodYaml() : undefined} yaml={yaml} editedYaml={editedYaml} setEditedYaml={setEditedYaml} yamlError={yamlError} logs={logs} isLoading={isLoadingLogs} onExport={exportLogs} onClose={() => setShowDetail(false)}/>}</> : <div className="empty"><ListTree size={32}/><h2>{active}</h2><p>This screen is scaffolded. The Kubernetes data layer will populate it.</p></div>}
-    </main></div><Toast message={toast} onDismiss={() => setToast(null)}/></div>;
+    </main></div>
+    <Toast message={toast} onDismiss={() => setToast(null)}/>
+    {showSettings && <SettingsPanel settings={settings} onSettingsChange={setSettings} onKubeconfigChanged={() => void reloadContexts()} onClose={() => setShowSettings(false)} notify={notify}/>}
+  </div>;
 }
 
 function PodsPanel({ pods, selectedPod, onSelect, onDelete, onExport }: { pods: PodRow[]; selectedPod: string; onSelect: (name: string) => void; onDelete?: (name: string) => void; onExport: (name: string) => void }) { return <><div className="cards"><Stat label="Pods" value={pods.length}/><Stat label="Healthy" value={pods.filter((p) => p.status === 'Running').length}/><Stat label="Warnings" value={pods.filter((p) => p.status !== 'Running').length} danger/></div><div className="panel"><div className="panel-head"><span>Pods</span><div className="search"><Search size={15}/><input placeholder="Filter pods..." /></div></div><table><thead><tr><th>Name</th><th>Status</th><th>Ready</th><th>Age</th><th /></tr></thead><tbody>{pods.map((pod) => <tr key={pod.name} className={selectedPod === pod.name ? 'selected' : ''} onClick={() => onSelect(pod.name)}><td className="mono">{pod.name}</td><td><Status status={pod.status}/></td><td>{pod.ready}</td><td>{pod.age}</td><td className="action-cell"><ActionMenu label="Pod actions" items={[

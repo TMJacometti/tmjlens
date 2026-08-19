@@ -1,0 +1,71 @@
+/*
+ * Environment tokens are deliberately separate from the status palette: an
+ * environment classifies a cluster, it does not report its health. A production
+ * cluster in perfect health must not read as "critical".
+ */
+:root {
+  --env-production: #e0564f;
+  --env-staging: #d99323;
+  --env-development: #4b7fd4;
+}
+
+.env-badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  padding: 2px 9px;
+  border-radius: 99px;
+  border: 1px solid transparent;
+  font-size: 10.5px;
+  font-weight: 700;
+  letter-spacing: 0.05em;
+  white-space: nowrap;
+  text-transform: uppercase;
+}
+
+.env-badge.is-small {
+  padding: 1px 7px;
+  font-size: 9.5px;
+}
+
+.env-badge-production {
+  color: #ff9b95;
+  background: #2e1416;
+  border-color: #5e2a2c;
+}
+
+.env-badge-staging {
+  color: #f0b95c;
+  background: #2a1f0a;
+  border-color: #56411a;
+}
+
+.env-badge-development {
+  color: #8fb8f0;
+  background: #131d2c;
+  border-color: #2a3b55;
+}
+
+/* Fixed rather than in flow: the shell sizes its panes against the viewport, so a
+   stripe that took layout space would push the body out by its own height. */
+.env-stripe {
+  position: fixed;
+  top: 0;
+  left: 0;
+  right: 0;
+  height: 3px;
+  z-index: 400;
+  pointer-events: none;
+}
+
+.env-stripe-production {
+  background: var(--env-production);
+}
+
+.env-stripe-staging {
+  background: var(--env-staging);
+}
+
+.env-stripe-development {
+  background: var(--env-development);
+}
