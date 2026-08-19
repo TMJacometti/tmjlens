@@ -142,6 +142,36 @@ const WORKLOAD_INVENTORY = {
   degraded_collectors: [],
 };
 
+/** A graph where the rollout is stuck for a reason the picture makes obvious:
+ *  the ConfigMap the pods mount does not exist. */
+const RELATION_GRAPH = {
+  root: 'Deployment/fraud-scoring',
+  namespace: 'payments',
+  nodes: [
+    { id: 'Ingress/payments-public', kind: 'Ingress', name: 'payments-public', tier: 0, health: 'good', detail: 'a1b2c3.elb.sa-east-1.amazonaws.com' },
+    { id: 'Service/fraud-scoring', kind: 'Service', name: 'fraud-scoring', tier: 1, health: 'critical', detail: '0 of 2 pods ready' },
+    { id: 'Deployment/fraud-scoring', kind: 'Deployment', name: 'fraud-scoring', tier: 2, health: 'serious', detail: '1/4 ready' },
+    { id: 'ReplicaSet/fraud-scoring-58f7c6d9b4', kind: 'ReplicaSet', name: 'fraud-scoring-58f7c6d9b4', tier: 3, health: 'serious', detail: '1/4 ready' },
+    { id: 'Pod/fraud-scoring-58f7c6d9b4-lm3nq', kind: 'Pod', name: 'fraud-scoring-58f7c6d9b4-lm3nq', tier: 4, health: 'critical', detail: 'CreateContainerConfigError' },
+    { id: 'Pod/fraud-scoring-58f7c6d9b4-w8ptr', kind: 'Pod', name: 'fraud-scoring-58f7c6d9b4-w8ptr', tier: 4, health: 'good', detail: '2/2 ready' },
+    { id: 'ConfigMap/fraud-rules', kind: 'ConfigMap', name: 'fraud-rules', tier: 5, health: 'critical', detail: 'missing' },
+    { id: 'Secret/fraud-credentials', kind: 'Secret', name: 'fraud-credentials', tier: 5, health: 'good', detail: 'present, values hidden' },
+    { id: 'PersistentVolumeClaim/fraud-cache', kind: 'PersistentVolumeClaim', name: 'fraud-cache', tier: 5, health: 'good', detail: 'Bound' },
+  ],
+  edges: [
+    { from: 'Ingress/payments-public', to: 'Service/fraud-scoring', relation: 'routes pay.example.com/fraud' },
+    { from: 'Service/fraud-scoring', to: 'Pod/fraud-scoring-58f7c6d9b4-lm3nq', relation: 'selects', broken: 'endpoint not ready' },
+    { from: 'Service/fraud-scoring', to: 'Pod/fraud-scoring-58f7c6d9b4-w8ptr', relation: 'selects' },
+    { from: 'Deployment/fraud-scoring', to: 'ReplicaSet/fraud-scoring-58f7c6d9b4', relation: 'owns' },
+    { from: 'ReplicaSet/fraud-scoring-58f7c6d9b4', to: 'Pod/fraud-scoring-58f7c6d9b4-lm3nq', relation: 'runs' },
+    { from: 'ReplicaSet/fraud-scoring-58f7c6d9b4', to: 'Pod/fraud-scoring-58f7c6d9b4-w8ptr', relation: 'runs' },
+    { from: 'Deployment/fraud-scoring', to: 'ConfigMap/fraud-rules', relation: 'mounts', broken: 'ConfigMap fraud-rules does not exist in this namespace' },
+    { from: 'Deployment/fraud-scoring', to: 'Secret/fraud-credentials', relation: 'mounts' },
+    { from: 'Deployment/fraud-scoring', to: 'PersistentVolumeClaim/fraud-cache', relation: 'mounts' },
+  ],
+  degraded_collectors: [],
+};
+
 type Internals = {
   invoke: (command: string, args?: unknown) => Promise<unknown>;
   transformCallback: (callback: (payload: unknown) => void, once?: boolean) => number;
@@ -247,6 +277,8 @@ export function installTauriStub() {
             .sort((a, b) => a.rank - b.rank || a.name.length - b.name.length);
           return { query: q, hits, truncated: false, degraded_collectors: [] };
         }
+        case 'get_relation_graph':
+          return RELATION_GRAPH;
         case 'load_settings':
           return { context_environments: {}, confirm_destructive_in_production: true };
         case 'save_settings':

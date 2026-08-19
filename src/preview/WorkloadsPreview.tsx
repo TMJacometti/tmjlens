@@ -60,7 +60,7 @@ export function WorkloadsPreview() {
         podsLive
         controllers={<WorkloadInventoryTable inventory={inventory} loading={false} error="" selected="" canDelete onSelect={() => undefined} onEditYaml={() => undefined} onDelete={() => undefined} onExportYaml={() => undefined} />}
       />
-      {false && deployment && (
+      {deployment && (
         <DeploymentDetailPanel
           context="prod-shark"
           namespace="payments"

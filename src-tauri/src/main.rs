@@ -1,6 +1,7 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
 mod cluster;
+mod graph;
 mod logs;
 mod network;
 mod search;
@@ -456,6 +457,16 @@ async fn delete_workload(
         other => return Err(format!("Deleting a {other} is not implemented")),
     }
     Ok(())
+}
+
+#[tauri::command]
+async fn get_relation_graph(
+    context: String,
+    namespace: String,
+    deployment_name: String,
+) -> Result<graph::RelationGraph, String> {
+    let client = client_for_context(&context).await?;
+    graph::for_deployment(client, &namespace, &deployment_name).await
 }
 
 #[tauri::command]
@@ -1006,6 +1017,7 @@ fn main() {
             get_network_overview,
             list_workloads,
             search_cluster,
+            get_relation_graph,
             delete_workload,
             export_deployment_yaml,
             list_namespace_snapshot,
