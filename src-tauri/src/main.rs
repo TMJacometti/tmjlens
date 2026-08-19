@@ -5,9 +5,11 @@ mod configuration;
 mod exec;
 mod graph;
 mod logs;
+mod namespaces;
 mod network;
 mod portforward;
 mod search;
+mod reports;
 mod settings;
 mod storage;
 mod streams;
@@ -108,14 +110,6 @@ struct NamespaceSnapshot {
     pods: Vec<PodInfo>,
     deployments: Vec<DeploymentInfo>,
     events: Vec<EventInfo>,
-}
-
-#[derive(Serialize, Clone)]
-struct CreatedTodayItem {
-    kind: String,
-    name: String,
-    namespace: Option<String>,
-    created_at: String,
 }
 
 pub(crate) fn format_age(created_at: chrono::DateTime<chrono::Utc>) -> String {
@@ -626,6 +620,23 @@ async fn delete_configuration_key(
     configuration::delete_key(client, &namespace, &kind, &name, &key).await
 }
 
+/// Nothing is read until the caller names the namespaces it wants.
+#[tauri::command]
+async fn get_deploy_report(
+    context: String,
+    namespaces: Vec<String>,
+    window: String,
+) -> Result<reports::DeployReport, String> {
+    let client = client_for_context(&context).await?;
+    reports::deployed(client, namespaces, &window).await
+}
+
+#[tauri::command]
+async fn get_namespace_overview(context: String) -> Result<namespaces::NamespaceOverview, String> {
+    let client = client_for_context(&context).await?;
+    namespaces::overview(client).await
+}
+
 #[tauri::command]
 async fn get_storage_overview(
     context: String,
@@ -982,63 +993,6 @@ async fn list_namespace_snapshot(context: String, namespace: String) -> Result<N
     Ok(NamespaceSnapshot { pods: pod_infos, deployments: deployment_infos, events: event_infos })
 }
 
-#[tauri::command]
-async fn list_created_today(context: String) -> Result<Vec<CreatedTodayItem>, String> {
-    let client = client_for_context(&context).await?;
-    let pods_api: Api<Pod> = Api::all(client.clone());
-    let deployments_api: Api<Deployment> = Api::all(client.clone());
-    let events_api: Api<Event> = Api::all(client.clone());
-    let namespaces_api: Api<Namespace> = Api::all(client);
-    let today = chrono::Local::now().date_naive();
-    let params = ListParams::default();
-    let (pods, deployments, events, namespaces) = tokio::join!(
-        pods_api.list(&params),
-        deployments_api.list(&params),
-        events_api.list(&params),
-        namespaces_api.list(&params),
-    );
-    let mut items = Vec::new();
-
-    if let Ok(list) = pods {
-        for pod in list.items {
-            if let (Some(name), Some(created_at)) = (pod.metadata.name, pod.metadata.creation_timestamp) {
-                if created_at.0.with_timezone(&chrono::Local).date_naive() == today {
-                    items.push(CreatedTodayItem { kind: "Pod".to_string(), name, namespace: pod.metadata.namespace, created_at: created_at.0.to_rfc3339() });
-                }
-            }
-        }
-    }
-    if let Ok(list) = deployments {
-        for deployment in list.items {
-            if let (Some(name), Some(created_at)) = (deployment.metadata.name, deployment.metadata.creation_timestamp) {
-                if created_at.0.with_timezone(&chrono::Local).date_naive() == today {
-                    items.push(CreatedTodayItem { kind: "Deployment".to_string(), name, namespace: deployment.metadata.namespace, created_at: created_at.0.to_rfc3339() });
-                }
-            }
-        }
-    }
-    if let Ok(list) = events {
-        for event in list.items {
-            if let (Some(name), Some(created_at)) = (event.involved_object.name.or(event.metadata.name), event.metadata.creation_timestamp) {
-                if created_at.0.with_timezone(&chrono::Local).date_naive() == today {
-                    items.push(CreatedTodayItem { kind: "Event".to_string(), name, namespace: event.metadata.namespace, created_at: created_at.0.to_rfc3339() });
-                }
-            }
-        }
-    }
-    if let Ok(list) = namespaces {
-        for namespace in list.items {
-            if let (Some(name), Some(created_at)) = (namespace.metadata.name, namespace.metadata.creation_timestamp) {
-                if created_at.0.with_timezone(&chrono::Local).date_naive() == today {
-                    items.push(CreatedTodayItem { kind: "Namespace".to_string(), name, namespace: None, created_at: created_at.0.to_rfc3339() });
-                }
-            }
-        }
-    }
-
-    items.sort_by(|left, right| right.created_at.cmp(&left.created_at));
-    Ok(items)
-}
 
 #[tauri::command]
 async fn get_cluster_overview(context: String) -> Result<cluster::ClusterOverview, String> {
@@ -1234,6 +1188,8 @@ fn main() {
             search_cluster,
             get_configuration,
             get_storage_overview,
+            get_deploy_report,
+            get_namespace_overview,
             reveal_secret_key,
             read_config_map_key,
             write_secret_key,
@@ -1254,7 +1210,6 @@ fn main() {
             delete_workload,
             export_deployment_yaml,
             list_namespace_snapshot,
-            list_created_today,
             get_cluster_overview,
             set_node_schedulable,
             delete_node,

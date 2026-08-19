@@ -129,10 +129,10 @@ export function StoragePage({ data, loading, error, onRefresh }: Props) {
               type="button"
               role="tab"
               aria-selected={view === entry}
-              className={view === entry ? 'active' : ''}
+              className={view === entry ? 'is-active' : ''}
               onClick={() => setView(entry)}
             >
-              {entry} <span className="wl-count">{storageViewCount(data, entry)}</span>
+              {entry} <span className="viz-count">{storageViewCount(data, entry)}</span>
             </button>
           ))}
         </div>

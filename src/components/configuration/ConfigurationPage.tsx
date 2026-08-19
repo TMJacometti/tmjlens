@@ -127,10 +127,10 @@ export function ConfigurationPage({
                 type="button"
                 role="tab"
                 aria-selected={view === entry}
-                className={view === entry ? 'active' : ''}
+                className={view === entry ? 'is-active' : ''}
                 onClick={() => setView(entry)}
               >
-                {entry} <span className="wl-count">{configViewCount(data, entry)}</span>
+                {entry} <span className="viz-count">{configViewCount(data, entry)}</span>
                 {/* A dot alone would carry meaning by colour, so it is labelled. */}
                 {severity && (
                   <span className={`cfg-dot cfg-dot-${severity}`} title={`${entry} needs attention`}>

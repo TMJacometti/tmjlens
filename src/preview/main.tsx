@@ -11,6 +11,7 @@ import { PortForwardPreview } from './PortForwardPreview';
 import { VeleroPreview } from './VeleroPreview';
 import { ConfigurationPreview } from './ConfigurationPreview';
 import { StoragePreview } from './StoragePreview';
+import { NamespacesPreview, ReportPickerPreview } from './ReportPickerPreview';
 import { installTauriStub } from './tauri-stub';
 import { awsFixture, azureFixture } from './fixture';
 import '../styles.css';
@@ -48,7 +49,11 @@ if (view === 'settings') {
   root.render(
     <div className="app" style={{ height: 'auto', overflow: 'visible' }}>
       <main className="main" style={{ overflow: 'visible' }}>
-        {view === 'storage' ? (
+        {view === 'deploys' ? (
+          <ReportPickerPreview />
+        ) : view === 'ns' ? (
+          <NamespacesPreview />
+        ) : view === 'storage' ? (
           <StoragePreview />
         ) : view === 'config' ? (
           <ConfigurationPreview />

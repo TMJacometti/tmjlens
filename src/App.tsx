@@ -15,6 +15,9 @@ import { LogViewer } from './components/logs/LogViewer';
 import { PortForwardPanel } from './components/portforward/PortForwardPanel';
 import { ExecTerminal } from './components/exec/ExecTerminal';
 import type { NetworkOverview } from './types/network';
+import { DeployReportPage } from './components/reports/DeployReportPage';
+import { NamespacesPage } from './components/namespaces/NamespacesPage';
+import type { DeployReport, NamespaceOverview } from './types/reports';
 import { StoragePage } from './components/storage/StoragePage';
 import type { StorageOverview } from './types/storage';
 import { ConfigurationPage } from './components/configuration/ConfigurationPage';
@@ -36,7 +39,6 @@ type TauriContext = { name: string; current: boolean; namespace?: string };
 type PodRow = { name: string; status: string; ready: string; age: string };
 type DeploymentRow = { name: string; ready: number; desired: number; available: number; age: string };
 type EventInfo = { reason: string; message: string; kind: string; name: string; timestamp?: string };
-type ReportItem = { kind: string; name: string; namespace?: string; created_at: string };
 type Capabilities = { deletePods: boolean; deleteDeployments: boolean; patchDeployments: boolean; patchPods: boolean; patchServices: boolean; patchIngresses: boolean; patchConfigMaps: boolean; patchSecrets: boolean; portForward: boolean; podExec: boolean };
 
 export function App() {
@@ -47,6 +49,12 @@ export function App() {
   const [isLoadingInventory, setIsLoadingInventory] = useState(false);
   const [selectedDeployment, setSelectedDeployment] = useState('');
   const [isExportingDeployment, setIsExportingDeployment] = useState(false);
+  const [deployReport, setDeployReport] = useState<DeployReport | null>(null);
+  const [deployReportError, setDeployReportError] = useState('');
+  const [isLoadingDeployReport, setIsLoadingDeployReport] = useState(false);
+  const [namespaceOverview, setNamespaceOverview] = useState<NamespaceOverview | null>(null);
+  const [namespaceError, setNamespaceError] = useState('');
+  const [isLoadingNamespaces, setIsLoadingNamespaces] = useState(false);
   const [storage, setStorage] = useState<StorageOverview | null>(null);
   const [storageError, setStorageError] = useState('');
   const [isLoadingStorage, setIsLoadingStorage] = useState(false);
@@ -68,8 +76,6 @@ export function App() {
   const [snapshotPods, setPods] = useState<PodRow[]>([]);
   const [deployments, setDeployments] = useState<DeploymentRow[]>([]);
   const [events, setEvents] = useState<EventInfo[]>([]);
-  const [reportItems, setReportItems] = useState<ReportItem[]>([]);
-  const [isLoadingReport, setIsLoadingReport] = useState(false);
   const [clusterOverview, setClusterOverview] = useState<ClusterOverview | null>(null);
   const [clusterError, setClusterError] = useState('');
   const [isLoadingCluster, setIsLoadingCluster] = useState(false);
@@ -195,15 +201,6 @@ export function App() {
     setEvents(eventList);
   };
 
-  const loadCreatedToday = async () => {
-    setIsLoadingReport(true);
-    try {
-      setReportItems(await invoke<ReportItem[]>('list_created_today', { context }));
-    } finally {
-      setIsLoadingReport(false);
-    }
-  };
-
   const loadClusterOverview = async () => {
     setIsLoadingCluster(true);
     try {
@@ -264,6 +261,32 @@ export function App() {
     setWorkloadView('Pods');
     selectPod(podName);
     setSelectedContainer(container);
+  };
+
+  /** Runs only when the operator picks namespaces and filters. Never on screen open. */
+  const runDeployReport = async (chosen: string[], window: string) => {
+    setIsLoadingDeployReport(true);
+    try {
+      setDeployReport(await invoke<DeployReport>('get_deploy_report', { context, namespaces: chosen, window }));
+      setDeployReportError('');
+    } catch (error) {
+      setDeployReportError(String(error));
+      setDeployReport(null);
+    } finally {
+      setIsLoadingDeployReport(false);
+    }
+  };
+
+  const loadNamespaceOverview = async () => {
+    setIsLoadingNamespaces(true);
+    try {
+      setNamespaceOverview(await invoke<NamespaceOverview>('get_namespace_overview', { context }));
+      setNamespaceError('');
+    } catch (error) {
+      setNamespaceError(String(error));
+    } finally {
+      setIsLoadingNamespaces(false);
+    }
   };
 
   const loadStorage = async () => {
@@ -452,6 +475,7 @@ export function App() {
     { id: 'go-velero', label: 'Go to Velero backups', group: 'Navigate', run: () => setActive('Velero') },
     { id: 'go-configuration', label: 'Go to Configuration', group: 'Navigate', run: () => setActive('Configuration') },
     { id: 'go-storage', label: 'Go to Storage', group: 'Navigate', run: () => setActive('Storage') },
+    { id: 'go-namespaces', label: 'Go to Namespaces', group: 'Navigate', run: () => setActive('Namespaces') },
     { id: 'go-events', label: 'Go to Events', group: 'Navigate', run: () => setActive('Events') },
     { id: 'go-reports', label: 'Go to Reports', group: 'Navigate', run: () => setActive('Reports') },
     { id: 'open-settings', label: 'Open Settings', group: 'App', run: () => setShowSettings(true) },
@@ -547,8 +571,8 @@ export function App() {
     if (active === 'Velero') void loadVelero();
     if (active === 'Configuration') void loadConfiguration();
     if (active === 'Storage') void loadStorage();
+    if (active === 'Namespaces') void loadNamespaceOverview();
     if (active === 'Workloads' && workloadView === 'Deployments') void loadInventory();
-    if (active === 'Reports') void loadCreatedToday();
     if (active === 'Cluster Overview') {
       void loadClusterOverview();
       void refreshNodeCapabilities(context);
@@ -557,7 +581,7 @@ export function App() {
 
   const showEvents = active === 'Events';
   if (active === 'Reports') {
-    return <div className="app"><EnvironmentStripe environment={currentEnvironment}/><header className="topbar"><div className="brand"><span className="shark">🦈</span> tmjLens</div><span className="muted">{context}</span><div className="spacer"/><button className="selector" onClick={() => setActive('Workloads')}>Back to Workloads</button></header><main className="main report-screen"><div className="breadcrumbs">Cluster / {context} / Reports</div><div className="title-row"><div><h1>Reports</h1><p>Resources created today in this cluster context</p></div><button className="primary" onClick={() => void loadCreatedToday()}>Refresh report</button></div><ReportsPanel items={reportItems} loading={isLoadingReport} onRefresh={loadCreatedToday}/></main></div>;
+    return <div className="app"><EnvironmentStripe environment={currentEnvironment}/><header className="topbar"><div className="brand"><span className="shark">🦈</span> tmjLens</div><span className="muted">{context}</span><div className="spacer"/><button className="selector" onClick={() => setActive('Workloads')}>Back to Workloads</button></header><main className="main report-screen"><div className="breadcrumbs">Cluster / {context} / Reports</div><div className="title-row"><div><h1>Deploy report</h1><p>What landed in <b>{context}</b>, for the namespaces you choose</p></div></div><DeployReportPage namespaces={namespaces} report={deployReport} loading={isLoadingDeployReport} error={deployReportError} onRun={(chosen, window) => void runDeployReport(chosen, window)}/></main></div>;
   }
   if (active === 'Cluster Overview') {
     return <div className="app"><EnvironmentStripe environment={currentEnvironment}/><header className="topbar"><div className="brand"><span className="shark">🦈</span> tmjLens</div><span className="muted">{context}</span><div className="spacer"/><button className="selector" onClick={() => setActive('Workloads')}>Back to Workloads</button></header><main className="main report-screen"><div className="breadcrumbs">Cluster / {context} / Overview</div><div className="title-row"><div><h1>Cluster Overview</h1><p>Cluster health, capacity, and node operations for <b>{context}</b></p></div></div><ClusterOverviewPage data={clusterOverview} loading={isLoadingCluster} error={clusterError} capabilities={nodeCapabilities} onRefresh={() => void loadClusterOverview()} onNodeAction={nodeAction} onGenerateReport={() => void generateReport()} generatingReport={isGeneratingReport}/></main></div>;
@@ -570,10 +594,10 @@ export function App() {
       <div className="spacer"/><button className="icon-btn" title="Search the cluster (Ctrl+K)" onClick={() => setShowPalette(true)}><Search size={17}/></button><button className="icon-btn" title="Settings" onClick={() => setShowSettings(true)}><Settings size={17}/></button>
     </header>
     <div className="body"><aside className="sidebar"><div className="section-title">CLUSTER</div>
-      <Nav icon={<Gauge size={16}/>} label="Cluster Overview" active={active === 'Cluster Overview'} onClick={() => setActive('Cluster Overview')} /><Nav icon={<Workflow size={16}/>} label="Workloads" active={active === 'Workloads'} onClick={() => setActive('Workloads')} /><Nav icon={<Network size={16}/>} label="Network" active={active === 'Network'} onClick={() => setActive('Network')} /><Nav icon={<HardDrive size={16}/>} label="Storage" active={active === 'Storage'} onClick={() => setActive('Storage')} /><Nav icon={<FileCog size={16}/>} label="Configuration" active={active === 'Configuration'} onClick={() => setActive('Configuration')} /><Nav icon={<Server size={16}/>} label="Nodes" active={active === 'Nodes'} onClick={() => setActive('Nodes')} /><Nav icon={<CircleAlert size={16}/>} label="Events" active={active === 'Events'} onClick={() => setActive('Events')} /><Nav icon={<BarChart3 size={16}/>} label="Reports" active={active === 'Reports'} onClick={() => setActive('Reports')} />
+      <Nav icon={<Gauge size={16}/>} label="Cluster Overview" active={active === 'Cluster Overview'} onClick={() => setActive('Cluster Overview')} /><Nav icon={<Workflow size={16}/>} label="Workloads" active={active === 'Workloads'} onClick={() => setActive('Workloads')} /><Nav icon={<Network size={16}/>} label="Network" active={active === 'Network'} onClick={() => setActive('Network')} /><Nav icon={<HardDrive size={16}/>} label="Storage" active={active === 'Storage'} onClick={() => setActive('Storage')} /><Nav icon={<FileCog size={16}/>} label="Configuration" active={active === 'Configuration'} onClick={() => setActive('Configuration')} /><Nav icon={<Server size={16}/>} label="Nodes" active={active === 'Nodes'} onClick={() => setActive('Nodes')} /><Nav icon={<Layers3 size={16}/>} label="Namespaces" active={active === 'Namespaces'} onClick={() => setActive('Namespaces')} /><Nav icon={<CircleAlert size={16}/>} label="Events" active={active === 'Events'} onClick={() => setActive('Events')} /><Nav icon={<BarChart3 size={16}/>} label="Reports" active={active === 'Reports'} onClick={() => setActive('Reports')} />
       <div className="section-title aws">CLOUD</div><Nav icon={<Network size={16}/>} label="Load Balancers"/><Nav icon={<Box size={16}/>} label="Node Pools"/><div className="section-title plugins">PLUGINS</div><Nav icon={<DatabaseBackup size={16}/>} label="Velero" active={active === 'Velero'} onClick={() => setActive('Velero')} /><Nav icon={<Terminal size={16}/>} label="Helm"/><Nav icon={<Workflow size={16}/>} label="Argo CD"/>
     </aside><main className="main"><div className="breadcrumbs">Cluster / {namespace} / {active}</div><div className="title-row"><div><h1>{active}</h1><p>Live Kubernetes resources from <b>{context}</b></p></div></div>
-      {showEvents ? <EventsPanel events={events} onRefresh={refreshEvents}/> : active === 'Storage' ? <StoragePage data={storage} loading={isLoadingStorage} error={storageError} onRefresh={() => void loadStorage()}/> : active === 'Configuration' ? <ConfigurationPage data={configuration} loading={isLoadingConfiguration} error={configurationError} canEditConfigMaps={capabilities.patchConfigMaps} canEditSecrets={capabilities.patchSecrets} onRefresh={() => void loadConfiguration()} onRead={readConfigurationKey} onSave={saveConfigurationKey} onDelete={deleteConfigurationKey} notify={notify}/> : active === 'Velero' ? <VeleroPage status={velero} loading={isLoadingVelero} error={veleroError} namespaces={namespaces} canBackup={veleroCapabilities.backup} canRestore={veleroCapabilities.restore} onRefresh={() => void loadVelero()} onCreateBackup={createVeleroBackup} onCreateRestore={createVeleroRestore}/> : active === 'Network' ? <NetworkPage data={network} loading={isLoadingNetwork} error={networkError} onRefresh={() => void loadNetwork()} onEditYaml={(kind, name) => setYamlTarget({ kind, name })}/> : active === 'Workloads' ? <><WorkloadsPage view={workloadView} onViewChange={setWorkloadView} pods={pods} deployments={deployments} selectedPod={selectedPod} selectedDeployment={selectedDeployment} capabilities={{ deletePods: capabilities.deletePods, deleteDeployments: capabilities.deleteDeployments, patchDeployments: capabilities.patchDeployments }} onSelectPod={selectPod} onSelectDeployment={(name) => { setSelectedDeployment(name); setShowDetail(false); }} onDeletePod={(name) => void deletePod(name)} onExportPodLogs={(name) => void exportLogsFor(name)} onDeleteDeployment={(name) => void deleteDeployment(name)} onScaleDeployment={(name) => void scaleDeployment(name)} onRestartDeployment={(name) => void restartDeployment(name)} onExportDeployment={(name) => void exportDeployment(name)} podsLive={podWatch.live}
+      {showEvents ? <EventsPanel events={events} onRefresh={refreshEvents}/> : active === 'Namespaces' ? <NamespacesPage data={namespaceOverview} loading={isLoadingNamespaces} error={namespaceError} current={namespace} onRefresh={() => void loadNamespaceOverview()} onSelect={(name) => void handleNamespaceChange(name)}/> : active === 'Storage' ? <StoragePage data={storage} loading={isLoadingStorage} error={storageError} onRefresh={() => void loadStorage()}/> : active === 'Configuration' ? <ConfigurationPage data={configuration} loading={isLoadingConfiguration} error={configurationError} canEditConfigMaps={capabilities.patchConfigMaps} canEditSecrets={capabilities.patchSecrets} onRefresh={() => void loadConfiguration()} onRead={readConfigurationKey} onSave={saveConfigurationKey} onDelete={deleteConfigurationKey} notify={notify}/> : active === 'Velero' ? <VeleroPage status={velero} loading={isLoadingVelero} error={veleroError} namespaces={namespaces} canBackup={veleroCapabilities.backup} canRestore={veleroCapabilities.restore} onRefresh={() => void loadVelero()} onCreateBackup={createVeleroBackup} onCreateRestore={createVeleroRestore}/> : active === 'Network' ? <NetworkPage data={network} loading={isLoadingNetwork} error={networkError} onRefresh={() => void loadNetwork()} onEditYaml={(kind, name) => setYamlTarget({ kind, name })}/> : active === 'Workloads' ? <><WorkloadsPage view={workloadView} onViewChange={setWorkloadView} pods={pods} deployments={deployments} selectedPod={selectedPod} selectedDeployment={selectedDeployment} capabilities={{ deletePods: capabilities.deletePods, deleteDeployments: capabilities.deleteDeployments, patchDeployments: capabilities.patchDeployments }} onSelectPod={selectPod} onSelectDeployment={(name) => { setSelectedDeployment(name); setShowDetail(false); }} onDeletePod={(name) => void deletePod(name)} onExportPodLogs={(name) => void exportLogsFor(name)} onDeleteDeployment={(name) => void deleteDeployment(name)} onScaleDeployment={(name) => void scaleDeployment(name)} onRestartDeployment={(name) => void restartDeployment(name)} onExportDeployment={(name) => void exportDeployment(name)} podsLive={podWatch.live}
       controllers={<WorkloadInventoryTable inventory={inventory} loading={isLoadingInventory} error={inventoryError}
         selected={selectedDeployment ? `Deployment/${selectedDeployment}` : ''} canDelete={capabilities.deleteDeployments}
         onSelect={(row) => { if (row.kind === 'Deployment') { setSelectedDeployment(row.name); } else { setYamlTarget({ kind: row.kind, name: row.name }); } }}
@@ -612,7 +636,6 @@ function PodDetail({ pod, context, namespace, containers, events, selectedContai
 }
 
 function PodOverview({ pod, containers }: { pod?: PodRow; containers: string[] }) { return <div className="overview-grid"><div><span>Status</span><strong>{pod?.status || 'Unknown'}</strong></div><div><span>Ready</span><strong>{pod?.ready || 'n/a'}</strong></div><div><span>Age</span><strong>{pod?.age || 'n/a'}</strong></div><div><span>Containers</span><strong>{containers.length}</strong></div></div>; }
-function ReportsPanel({ items, loading, onRefresh }: { items: ReportItem[]; loading: boolean; onRefresh: () => void }) { return <div className="panel reports-panel"><div className="panel-head"><span>Created today</span><div className="panel-actions"><span className="muted">{items.length} resources</span><button onClick={onRefresh}>Refresh</button></div></div>{loading ? <div className="empty-inline">Loading report...</div> : items.length === 0 ? <div className="empty-inline">No resources were created today, or the current identity cannot list them.</div> : <table><thead><tr><th>Type</th><th>Name</th><th>Namespace</th><th>Created at</th></tr></thead><tbody>{items.map((item) => <tr key={`${item.kind}-${item.namespace}-${item.name}-${item.created_at}`}><td><span className="report-kind">{item.kind}</span></td><td className="mono">{item.name}</td><td>{item.namespace || 'cluster'}</td><td>{new Date(item.created_at).toLocaleTimeString()}</td></tr>)}</tbody></table>}</div>; }
 function Nav({ icon, label, active, onClick }: { icon: React.ReactNode; label: string; active?: boolean; onClick?: () => void }) { return <button className={`nav ${active ? 'active' : ''}`} onClick={onClick}>{icon}<span>{label}</span></button>; }
 function Stat({ label, value, danger }: { label: string; value: string | number; danger?: boolean }) { return <div className={`stat ${danger ? 'danger-stat' : ''}`}><span>{label}</span><strong>{String(value)}</strong></div>; }
 function Status({ status }: { status: string }) { const bad = status !== 'Running'; return <span className={`status ${bad ? 'bad' : 'good'}`}>{bad ? <XCircle size={14}/> : <span className="dot"/>}{status}</span>; }

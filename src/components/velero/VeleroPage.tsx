@@ -141,10 +141,10 @@ export function VeleroPage({
               type="button"
               role="tab"
               aria-selected={view === entry}
-              className={view === entry ? 'active' : ''}
+              className={view === entry ? 'is-active' : ''}
               onClick={() => setView(entry)}
             >
-              {entry} <span className="wl-count">{veleroViewCount(status, entry)}</span>
+              {entry} <span className="viz-count">{veleroViewCount(status, entry)}</span>
             </button>
           ))}
         </div>

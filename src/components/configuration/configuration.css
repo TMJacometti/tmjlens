@@ -149,7 +149,7 @@
   background: #181d25;
 }
 
-.cfg-switch button.active {
+.cfg-switch button.is-active {
   color: #fff;
   background: #232a34;
   border-color: #3a434f;
