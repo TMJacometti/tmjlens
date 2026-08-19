@@ -85,8 +85,15 @@ cd ../src-tauri && cargo tauri dev
 ```
 
 Build a release binary with `cargo tauri build`; it lands in
-`src-tauri/target/release/`. The target machine needs WebView2 (Windows), its own
-kubeconfig, and any credential command that kubeconfig references.
+`src-tauri/target/release/`, with installers under `src-tauri/target/release/bundle/`.
+The target machine needs WebView2 (Windows), its own kubeconfig, and any credential
+command that kubeconfig references.
+
+> **Do not launch `target/debug/tmjlens.exe` on its own.** `cargo tauri dev` bakes
+> `devUrl` (`http://localhost:5173`) into the debug binary instead of embedding the
+> frontend, so double-clicking it without the Vite dev server running shows
+> `ERR_CONNECTION_REFUSED` from localhost — the app is fine, it simply has nothing to
+> load. Only the release build embeds the frontend and runs standalone.
 
 ## Working on the UI without a cluster
 
@@ -101,6 +108,8 @@ cd src && npm run dev
 | `/preview.html` | Cluster overview, EKS fixture with full cloud enrichment |
 | `/preview.html?provider=aks` | The same page with no cloud enrichment and no metrics-server |
 | `/preview.html?view=actions` | Row action menu inside a clipping panel |
+| `/preview.html?view=settings` | Settings panel over a stand-in shell |
+| `/preview.html?view=report` | The generated executive PDF, rendered page by page |
 
 The fixtures in `src/preview/fixture.ts` deliberately cover the awkward cases: an
 unready node, memory and disk pressure, a cordon, kubelet version skew, overcommitted
