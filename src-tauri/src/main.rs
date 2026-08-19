@@ -2,6 +2,7 @@
 
 mod cluster;
 mod settings;
+mod workloads;
 
 use kube::{
     api::{DeleteParams, ListParams, LogParams, Patch, PatchParams},
@@ -390,6 +391,27 @@ async fn save_bytes_to_downloads(
     })
     .await
     .map_err(|error| format!("Write task failed: {error}"))?
+}
+
+#[tauri::command]
+async fn get_deployment_detail(
+    context: String,
+    namespace: String,
+    deployment_name: String,
+) -> Result<workloads::DeploymentDetail, String> {
+    let client = client_for_context(&context).await?;
+    workloads::deployment_detail(client, &namespace, &deployment_name).await
+}
+
+/// Returns the Deployment exactly as the API server holds it, for export.
+#[tauri::command]
+async fn export_deployment_yaml(
+    context: String,
+    namespace: String,
+    deployment_name: String,
+) -> Result<String, String> {
+    let client = client_for_context(&context).await?;
+    workloads::export_raw(client, &workloads::deployment_path(&namespace, &deployment_name)).await
 }
 
 #[tauri::command]
@@ -795,6 +817,8 @@ fn main() {
             apply_resource_yaml,
             check_permission,
             list_deployments,
+            get_deployment_detail,
+            export_deployment_yaml,
             list_namespace_snapshot,
             list_created_today,
             get_cluster_overview,

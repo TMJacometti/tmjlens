@@ -3,6 +3,7 @@ import { ClusterOverviewPage } from '../components/cluster/ClusterOverviewPage';
 import { ActionMenuPreview } from './ActionMenuPreview';
 import { SettingsPreview } from './SettingsPreview';
 import { ReportPreview } from './ReportPreview';
+import { WorkloadsPreview } from './WorkloadsPreview';
 import { installTauriStub } from './tauri-stub';
 import { awsFixture, azureFixture } from './fixture';
 import '../styles.css';
@@ -16,6 +17,7 @@ import '../cluster-overview.css';
  *   ?view=actions   row action menu inside a clipping panel
  *   ?view=settings  settings panel over a stand-in shell
  *   ?view=report    the generated executive PDF, rendered inline
+ *   ?view=workloads the modernised workloads screen with a stuck rollout
  */
 
 // The preview runs in a plain browser, where the Tauri IPC bridge does not exist.
@@ -35,7 +37,9 @@ if (view === 'settings') {
   root.render(
     <div className="app" style={{ height: 'auto', overflow: 'visible' }}>
       <main className="main" style={{ overflow: 'visible' }}>
-        {view === 'actions' ? (
+        {view === 'workloads' ? (
+          <WorkloadsPreview />
+        ) : view === 'actions' ? (
           <>
             <div className="title-row">
               <div>

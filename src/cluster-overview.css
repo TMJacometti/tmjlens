@@ -6,7 +6,12 @@
  * floor, adjacent CVD separation, normal-vision floor, and 3:1 contrast.
  * Status colours are reserved for state and always ship with an icon + label.
  */
-.cluster-page {
+/*
+ * Design tokens live at the root, not on the page that first needed them. The
+ * `viz-*` primitives are shared across screens, and a token scoped to one page
+ * leaves every reuse elsewhere silently colourless.
+ */
+:root {
   --viz-surface: #12161d;
   --viz-surface-2: #171b22;
   --viz-plane: #0b0d11;
@@ -26,7 +31,9 @@
   --status-warning: #fab219;
   --status-serious: #ec835a;
   --status-critical: #d03b3b;
+}
 
+.cluster-page {
   display: flex;
   flex-direction: column;
   gap: 16px;
