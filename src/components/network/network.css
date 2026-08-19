@@ -160,3 +160,10 @@
 .net-switch {
   flex-wrap: wrap;
 }
+
+.net-card-actions {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex: none;
+}
