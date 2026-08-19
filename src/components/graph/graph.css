@@ -1,0 +1,121 @@
+.graph {
+  padding: 16px;
+  overflow-x: auto;
+}
+
+.graph-legend {
+  position: relative;
+  height: 22px;
+  margin-bottom: 6px;
+}
+
+.graph-legend span {
+  position: absolute;
+  font-size: 10px;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--viz-muted);
+  text-align: center;
+}
+
+.graph-canvas {
+  position: relative;
+}
+
+.graph-edges {
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+}
+
+/* Hairline, solid, one step off the surface — the nodes carry the weight. */
+.graph-edge {
+  fill: none;
+  stroke: #333b47;
+  stroke-width: 1.4;
+}
+
+/* A broken link is dashed *and* listed in words below, so the dashing is a
+   reinforcement rather than the only way to notice it. */
+.graph-edge.is-broken {
+  stroke: var(--status-critical);
+  stroke-width: 1.8;
+  stroke-dasharray: 5 4;
+}
+
+.graph-node {
+  position: absolute;
+  display: flex;
+  flex-direction: column;
+  justify-content: center;
+  gap: 2px;
+  padding: 8px 11px;
+  border: 1px solid var(--viz-line);
+  border-left-width: 3px;
+  border-radius: 8px;
+  background: var(--viz-surface-2);
+  color: var(--viz-ink);
+  text-align: left;
+  cursor: pointer;
+  overflow: hidden;
+}
+
+.graph-node:hover {
+  background: #1d2530;
+}
+
+.graph-node.is-root {
+  border-color: #4d5766;
+  border-left-color: var(--series-1);
+  background: #1a212b;
+}
+
+.graph-node-good { border-left-color: var(--status-good); }
+.graph-node-warning { border-left-color: var(--status-warning); }
+.graph-node-serious { border-left-color: var(--status-serious); }
+.graph-node-critical { border-left-color: var(--status-critical); }
+
+.graph-kind {
+  font-size: 9.5px;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--viz-muted);
+}
+
+.graph-name {
+  font-size: 11.5px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.graph-detail {
+  font-size: 10.5px;
+  color: var(--viz-ink-2);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.graph-problems {
+  list-style: none;
+  margin: 18px 0 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.graph-problems li {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-wrap: wrap;
+  font-size: 11.5px;
+  color: var(--viz-ink-2);
+}
+
+.graph-problems em {
+  font-style: normal;
+  color: #ff9b95;
+}

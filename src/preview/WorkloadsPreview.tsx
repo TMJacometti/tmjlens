@@ -1,6 +1,9 @@
-import { useState } from 'react';
+import { useEffect, useState } from 'react';
+import { invoke } from '@tauri-apps/api/core';
 import { WorkloadsPage } from '../components/workloads/WorkloadsPage';
 import { DeploymentDetailPanel } from '../components/workloads/DeploymentDetailPanel';
+import { WorkloadInventoryTable } from '../components/workloads/WorkloadInventoryTable';
+import type { WorkloadInventory } from '../types/workload-list';
 
 /**
  * The modernised workloads screen against fixtures, with a deployment whose rollout
@@ -25,6 +28,8 @@ const DEPLOYMENTS = [
 
 export function WorkloadsPreview() {
   const [view, setView] = useState<'Pods' | 'Deployments'>('Deployments');
+  const [inventory, setInventory] = useState<WorkloadInventory | null>(null);
+  useEffect(() => { void invoke<WorkloadInventory>('list_workloads').then(setInventory); }, []);
   const [pod, setPod] = useState('');
   const [deployment, setDeployment] = useState('fraud-scoring');
 
@@ -52,6 +57,8 @@ export function WorkloadsPreview() {
         onScaleDeployment={() => undefined}
         onRestartDeployment={() => undefined}
         onExportDeployment={() => undefined}
+        podsLive
+        controllers={<WorkloadInventoryTable inventory={inventory} loading={false} error="" selected="" canDelete onSelect={() => undefined} onEditYaml={() => undefined} onDelete={() => undefined} onExportYaml={() => undefined} />}
       />
       {deployment && (
         <DeploymentDetailPanel

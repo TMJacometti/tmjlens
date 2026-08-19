@@ -63,27 +63,27 @@ A secret management platform. A CI/CD system. Automatic destructive remediation.
 - [x] Real namespace listing
 
 ## v0.2 Kubernetes core
-- [ ] Generic resource abstraction
+- [x] Generic resource abstraction
 - [x] Pod list with status, readiness, and age
-- [ ] Pod watch
+- [x] Pod watch
 - [x] Deployment list with replica status
-- [ ] StatefulSet/DaemonSet list/watch
+- [x] StatefulSet, DaemonSet, Job, CronJob and unmanaged ReplicaSet listing
 - [x] Events list and namespace event view
-- [ ] Logs streaming
+- [x] Logs streaming, cancellable, with timestamps and previous
 - [x] Bounded pod log retrieval
-- [x] YAML editor for Pods
-- [x] Server-side apply for Pods and Deployments
+- [x] YAML editor with diff review for Pods, workloads, Services and Ingresses
+- [x] Save through replace, preserving field ownership and detecting conflicts
 - [x] RBAC capability discovery for current MVP actions
 
 ## v0.3 Operations
 - [x] Restart workload
 - [x] Scale and delete workloads
 - [x] Log export
-- [ ] Port-forward
-- [ ] Exec with explicit RBAC permission
-- [ ] Command palette
-- [ ] Global resource search
-- [ ] Resource relation graph
+- [x] Port-forward, loopback only
+- [x] Exec with explicit RBAC permission
+- [x] Command palette
+- [x] Global resource search
+- [x] Resource relation graph
 
 ## v0.4 Cluster overview and cloud context
 - [x] Provider detection: EKS, AKS, GKE, or plain Kubernetes

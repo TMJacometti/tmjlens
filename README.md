@@ -97,11 +97,20 @@ scaffolding. This table is the honest state, not the roadmap.
 | Node operations (cordon, drain, delete) with RBAC gating | ✅ Working |
 | Workload operations (scale, rollout restart, delete) | ✅ Working |
 | YAML view and server-side apply (Pods, Deployments) | ✅ Working |
-| Live log follow (cancellable streams) | 🚧 Planned |
-| Resource relation graph, command palette, global search | 🚧 Planned |
+| Live log follow (cancellable streams) | ✅ Working |
+| Live pod watch, port-forward, container exec | ✅ Working |
+| Resource relation graph, command palette, global search | ✅ Working |
+| Network: services, endpoints, ingresses, classes, policies | ✅ Working |
+| Velero: backups, restores, schedules, storage locations | ✅ Working |
+| Configuration: maps, secrets, quotas, budgets, admission webhooks | ✅ Working |
+| Storage: claims, volumes, classes, and what is provisioned but idle | ✅ Working |
+| Namespaces, including ones stuck Terminating and why | ✅ Working |
+| Seven reports: deploys, changes, idle cost, upgrade readiness, security, images, drift | ✅ Working |
+| CSV export of any report | ✅ Working |
+| Executive PDF report, environment marking (prod/staging) | ✅ Working |
 | EC2 correlation, load balancer and storage context | 🚧 Planned |
 | Plugin SDK (Helm, Argo CD, Vault, Prometheus, Grafana) | 🚧 Planned |
-| Network, Storage, Configuration screens | 🚧 Scaffolded only |
+
 
 See [docs/ROADMAP.md](docs/ROADMAP.md) for the full plan.
 
@@ -109,7 +118,14 @@ See [docs/ROADMAP.md](docs/ROADMAP.md) for the full plan.
 
 - **No credential storage.** tmjLens never writes Kubernetes tokens, cloud credentials,
   or Secret values to disk. It uses your existing kubeconfig and your cloud provider's
-  own credential chain.
+  own credential chain. When a cloud session expires, the app says so and points you at
+  your provider's CLI, because the sign-in can only happen there.
+- **Secrets stay in the cluster.** The Configuration screen lists secret key names and
+  sizes but carries no values. A value is read only when you ask for that one key, and
+  the screen has no export — a Secret written to a file is a credential in the clear.
+- **No object storage access.** The Velero screen reads Velero's own custom resources
+  through the Kubernetes API. tmjLens holds no S3, Blob or GCS credential; the bucket is
+  reached by Velero, not by this app.
 - **Kubernetes RBAC is the only authority.** The UI hides actions it knows are
   unauthorized, but never grants anything; a `403` is handled as an expected state.
 - **Secret values are hidden by default**, even when technically readable.

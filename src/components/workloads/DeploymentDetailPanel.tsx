@@ -2,10 +2,11 @@ import { useEffect, useState } from 'react';
 import { invoke } from '@tauri-apps/api/core';
 import { Download, X } from 'lucide-react';
 import { DataTable, SeverityBadge } from '../cluster/charts';
+import { RelationGraph, type RelationGraphData } from '../graph/RelationGraph';
 import type { DeploymentDetail } from '../../types/workloads';
 import type { Severity } from '../../types/cluster';
 
-type Tab = 'Overview' | 'Events' | 'Containers' | 'YAML';
+type Tab = 'Overview' | 'Relations' | 'Events' | 'Containers' | 'YAML';
 
 type Props = {
   context: string;
@@ -30,11 +31,13 @@ export function DeploymentDetailPanel({
   const [tab, setTab] = useState<Tab>('Overview');
   const [detail, setDetail] = useState<DeploymentDetail | null>(null);
   const [yaml, setYaml] = useState('');
+  const [graph, setGraph] = useState<RelationGraphData | null>(null);
   const [error, setError] = useState('');
 
   useEffect(() => {
     setDetail(null);
     setYaml('');
+    setGraph(null);
     setError('');
     void invoke<DeploymentDetail>('get_deployment_detail', { context, namespace, deploymentName })
       .then(setDetail)
@@ -43,6 +46,14 @@ export function DeploymentDetailPanel({
 
   // The YAML is fetched only when asked for: it is the whole server document and
   // there is no reason to pull it for someone who opened the panel to read events.
+  // The graph costs several lists, so it is built only when the tab is opened.
+  useEffect(() => {
+    if (tab !== 'Relations' || graph) return;
+    void invoke<RelationGraphData>('get_relation_graph', { context, namespace, deploymentName })
+      .then(setGraph)
+      .catch((cause) => setError(String(cause)));
+  }, [tab, graph, context, namespace, deploymentName]);
+
   useEffect(() => {
     if (tab !== 'YAML' || yaml) return;
     void invoke<string>('export_deployment_yaml', { context, namespace, deploymentName })
@@ -74,7 +85,7 @@ export function DeploymentDetailPanel({
       </header>
 
       <nav className="wl-tabs">
-        {(['Overview', 'Events', 'Containers', 'YAML'] as Tab[]).map((entry) => (
+        {(['Overview', 'Relations', 'Events', 'Containers', 'YAML'] as Tab[]).map((entry) => (
           <button key={entry} type="button" className={tab === entry ? 'is-active' : ''} onClick={() => setTab(entry)}>
             {entry}
             {entry === 'Events' && warnings > 0 && <span className="viz-count">{warnings}</span>}
@@ -88,6 +99,7 @@ export function DeploymentDetailPanel({
       {!detail && !error && <div className="viz-empty">Reading deployment…</div>}
 
       {detail && tab === 'Overview' && <Overview detail={detail} />}
+      {tab === 'Relations' && (graph ? <RelationGraph data={graph} /> : <div className="viz-empty">Walking the graph…</div>)}
       {detail && tab === 'Events' && <Events detail={detail} />}
       {detail && tab === 'Containers' && <Containers detail={detail} onOpenLogs={onOpenLogs} />}
       {tab === 'YAML' && <Yaml body={yaml} />}

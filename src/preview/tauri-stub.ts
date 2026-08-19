@@ -128,14 +128,107 @@ status:
   loadBalancer: {}
 `;
 
-type Internals = { invoke: (command: string, args?: unknown) => Promise<unknown> };
+const WORKLOAD_INVENTORY = {
+  rows: [
+    { kind: 'Deployment', name: 'fraud-scoring', namespace: 'payments', ready: 1, desired: 4, unit: 'replicas', detail: '1 of 4 replicas ready', health: 'serious', suspended: false, images: ['registry.internal/fraud:2.14.0', 'envoyproxy/envoy:v1.29.1'], age: '12d' },
+    { kind: 'StatefulSet', name: 'postgres', namespace: 'payments', ready: 0, desired: 2, unit: 'replicas', detail: '0 of 2 replicas ready, in order', health: 'critical', suspended: false, images: ['postgres:16.3'], age: '90d' },
+    { kind: 'DaemonSet', name: 'fluent-bit', namespace: 'payments', ready: 5, desired: 7, unit: 'nodes', detail: '5 of 7 eligible nodes ready, 1 misscheduled', health: 'serious', suspended: false, images: ['fluent/fluent-bit:3.0.7'], age: '210d' },
+    { kind: 'Job', name: 'ledger-backfill-29187360', namespace: 'payments', ready: 0, desired: 1, unit: 'completions', detail: '0 of 1 completions, 4 failed attempt(s)', health: 'critical', suspended: false, images: ['registry.internal/backfill:1.4.2'], age: '3h' },
+    { kind: 'CronJob', name: 'nightly-reconcile', namespace: 'payments', ready: 0, desired: 0, unit: 'active runs', detail: 'suspended · 0 3 * * * · last run 19h ago', health: 'warning', suspended: true, images: ['registry.internal/reconcile:3.1.0'], age: '120d' },
+    { kind: 'Deployment', name: 'checkout-api', namespace: 'payments', ready: 3, desired: 3, unit: 'replicas', detail: '3 of 3 replicas ready', health: 'good', suspended: false, images: ['registry.internal/checkout:5.2.1'], age: '31d' },
+    { kind: 'CronJob', name: 'hourly-export', namespace: 'payments', ready: 1, desired: 1, unit: 'active runs', detail: '0 * * * * · last run 12m ago', health: 'good', suspended: false, images: ['registry.internal/export:2.0.0'], age: '88d' },
+    { kind: 'Job', name: 'schema-migrate-29187100', namespace: 'payments', ready: 1, desired: 1, unit: 'completions', detail: 'completed 1 of 1', health: 'good', suspended: false, images: ['registry.internal/migrate:5.2.1'], age: '2d' },
+  ],
+  degraded_collectors: [],
+};
+
+/** A graph where the rollout is stuck for a reason the picture makes obvious:
+ *  the ConfigMap the pods mount does not exist. */
+const RELATION_GRAPH = {
+  root: 'Deployment/fraud-scoring',
+  namespace: 'payments',
+  nodes: [
+    { id: 'Ingress/payments-public', kind: 'Ingress', name: 'payments-public', tier: 0, health: 'good', detail: 'a1b2c3.elb.sa-east-1.amazonaws.com' },
+    { id: 'Service/fraud-scoring', kind: 'Service', name: 'fraud-scoring', tier: 1, health: 'critical', detail: '0 of 2 pods ready' },
+    { id: 'Deployment/fraud-scoring', kind: 'Deployment', name: 'fraud-scoring', tier: 2, health: 'serious', detail: '1/4 ready' },
+    { id: 'ReplicaSet/fraud-scoring-58f7c6d9b4', kind: 'ReplicaSet', name: 'fraud-scoring-58f7c6d9b4', tier: 3, health: 'serious', detail: '1/4 ready' },
+    { id: 'Pod/fraud-scoring-58f7c6d9b4-lm3nq', kind: 'Pod', name: 'fraud-scoring-58f7c6d9b4-lm3nq', tier: 4, health: 'critical', detail: 'CreateContainerConfigError' },
+    { id: 'Pod/fraud-scoring-58f7c6d9b4-w8ptr', kind: 'Pod', name: 'fraud-scoring-58f7c6d9b4-w8ptr', tier: 4, health: 'good', detail: '2/2 ready' },
+    { id: 'ConfigMap/fraud-rules', kind: 'ConfigMap', name: 'fraud-rules', tier: 5, health: 'critical', detail: 'missing' },
+    { id: 'Secret/fraud-credentials', kind: 'Secret', name: 'fraud-credentials', tier: 5, health: 'good', detail: 'present, values hidden' },
+    { id: 'PersistentVolumeClaim/fraud-cache', kind: 'PersistentVolumeClaim', name: 'fraud-cache', tier: 5, health: 'good', detail: 'Bound' },
+  ],
+  edges: [
+    { from: 'Ingress/payments-public', to: 'Service/fraud-scoring', relation: 'routes pay.example.com/fraud' },
+    { from: 'Service/fraud-scoring', to: 'Pod/fraud-scoring-58f7c6d9b4-lm3nq', relation: 'selects', broken: 'endpoint not ready' },
+    { from: 'Service/fraud-scoring', to: 'Pod/fraud-scoring-58f7c6d9b4-w8ptr', relation: 'selects' },
+    { from: 'Deployment/fraud-scoring', to: 'ReplicaSet/fraud-scoring-58f7c6d9b4', relation: 'owns' },
+    { from: 'ReplicaSet/fraud-scoring-58f7c6d9b4', to: 'Pod/fraud-scoring-58f7c6d9b4-lm3nq', relation: 'runs' },
+    { from: 'ReplicaSet/fraud-scoring-58f7c6d9b4', to: 'Pod/fraud-scoring-58f7c6d9b4-w8ptr', relation: 'runs' },
+    { from: 'Deployment/fraud-scoring', to: 'ConfigMap/fraud-rules', relation: 'mounts', broken: 'ConfigMap fraud-rules does not exist in this namespace' },
+    { from: 'Deployment/fraud-scoring', to: 'Secret/fraud-credentials', relation: 'mounts' },
+    { from: 'Deployment/fraud-scoring', to: 'PersistentVolumeClaim/fraud-cache', relation: 'mounts' },
+  ],
+  degraded_collectors: [],
+};
+
+const PORT_FORWARDS = [
+  { id: 'pf-a', namespace: 'payments', pod: 'checkout-api-7d9f8b6c4d-5kx2m', remote_port: 8080, local_port: 51234, local_address: '127.0.0.1', connections: 3 },
+  { id: 'pf-b', namespace: 'payments', pod: 'checkout-api-7d9f8b6c4d-5kx2m', remote_port: 8443, local_port: 51235, local_address: '127.0.0.1', connections: 0 },
+  { id: 'pf-c', namespace: 'payments', pod: 'postgres-0', remote_port: 5432, local_port: 55432, local_address: '127.0.0.1', connections: 1 },
+];
+
+type Internals = {
+  invoke: (command: string, args?: unknown) => Promise<unknown>;
+  transformCallback: (callback: (payload: unknown) => void, once?: boolean) => number;
+};
+
+/**
+ * Tauri delivers events by storing a callback on `window` under a generated id and
+ * calling it from the host. Reproducing that here is what lets the preview exercise
+ * the streaming log viewer, which is driven entirely by events rather than by invoke.
+ */
+const pendingCallbacks = new Map<number, (payload: unknown) => void>();
+const listeners = new Map<number, { event: string; handler: (payload: unknown) => void }>();
+let nextCallbackId = 1;
+
+export function emitPreviewEvent(event: string, payload: unknown) {
+  for (const [id, entry] of listeners) {
+    if (entry.event === event) entry.handler({ event, id, payload });
+  }
+}
+
+let streaming: ReturnType<typeof setInterval> | undefined;
+
+function startPreviewStream(streamId: string) {
+  stopPreviewStream();
+  let counter = 0;
+  streaming = setInterval(() => {
+    const lines = Array.from({ length: 3 }, () => {
+      counter += 1;
+      const level = counter % 11 === 0 ? 'WARN ' : counter % 17 === 0 ? 'ERROR' : 'INFO ';
+      return `2026-08-19T13:${String(counter % 60).padStart(2, '0')}:12.418Z ${level} [checkout] request ${counter} handled in ${8 + (counter % 40)}ms`;
+    });
+    emitPreviewEvent('pod-log', { stream_id: streamId, lines });
+  }, 350);
+}
+
+function stopPreviewStream() {
+  if (streaming) clearInterval(streaming);
+  streaming = undefined;
+}
 
 export function installTauriStub() {
   const host = window as unknown as { __TAURI_INTERNALS__?: Internals };
   if (host.__TAURI_INTERNALS__) return;
 
   host.__TAURI_INTERNALS__ = {
-    invoke: async (command) => {
+    transformCallback: (callback) => {
+      const id = nextCallbackId++;
+      pendingCallbacks.set(id, callback);
+      return id;
+    },
+    invoke: async (command, args) => {
       switch (command) {
         case 'read_kubeconfig':
           return KUBECONFIG;
@@ -148,7 +241,60 @@ export function installTauriStub() {
         case 'apply_resource_yaml':
           return SERVICE_YAML;
         case 'save_bytes_to_downloads':
-          return 'C:\Users\operator\Downloads\preview.yaml';
+          return 'C:\\Users\\operator\\Downloads\\preview.yaml';
+        case 'get_pod_logs':
+          return Array.from({ length: 40 }, (_, index) =>
+            `2026-08-19T12:${String(index % 60).padStart(2, '0')}:03.117Z INFO  [checkout] startup step ${index + 1} complete`,
+          ).join('\n');
+        case 'start_log_stream':
+          startPreviewStream((args as { streamId: string }).streamId);
+          return null;
+        case 'stop_log_stream':
+          stopPreviewStream();
+          return null;
+        case 'plugin:event|listen': {
+          const { event, handler } = args as { event: string; handler: number };
+          const stored = pendingCallbacks.get(handler);
+          if (stored) listeners.set(handler, { event, handler: stored });
+          return handler;
+        }
+        case 'plugin:event|unlisten': {
+          listeners.delete((args as { eventId: number }).eventId);
+          return null;
+        }
+        case 'list_workloads':
+          return WORKLOAD_INVENTORY;
+        case 'search_cluster': {
+          const q = String((args as { query: string }).query).toLowerCase();
+          const all = [
+            { kind: 'Deployment', name: 'checkout-api', namespace: 'payments', detail: '3/3 ready' },
+            { kind: 'Pod', name: 'checkout-api-7d9f8b6c4d-5kx2m', namespace: 'payments', detail: 'Running' },
+            { kind: 'Pod', name: 'checkout-api-7d9f8b6c4d-9wq8p', namespace: 'payments', detail: 'Running' },
+            { kind: 'Service', name: 'checkout-api', namespace: 'payments', detail: 'ClusterIP' },
+            { kind: 'Ingress', name: 'payments-public', namespace: 'payments', detail: 'class nginx' },
+            { kind: 'ConfigMap', name: 'checkout-config', namespace: 'payments', detail: '4 key(s)' },
+            { kind: 'Secret', name: 'checkout-credentials', namespace: 'payments', detail: '2 key(s), values hidden' },
+            { kind: 'StatefulSet', name: 'postgres', namespace: 'payments', detail: '0/2 ready' },
+            { kind: 'Node', name: 'ip-10-0-12-34', detail: 'Ready' },
+          ];
+          const hits = all
+            .filter((entry) => entry.name.toLowerCase().includes(q))
+            .map((entry) => ({ ...entry, rank: entry.name.toLowerCase() === q ? 0 : entry.name.toLowerCase().startsWith(q) ? 1 : 2 }))
+            .sort((a, b) => a.rank - b.rank || a.name.length - b.name.length);
+          return { query: q, hits, truncated: false, degraded_collectors: [] };
+        }
+        case 'get_relation_graph':
+          return RELATION_GRAPH;
+        case 'list_pod_ports':
+          return [
+            { container: 'checkout-api', name: 'http', port: 8080, protocol: 'TCP' },
+            { container: 'checkout-api', name: 'metrics', port: 9090, protocol: 'TCP' },
+            { container: 'envoy-sidecar', name: 'https', port: 8443, protocol: 'TCP' },
+          ];
+        case 'list_port_forwards':
+          return PORT_FORWARDS;
+        case 'open_forward_in_browser':
+          return 'http://127.0.0.1:51234';
         case 'load_settings':
           return { context_environments: {}, confirm_destructive_in_production: true };
         case 'save_settings':

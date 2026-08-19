@@ -1,0 +1,234 @@
+/*
+ * Velero screen. Built on the shared viz-* primitives and tokens so it reads as the
+ * same product as the cluster, workloads and network screens.
+ */
+.vel-page {
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+  padding-bottom: 40px;
+}
+
+.vel-page.is-refreshing {
+  opacity: 0.62;
+  transition: opacity 120ms ease-out;
+}
+
+.vel-kpis {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(190px, 1fr));
+  gap: 12px;
+}
+
+@media (min-width: 1100px) {
+  .vel-kpis {
+    grid-template-columns: repeat(4, 1fr);
+  }
+}
+
+.vel-toolbar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 14px;
+  flex-wrap: wrap;
+}
+
+.vel-toolbar-right {
+  display: flex;
+  align-items: center;
+  gap: 9px;
+}
+
+.vel-degraded {
+  margin: 6px 0 0;
+  padding-left: 18px;
+  font-size: 12px;
+}
+
+.vel-scope,
+.vel-bucket {
+  max-width: 260px;
+  overflow-wrap: anywhere;
+}
+
+/* A flagged backup carries its reason in words below the name, never colour alone. */
+.vel-caveat {
+  margin-top: 3px;
+  font-size: 11.5px;
+  color: var(--viz-warning-text, #e0b25a);
+  max-width: 320px;
+}
+
+.vel-expired {
+  color: var(--viz-critical-text, #e5736f);
+}
+
+.vel-soon {
+  color: var(--viz-warning-text, #e0b25a);
+}
+
+.vel-soon-note {
+  font-size: 11px;
+}
+
+.vel-paused,
+.vel-default {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  margin-left: 8px;
+  padding: 1px 7px;
+  border-radius: 99px;
+  border: 1px solid var(--viz-line, #272d37);
+  font-size: 10.5px;
+  color: var(--viz-muted);
+  white-space: nowrap;
+}
+
+.vel-note {
+  display: flex;
+  align-items: flex-start;
+  gap: 7px;
+  margin: 0;
+  font-size: 11.5px;
+  color: var(--viz-muted);
+  max-width: 720px;
+}
+
+/* ---------- dialogs ---------- */
+
+.vel-dialog {
+  width: min(680px, 100%);
+  max-height: 100%;
+  display: flex;
+  flex-direction: column;
+  background: #0f1319;
+  border: 1px solid #272d37;
+  border-radius: 10px;
+  box-shadow: 0 22px 60px #000a;
+  overflow: hidden;
+}
+
+/* A restore is the one action here that writes into a live cluster. */
+.vel-dialog-danger {
+  border-color: var(--viz-critical, #b3403c);
+}
+
+.vel-dialog h2 {
+  margin: 0 0 4px;
+  font-size: 15px;
+  overflow-wrap: anywhere;
+}
+
+.vel-dialog-body {
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+  padding: 18px;
+  overflow-y: auto;
+}
+
+.vel-dialog-foot {
+  display: flex;
+  justify-content: flex-end;
+  gap: 9px;
+  padding: 14px 18px;
+  border-top: 1px solid #272d37;
+}
+
+.vel-field {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  border: 0;
+  padding: 0;
+  margin: 0;
+  font-size: 12.5px;
+}
+
+.vel-field > span,
+.vel-field > legend {
+  font-size: 11px;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  color: var(--viz-muted);
+  padding: 0;
+}
+
+.vel-field small {
+  display: block;
+  margin-top: 3px;
+  font-size: 11.5px;
+  color: var(--viz-muted);
+  text-transform: none;
+  letter-spacing: 0;
+  line-height: 1.45;
+}
+
+.vel-field input[type='text'],
+.vel-field input:not([type]),
+.vel-field select {
+  padding: 7px 9px;
+  border-radius: 6px;
+  border: 1px solid #272d37;
+  background: #0b0e13;
+  color: inherit;
+  font-size: 12.5px;
+}
+
+.vel-radio,
+.vel-check {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+  font-size: 12.5px;
+  line-height: 1.45;
+  text-transform: none;
+  letter-spacing: 0;
+}
+
+.vel-radio input,
+.vel-check input {
+  margin-top: 2px;
+  flex: 0 0 auto;
+}
+
+/* A checkbox whose explanation runs to several lines. The text sits beside the box,
+   not above it as a field legend would. */
+.vel-check-block > span {
+  display: block;
+}
+
+.vel-check-block small {
+  display: block;
+  margin-top: 4px;
+  font-size: 11.5px;
+  color: var(--viz-muted);
+  line-height: 1.45;
+}
+
+.vel-ns-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(180px, 1fr));
+  gap: 6px 14px;
+  margin-top: 8px;
+  max-height: 190px;
+  overflow-y: auto;
+  padding: 8px;
+  border: 1px solid #272d37;
+  border-radius: 6px;
+  background: #0b0e13;
+}
+
+.vel-scope-note {
+  margin: 0;
+  font-size: 12.5px;
+}
+
+.vel-acknowledge {
+  padding: 11px 12px;
+  border: 1px solid var(--viz-critical, #b3403c);
+  border-radius: 6px;
+  background: #170f10;
+}

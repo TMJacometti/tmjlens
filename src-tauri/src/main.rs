@@ -1,8 +1,23 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
 mod cluster;
+mod configuration;
+mod exec;
+mod graph;
+mod insights;
+mod logs;
+mod namespaces;
 mod network;
+mod portforward;
+mod search;
+mod reports;
 mod settings;
+mod storage;
+mod streams;
+mod errors;
+mod velero;
+mod watch;
+mod workload_list;
 mod workloads;
 
 use kube::{
@@ -11,7 +26,8 @@ use kube::{
     Api, Client,
 };
 use k8s_openapi::api::{
-    apps::v1::Deployment,
+    apps::v1::{DaemonSet, Deployment, ReplicaSet, StatefulSet},
+    batch::v1::{CronJob, Job},
     authorization::v1::{ResourceAttributes, SelfSubjectAccessReview, SelfSubjectAccessReviewSpec},
     core::v1::{Event, Namespace, Node, Pod, Service},
     networking::v1::Ingress,
@@ -45,11 +61,40 @@ struct EventInfo {
 }
 
 #[derive(Serialize, Clone)]
-struct PodInfo {
-    name: String,
-    status: String,
-    ready: String,
-    age: String,
+pub struct PodInfo {
+    pub name: String,
+    pub status: String,
+    pub ready: String,
+    pub age: String,
+}
+
+/// The one place a Pod becomes a row. Shared so the list and the watch cannot drift
+/// into describing the same pod differently.
+pub(crate) fn pod_row(pod: Pod) -> Option<PodInfo> {
+    let name = pod.metadata.name.clone()?;
+    let status = pod
+        .status
+        .as_ref()
+        .and_then(|status| status.phase.clone())
+        .unwrap_or_else(|| "Unknown".to_string());
+    let (ready_count, total_count) = pod
+        .status
+        .as_ref()
+        .and_then(|status| status.container_statuses.as_ref())
+        .map(|statuses| (statuses.iter().filter(|container| container.ready).count(), statuses.len()))
+        .unwrap_or((0, pod.spec.as_ref().map(|spec| spec.containers.len()).unwrap_or(0)));
+
+    Some(PodInfo {
+        name,
+        status,
+        ready: format!("{ready_count}/{total_count}"),
+        age: pod
+            .metadata
+            .creation_timestamp
+            .as_ref()
+            .map(|timestamp| format_age(timestamp.0))
+            .unwrap_or_else(|| "n/a".to_string()),
+    })
 }
 
 #[derive(Serialize, Clone)]
@@ -66,14 +111,6 @@ struct NamespaceSnapshot {
     pods: Vec<PodInfo>,
     deployments: Vec<DeploymentInfo>,
     events: Vec<EventInfo>,
-}
-
-#[derive(Serialize, Clone)]
-struct CreatedTodayItem {
-    kind: String,
-    name: String,
-    namespace: Option<String>,
-    created_at: String,
 }
 
 pub(crate) fn format_age(created_at: chrono::DateTime<chrono::Utc>) -> String {
@@ -113,7 +150,7 @@ fn merge_patch_params() -> PatchParams {
 
 async fn client_for_context(context: &str) -> Result<Client, String> {
     let cache = CLIENT_CACHE.get_or_init(|| Mutex::new(HashMap::new()));
-    if let Some(client) = cache.lock().map_err(|e| e.to_string())?.get(context).cloned() {
+    if let Some(client) = cache.lock().map_err(|e| errors::humanize(&e.to_string()))?.get(context).cloned() {
         return Ok(client);
     }
 
@@ -125,14 +162,14 @@ async fn client_for_context(context: &str) -> Result<Client, String> {
         .await
         .map_err(|error| format!("Unable to load kubeconfig context '{context}': {error}"))?;
 
-    let client = Client::try_from(config).map_err(|error| error.to_string())?;
-    cache.lock().map_err(|e| e.to_string())?.insert(context.to_string(), client.clone());
+    let client = Client::try_from(config).map_err(|error| errors::humanize(&error.to_string()))?;
+    cache.lock().map_err(|e| errors::humanize(&e.to_string()))?.insert(context.to_string(), client.clone());
     Ok(client)
 }
 
 #[tauri::command]
 async fn current_context() -> Result<ContextInfo, String> {
-    let kubeconfig = kube::config::Kubeconfig::read().map_err(|e| e.to_string())?;
+    let kubeconfig = kube::config::Kubeconfig::read().map_err(|e| errors::humanize(&e.to_string()))?;
     let current = kubeconfig
         .current_context
         .clone()
@@ -146,7 +183,7 @@ async fn current_context() -> Result<ContextInfo, String> {
 
 #[tauri::command]
 async fn list_kube_contexts() -> Result<Vec<KubeContext>, String> {
-    let kubeconfig = kube::config::Kubeconfig::read().map_err(|e| e.to_string())?;
+    let kubeconfig = kube::config::Kubeconfig::read().map_err(|e| errors::humanize(&e.to_string()))?;
     let current = kubeconfig.current_context.clone();
 
     Ok(kubeconfig
@@ -168,7 +205,7 @@ async fn list_kube_contexts() -> Result<Vec<KubeContext>, String> {
 async fn list_namespaces(context: String) -> Result<Vec<String>, String> {
     let client = client_for_context(&context).await?;
     let api: Api<Namespace> = Api::all(client);
-    let namespaces = api.list(&ListParams::default()).await.map_err(|e| e.to_string())?;
+    let namespaces = api.list(&ListParams::default()).await.map_err(|e| errors::humanize(&e.to_string()))?;
 
     Ok(namespaces
         .items
@@ -181,32 +218,8 @@ async fn list_namespaces(context: String) -> Result<Vec<String>, String> {
 async fn list_pods(context: String, namespace: String) -> Result<Vec<PodInfo>, String> {
     let client = client_for_context(&context).await?;
     let api: Api<Pod> = Api::namespaced(client, &namespace);
-    let pods = api.list(&ListParams::default()).await.map_err(|e| e.to_string())?;
-    Ok(pods.items.into_iter().filter_map(|pod| {
-        let name = pod.metadata.name?;
-        let status = pod
-            .status
-            .as_ref()
-            .and_then(|status| status.phase.clone())
-            .unwrap_or_else(|| "Unknown".to_string());
-        let (ready_count, total_count) = pod
-            .status
-            .as_ref()
-            .and_then(|status| status.container_statuses.as_ref())
-            .map(|statuses| (statuses.iter().filter(|container| container.ready).count(), statuses.len()))
-            .unwrap_or((0, pod.spec.as_ref().map(|spec| spec.containers.len()).unwrap_or(0)));
-        let age = pod
-            .metadata
-            .creation_timestamp
-            .map(|timestamp| format_age(timestamp.0));
-
-        Some(PodInfo {
-            name: name.clone(),
-            status,
-            ready: format!("{ready_count}/{total_count}"),
-            age: age.unwrap_or_else(|| "n/a".to_string()),
-        })
-    }).collect())
+    let pods = api.list(&ListParams::default()).await.map_err(|e| errors::humanize(&e.to_string()))?;
+    Ok(pods.items.into_iter().filter_map(pod_row).collect())
 }
 
 #[tauri::command]
@@ -217,7 +230,7 @@ async fn list_pod_containers(
 ) -> Result<Vec<String>, String> {
     let client = client_for_context(&context).await?;
     let api: Api<Pod> = Api::namespaced(client, &namespace);
-    let pod = api.get(&pod_name).await.map_err(|e| e.to_string())?;
+    let pod = api.get(&pod_name).await.map_err(|e| errors::humanize(&e.to_string()))?;
 
     let containers = pod
         .spec
@@ -252,7 +265,7 @@ async fn get_pod_logs(
         ..LogParams::default()
     };
 
-    let logs = api.logs(&pod_name, &params).await.map_err(|e| e.to_string())?;
+    let logs = api.logs(&pod_name, &params).await.map_err(|e| errors::humanize(&e.to_string()))?;
     if let Some(max_lines) = tail_lines {
         let output = logs.lines().take(max_lines.max(1) as usize).collect::<Vec<_>>();
         Ok(output.join("\n"))
@@ -341,6 +354,9 @@ async fn save_to_downloads(
     app: tauri::AppHandle,
     file_name: String,
     contents: String,
+    // Without a dot. Constrained to a short alphanumeric word so the caller cannot
+    // steer the write to an arbitrary path or an executable suffix.
+    extension: Option<String>,
 ) -> Result<String, String> {
     use tauri::Manager;
 
@@ -349,7 +365,10 @@ async fn save_to_downloads(
         .download_dir()
         .map_err(|error| format!("Unable to locate the Downloads folder: {error}"))?;
     let stamp = chrono::Local::now().format("%Y%m%d-%H%M%S");
-    let target = directory.join(format!("{}-{stamp}.log", safe_file_stem(&file_name)));
+    let suffix = extension
+        .filter(|value| !value.is_empty() && value.len() <= 5 && value.chars().all(|c| c.is_ascii_alphanumeric()))
+        .unwrap_or_else(|| "log".to_string());
+    let target = directory.join(format!("{}-{stamp}.{suffix}", safe_file_stem(&file_name)));
 
     tokio::task::spawn_blocking(move || {
         if let Some(parent) = target.parent() {
@@ -416,6 +435,305 @@ async fn export_deployment_yaml(
     workloads::export_raw(client, &workloads::deployment_path(&namespace, &deployment_name)).await
 }
 
+/// Deleting a controller through one command rather than one per kind. Foreground
+/// propagation is the default so the pods go with it, which is what the operator means.
+#[tauri::command]
+async fn delete_workload(
+    context: String,
+    namespace: String,
+    kind: String,
+    name: String,
+) -> Result<(), String> {
+    let client = client_for_context(&context).await?;
+    let params = DeleteParams::foreground();
+
+    macro_rules! remove {
+        ($type:ty) => {{
+            let api: Api<$type> = Api::namespaced(client, &namespace);
+            api.delete(&name, &params).await.map_err(|e| errors::humanize(&e.to_string()))?;
+        }};
+    }
+
+    match kind.as_str() {
+        "Deployment" => remove!(Deployment),
+        "StatefulSet" => remove!(StatefulSet),
+        "DaemonSet" => remove!(DaemonSet),
+        "ReplicaSet" => remove!(ReplicaSet),
+        "Job" => remove!(Job),
+        "CronJob" => remove!(CronJob),
+        other => return Err(format!("Deleting a {other} is not implemented")),
+    }
+    Ok(())
+}
+
+/// Opens a shell. The command is chosen here rather than typed by the operator: a free
+/// command box would be a generic remote-execution field, which the spec lists as a
+/// non-goal. Interactive shells only, and only where `pods/exec` is granted.
+#[tauri::command]
+async fn start_exec_session(
+    app: tauri::AppHandle,
+    context: String,
+    namespace: String,
+    pod_name: String,
+    container: Option<String>,
+    shell: Option<String>,
+    session_id: String,
+) -> Result<(), String> {
+    let client = client_for_context(&context).await?;
+    let chosen = shell.unwrap_or_else(|| exec::SHELL_CANDIDATES[1].to_string());
+    if !exec::SHELL_CANDIDATES.contains(&chosen.as_str()) {
+        return Err(format!("{chosen} is not one of the shells this app will start."));
+    }
+    exec::start(app, client, namespace, pod_name, container, vec![chosen], session_id).await
+}
+
+#[tauri::command]
+async fn write_exec_session(session_id: String, data: String) -> Result<(), String> {
+    exec::write(&session_id, &data)
+}
+
+#[tauri::command]
+async fn stop_exec_session(session_id: String) -> Result<(), String> {
+    exec::stop(&session_id);
+    Ok(())
+}
+
+#[tauri::command]
+async fn list_pod_ports(
+    context: String,
+    namespace: String,
+    pod_name: String,
+) -> Result<Vec<portforward::PodPort>, String> {
+    let client = client_for_context(&context).await?;
+    portforward::pod_ports(client, &namespace, &pod_name).await
+}
+
+#[tauri::command]
+#[allow(clippy::too_many_arguments)]
+async fn start_port_forward(
+    app: tauri::AppHandle,
+    context: String,
+    namespace: String,
+    pod_name: String,
+    remote_port: u16,
+    local_port: Option<u16>,
+    forward_id: String,
+) -> Result<portforward::ActiveForward, String> {
+    let client = client_for_context(&context).await?;
+    portforward::start(
+        app,
+        client,
+        namespace,
+        pod_name,
+        remote_port,
+        local_port.unwrap_or(0),
+        forward_id,
+    )
+    .await
+}
+
+#[tauri::command]
+async fn stop_port_forward(forward_id: String) -> Result<(), String> {
+    portforward::stop(&forward_id);
+    Ok(())
+}
+
+/// Opens a forward this app owns in the system browser, by id. Never takes a URL.
+#[tauri::command]
+async fn open_forward_in_browser(forward_id: String) -> Result<String, String> {
+    portforward::open_in_browser(&forward_id).await
+}
+
+#[tauri::command]
+async fn list_port_forwards() -> Result<Vec<portforward::ActiveForward>, String> {
+    Ok(portforward::list())
+}
+
+#[tauri::command]
+async fn get_relation_graph(
+    context: String,
+    namespace: String,
+    deployment_name: String,
+) -> Result<graph::RelationGraph, String> {
+    let client = client_for_context(&context).await?;
+    graph::for_deployment(client, &namespace, &deployment_name).await
+}
+
+#[tauri::command]
+async fn get_configuration(
+    context: String,
+    namespace: String,
+) -> Result<configuration::ConfigurationOverview, String> {
+    let client = client_for_context(&context).await?;
+    configuration::overview(client, &namespace).await
+}
+
+/// One key, asked for explicitly. The list never carries values.
+#[tauri::command]
+async fn reveal_secret_key(
+    context: String,
+    namespace: String,
+    name: String,
+    key: String,
+) -> Result<configuration::RevealedValue, String> {
+    let client = client_for_context(&context).await?;
+    configuration::reveal_secret_key(client, &namespace, &name, &key).await
+}
+
+#[tauri::command]
+async fn read_config_map_key(
+    context: String,
+    namespace: String,
+    name: String,
+    key: String,
+) -> Result<configuration::RevealedValue, String> {
+    let client = client_for_context(&context).await?;
+    configuration::read_config_map_key(client, &namespace, &name, &key).await
+}
+
+#[tauri::command]
+async fn write_secret_key(
+    context: String,
+    namespace: String,
+    name: String,
+    key: String,
+    value: String,
+) -> Result<(), String> {
+    let client = client_for_context(&context).await?;
+    configuration::write_secret_key(client, &namespace, &name, &key, &value).await
+}
+
+#[tauri::command]
+async fn write_config_map_key(
+    context: String,
+    namespace: String,
+    name: String,
+    key: String,
+    value: String,
+) -> Result<(), String> {
+    let client = client_for_context(&context).await?;
+    configuration::write_config_map_key(client, &namespace, &name, &key, &value).await
+}
+
+#[tauri::command]
+async fn delete_configuration_key(
+    context: String,
+    namespace: String,
+    kind: String,
+    name: String,
+    key: String,
+) -> Result<(), String> {
+    let client = client_for_context(&context).await?;
+    configuration::delete_key(client, &namespace, &kind, &name, &key).await
+}
+
+/// Nothing is read until the caller names the namespaces it wants.
+#[tauri::command]
+async fn get_deploy_report(
+    context: String,
+    namespaces: Vec<String>,
+    window: String,
+) -> Result<reports::DeployReport, String> {
+    let client = client_for_context(&context).await?;
+    reports::deployed(client, namespaces, &window).await
+}
+
+#[tauri::command]
+fn list_report_kinds() -> Vec<insights::ReportKind> {
+    insights::catalogue()
+}
+
+#[tauri::command]
+async fn run_report(
+    context: String,
+    report: String,
+    namespaces: Vec<String>,
+    window: String,
+    compare_context: Option<String>,
+) -> Result<insights::ReportResult, String> {
+    let client = client_for_context(&context).await?;
+    let other = match compare_context {
+        Some(name) if name != context => {
+            let other_client = client_for_context(&name).await?;
+            Some((other_client, context.clone(), name))
+        }
+        _ => None,
+    };
+    insights::run(client, other, &report, namespaces, &window).await
+}
+
+#[tauri::command]
+async fn get_namespace_overview(context: String) -> Result<namespaces::NamespaceOverview, String> {
+    let client = client_for_context(&context).await?;
+    namespaces::overview(client).await
+}
+
+#[tauri::command]
+async fn get_storage_overview(
+    context: String,
+    namespace: String,
+) -> Result<storage::StorageOverview, String> {
+    let client = client_for_context(&context).await?;
+    storage::overview(client, &namespace).await
+}
+
+#[tauri::command]
+async fn get_velero_status(
+    context: String,
+    velero_namespace: Option<String>,
+) -> Result<velero::VeleroStatus, String> {
+    let client = client_for_context(&context).await?;
+    velero::status(client, velero_namespace).await
+}
+
+#[tauri::command]
+#[allow(clippy::too_many_arguments)]
+async fn create_velero_backup(
+    context: String,
+    velero_namespace: String,
+    name: String,
+    included_namespaces: Vec<String>,
+    ttl_hours: u32,
+    storage_location: Option<String>,
+    include_volumes: bool,
+) -> Result<String, String> {
+    let client = client_for_context(&context).await?;
+    velero::create_backup(
+        client,
+        &velero_namespace,
+        &name,
+        included_namespaces,
+        ttl_hours,
+        storage_location,
+        include_volumes,
+    )
+    .await
+}
+
+#[tauri::command]
+async fn create_velero_restore(
+    context: String,
+    velero_namespace: String,
+    name: String,
+    backup_name: String,
+    included_namespaces: Vec<String>,
+) -> Result<String, String> {
+    let client = client_for_context(&context).await?;
+    velero::create_restore(client, &velero_namespace, &name, &backup_name, included_namespaces).await
+}
+
+#[tauri::command]
+async fn search_cluster(context: String, query: String) -> Result<search::SearchResults, String> {
+    let client = client_for_context(&context).await?;
+    search::search(client, &query).await
+}
+
+#[tauri::command]
+async fn list_workloads(context: String, namespace: String) -> Result<workload_list::WorkloadInventory, String> {
+    let client = client_for_context(&context).await?;
+    workload_list::collect(client, &namespace).await
+}
+
 #[tauri::command]
 async fn get_network_overview(context: String, namespace: String) -> Result<network::NetworkOverview, String> {
     let client = client_for_context(&context).await?;
@@ -423,10 +741,61 @@ async fn get_network_overview(context: String, namespace: String) -> Result<netw
 }
 
 #[tauri::command]
+#[allow(clippy::too_many_arguments)]
+async fn start_log_stream(
+    app: tauri::AppHandle,
+    context: String,
+    namespace: String,
+    pod_name: String,
+    container: Option<String>,
+    tail_lines: Option<i64>,
+    timestamps: Option<bool>,
+    previous: Option<bool>,
+    stream_id: String,
+) -> Result<(), String> {
+    let client = client_for_context(&context).await?;
+    logs::start(
+        app,
+        client,
+        namespace,
+        pod_name,
+        container,
+        tail_lines,
+        timestamps.unwrap_or(false),
+        previous.unwrap_or(false),
+        stream_id,
+    )
+    .await
+}
+
+#[tauri::command]
+async fn start_pod_watch(
+    app: tauri::AppHandle,
+    context: String,
+    namespace: String,
+    watch_id: String,
+) -> Result<(), String> {
+    let client = client_for_context(&context).await?;
+    watch::start_pods(app, client, namespace, watch_id).await
+}
+
+#[tauri::command]
+async fn stop_pod_watch(watch_id: String) -> Result<(), String> {
+    watch::stop(&watch_id);
+    Ok(())
+}
+
+#[tauri::command]
+async fn stop_log_stream(stream_id: String) -> Result<(), String> {
+    logs::stop(&stream_id);
+    Ok(())
+}
+
+#[tauri::command]
 async fn delete_pod(context: String, namespace: String, pod_name: String) -> Result<(), String> {
     let client = client_for_context(&context).await?;
     let api: Api<Pod> = Api::namespaced(client, &namespace);
-    api.delete(&pod_name, &DeleteParams::default()).await.map_err(|e| e.to_string())?;
+    api.delete(&pod_name, &DeleteParams::default()).await.map_err(|e| errors::humanize(&e.to_string()))?;
     Ok(())
 }
 
@@ -441,24 +810,44 @@ async fn get_resource_yaml(
     let yaml = match resource_kind.as_str() {
         "Pod" => {
             let api: Api<Pod> = Api::namespaced(client, &namespace);
-            serde_yaml::to_string(&api.get(&resource_name).await.map_err(|e| e.to_string())?)
+            serde_yaml::to_string(&api.get(&resource_name).await.map_err(|e| errors::humanize(&e.to_string()))?)
         }
         "Deployment" => {
             let api: Api<Deployment> = Api::namespaced(client, &namespace);
-            serde_yaml::to_string(&api.get(&resource_name).await.map_err(|e| e.to_string())?)
+            serde_yaml::to_string(&api.get(&resource_name).await.map_err(|e| errors::humanize(&e.to_string()))?)
+        }
+        "StatefulSet" => {
+            let api: Api<StatefulSet> = Api::namespaced(client, &namespace);
+            serde_yaml::to_string(&api.get(&resource_name).await.map_err(|e| errors::humanize(&e.to_string()))?)
+        }
+        "DaemonSet" => {
+            let api: Api<DaemonSet> = Api::namespaced(client, &namespace);
+            serde_yaml::to_string(&api.get(&resource_name).await.map_err(|e| errors::humanize(&e.to_string()))?)
+        }
+        "ReplicaSet" => {
+            let api: Api<ReplicaSet> = Api::namespaced(client, &namespace);
+            serde_yaml::to_string(&api.get(&resource_name).await.map_err(|e| errors::humanize(&e.to_string()))?)
+        }
+        "Job" => {
+            let api: Api<Job> = Api::namespaced(client, &namespace);
+            serde_yaml::to_string(&api.get(&resource_name).await.map_err(|e| errors::humanize(&e.to_string()))?)
+        }
+        "CronJob" => {
+            let api: Api<CronJob> = Api::namespaced(client, &namespace);
+            serde_yaml::to_string(&api.get(&resource_name).await.map_err(|e| errors::humanize(&e.to_string()))?)
         }
         "Service" => {
             let api: Api<Service> = Api::namespaced(client, &namespace);
-            serde_yaml::to_string(&api.get(&resource_name).await.map_err(|e| e.to_string())?)
+            serde_yaml::to_string(&api.get(&resource_name).await.map_err(|e| errors::humanize(&e.to_string()))?)
         }
         "Ingress" => {
             let api: Api<Ingress> = Api::namespaced(client, &namespace);
-            serde_yaml::to_string(&api.get(&resource_name).await.map_err(|e| e.to_string())?)
+            serde_yaml::to_string(&api.get(&resource_name).await.map_err(|e| errors::humanize(&e.to_string()))?)
         }
         _ => return Err(format!("YAML view is not implemented for {resource_kind}")),
     };
 
-    yaml.map_err(|e| e.to_string())
+    yaml.map_err(|e| errors::humanize(&e.to_string()))
 }
 
 #[tauri::command]
@@ -495,7 +884,7 @@ where
             _ => error.to_string(),
         })?;
 
-    serde_yaml::to_string(&updated).map_err(|error| error.to_string())
+    serde_yaml::to_string(&updated).map_err(|error| errors::humanize(&error.to_string()))
 }
 
 #[tauri::command]
@@ -513,6 +902,17 @@ async fn apply_resource_yaml(
         "Deployment" => {
             replace_from_yaml(Api::<Deployment>::namespaced(client, &namespace), &resource_name, &yaml).await
         }
+        "StatefulSet" => {
+            replace_from_yaml(Api::<StatefulSet>::namespaced(client, &namespace), &resource_name, &yaml).await
+        }
+        "DaemonSet" => {
+            replace_from_yaml(Api::<DaemonSet>::namespaced(client, &namespace), &resource_name, &yaml).await
+        }
+        "ReplicaSet" => {
+            replace_from_yaml(Api::<ReplicaSet>::namespaced(client, &namespace), &resource_name, &yaml).await
+        }
+        "Job" => replace_from_yaml(Api::<Job>::namespaced(client, &namespace), &resource_name, &yaml).await,
+        "CronJob" => replace_from_yaml(Api::<CronJob>::namespaced(client, &namespace), &resource_name, &yaml).await,
         "Service" => {
             replace_from_yaml(Api::<Service>::namespaced(client, &namespace), &resource_name, &yaml).await
         }
@@ -530,6 +930,9 @@ async fn check_permission(
     verb: String,
     resource: String,
     subresource: Option<String>,
+    // Empty means the core API group, which is what every built-in resource the app
+    // checks lives in. Custom resources such as Velero's must name their group.
+    group: Option<String>,
 ) -> Result<bool, String> {
     let client = client_for_context(&context).await?;
     let api: Api<SelfSubjectAccessReview> = Api::all(client);
@@ -540,6 +943,7 @@ async fn check_permission(
                 resource: Some(resource),
                 subresource,
                 verb: Some(verb),
+                group,
                 version: Some("v1".to_string()),
                 ..Default::default()
             }),
@@ -547,7 +951,7 @@ async fn check_permission(
         },
         ..Default::default()
     };
-    let result = api.create(&kube::api::PostParams::default(), &review).await.map_err(|e| e.to_string())?;
+    let result = api.create(&kube::api::PostParams::default(), &review).await.map_err(|e| errors::humanize(&e.to_string()))?;
     Ok(result.status.map(|status| status.allowed).unwrap_or(false))
 }
 
@@ -555,7 +959,7 @@ async fn check_permission(
 async fn list_deployments(context: String, namespace: String) -> Result<Vec<DeploymentInfo>, String> {
     let client = client_for_context(&context).await?;
     let api: Api<Deployment> = Api::namespaced(client, &namespace);
-    let deployments = api.list(&ListParams::default()).await.map_err(|e| e.to_string())?;
+    let deployments = api.list(&ListParams::default()).await.map_err(|e| errors::humanize(&e.to_string()))?;
 
     Ok(deployments.items.into_iter().filter_map(|deployment| {
         let name = deployment.metadata.name?;
@@ -582,7 +986,7 @@ async fn list_namespace_snapshot(context: String, namespace: String) -> Result<N
         pods_api.list(&params),
         deployments_api.list(&params),
         events_api.list(&params),
-    ).map_err(|e| e.to_string())?;
+    ).map_err(|e| errors::humanize(&e.to_string()))?;
 
     let pod_infos = pods.items.into_iter().filter_map(|pod| {
         let name = pod.metadata.name?;
@@ -620,68 +1024,11 @@ async fn list_namespace_snapshot(context: String, namespace: String) -> Result<N
     Ok(NamespaceSnapshot { pods: pod_infos, deployments: deployment_infos, events: event_infos })
 }
 
-#[tauri::command]
-async fn list_created_today(context: String) -> Result<Vec<CreatedTodayItem>, String> {
-    let client = client_for_context(&context).await?;
-    let pods_api: Api<Pod> = Api::all(client.clone());
-    let deployments_api: Api<Deployment> = Api::all(client.clone());
-    let events_api: Api<Event> = Api::all(client.clone());
-    let namespaces_api: Api<Namespace> = Api::all(client);
-    let today = chrono::Local::now().date_naive();
-    let params = ListParams::default();
-    let (pods, deployments, events, namespaces) = tokio::join!(
-        pods_api.list(&params),
-        deployments_api.list(&params),
-        events_api.list(&params),
-        namespaces_api.list(&params),
-    );
-    let mut items = Vec::new();
-
-    if let Ok(list) = pods {
-        for pod in list.items {
-            if let (Some(name), Some(created_at)) = (pod.metadata.name, pod.metadata.creation_timestamp) {
-                if created_at.0.with_timezone(&chrono::Local).date_naive() == today {
-                    items.push(CreatedTodayItem { kind: "Pod".to_string(), name, namespace: pod.metadata.namespace, created_at: created_at.0.to_rfc3339() });
-                }
-            }
-        }
-    }
-    if let Ok(list) = deployments {
-        for deployment in list.items {
-            if let (Some(name), Some(created_at)) = (deployment.metadata.name, deployment.metadata.creation_timestamp) {
-                if created_at.0.with_timezone(&chrono::Local).date_naive() == today {
-                    items.push(CreatedTodayItem { kind: "Deployment".to_string(), name, namespace: deployment.metadata.namespace, created_at: created_at.0.to_rfc3339() });
-                }
-            }
-        }
-    }
-    if let Ok(list) = events {
-        for event in list.items {
-            if let (Some(name), Some(created_at)) = (event.involved_object.name.or(event.metadata.name), event.metadata.creation_timestamp) {
-                if created_at.0.with_timezone(&chrono::Local).date_naive() == today {
-                    items.push(CreatedTodayItem { kind: "Event".to_string(), name, namespace: event.metadata.namespace, created_at: created_at.0.to_rfc3339() });
-                }
-            }
-        }
-    }
-    if let Ok(list) = namespaces {
-        for namespace in list.items {
-            if let (Some(name), Some(created_at)) = (namespace.metadata.name, namespace.metadata.creation_timestamp) {
-                if created_at.0.with_timezone(&chrono::Local).date_naive() == today {
-                    items.push(CreatedTodayItem { kind: "Namespace".to_string(), name, namespace: None, created_at: created_at.0.to_rfc3339() });
-                }
-            }
-        }
-    }
-
-    items.sort_by(|left, right| right.created_at.cmp(&left.created_at));
-    Ok(items)
-}
 
 #[tauri::command]
 async fn get_cluster_overview(context: String) -> Result<cluster::ClusterOverview, String> {
     let options = KubeConfigOptions { context: Some(context.clone()), ..Default::default() };
-    let config = Config::from_kubeconfig(&options).await.map_err(|e| e.to_string())?;
+    let config = Config::from_kubeconfig(&options).await.map_err(|e| errors::humanize(&e.to_string()))?;
     let endpoint = config.cluster_url.to_string();
     let client = client_for_context(&context).await?;
     let mut overview = cluster::collect(&context, endpoint, client).await?;
@@ -706,7 +1053,7 @@ async fn set_node_schedulable(context: String, node_name: String, schedulable: b
     let client = client_for_context(&context).await?;
     let api: Api<Node> = Api::all(client);
     let patch = Patch::Merge(json!({ "spec": { "unschedulable": !schedulable } }));
-    api.patch(&node_name, &merge_patch_params(), &patch).await.map_err(|e| e.to_string())?;
+    api.patch(&node_name, &merge_patch_params(), &patch).await.map_err(|e| errors::humanize(&e.to_string()))?;
     Ok(())
 }
 
@@ -714,7 +1061,7 @@ async fn set_node_schedulable(context: String, node_name: String, schedulable: b
 async fn delete_node(context: String, node_name: String) -> Result<(), String> {
     let client = client_for_context(&context).await?;
     let api: Api<Node> = Api::all(client);
-    api.delete(&node_name, &DeleteParams::default()).await.map_err(|e| e.to_string())?;
+    api.delete(&node_name, &DeleteParams::default()).await.map_err(|e| errors::humanize(&e.to_string()))?;
     Ok(())
 }
 
@@ -766,7 +1113,7 @@ async fn delete_deployment(
 ) -> Result<(), String> {
     let client = client_for_context(&context).await?;
     let api: Api<Deployment> = Api::namespaced(client, &namespace);
-    api.delete(&deployment_name, &DeleteParams::default()).await.map_err(|e| e.to_string())?;
+    api.delete(&deployment_name, &DeleteParams::default()).await.map_err(|e| errors::humanize(&e.to_string()))?;
     Ok(())
 }
 
@@ -784,7 +1131,7 @@ async fn scale_deployment(
     let client = client_for_context(&context).await?;
     let api: Api<Deployment> = Api::namespaced(client, &namespace);
     let patch = Patch::Merge(json!({"spec": {"replicas": replicas}}));
-    api.patch(&deployment_name, &merge_patch_params(), &patch).await.map_err(|e| e.to_string())?;
+    api.patch(&deployment_name, &merge_patch_params(), &patch).await.map_err(|e| errors::humanize(&e.to_string()))?;
     Ok(())
 }
 
@@ -809,7 +1156,7 @@ async fn restart_deployment(
         }
     }));
 
-    api.patch(&deployment_name, &merge_patch_params(), &patch).await.map_err(|e| e.to_string())?;
+    api.patch(&deployment_name, &merge_patch_params(), &patch).await.map_err(|e| errors::humanize(&e.to_string()))?;
     Ok(())
 }
 
@@ -817,7 +1164,7 @@ async fn restart_deployment(
 async fn list_events(context: String, namespace: String) -> Result<Vec<EventInfo>, String> {
     let client = client_for_context(&context).await?;
     let api: Api<Event> = Api::namespaced(client, &namespace);
-    let events = api.list(&ListParams::default()).await.map_err(|e| e.to_string())?;
+    let events = api.list(&ListParams::default()).await.map_err(|e| errors::humanize(&e.to_string()))?;
 
     Ok(events
         .items
@@ -857,6 +1204,10 @@ fn main() {
             list_pods,
             list_pod_containers,
             get_pod_logs,
+            start_log_stream,
+            stop_log_stream,
+            start_pod_watch,
+            stop_pod_watch,
             delete_pod,
             get_resource_yaml,
             apply_resource_yaml,
@@ -864,9 +1215,34 @@ fn main() {
             list_deployments,
             get_deployment_detail,
             get_network_overview,
+            list_workloads,
+            search_cluster,
+            get_configuration,
+            get_storage_overview,
+            get_deploy_report,
+            get_namespace_overview,
+            list_report_kinds,
+            run_report,
+            reveal_secret_key,
+            read_config_map_key,
+            write_secret_key,
+            write_config_map_key,
+            delete_configuration_key,
+            get_velero_status,
+            create_velero_backup,
+            create_velero_restore,
+            get_relation_graph,
+            start_exec_session,
+            write_exec_session,
+            stop_exec_session,
+            list_pod_ports,
+            start_port_forward,
+            stop_port_forward,
+            list_port_forwards,
+            open_forward_in_browser,
+            delete_workload,
             export_deployment_yaml,
             list_namespace_snapshot,
-            list_created_today,
             get_cluster_overview,
             set_node_schedulable,
             delete_node,
@@ -876,8 +1252,18 @@ fn main() {
             restart_deployment,
             list_events
         ])
-        .run(tauri::generate_context!())
-        .expect("error while running tmjLens");
+        .build(tauri::generate_context!())
+        .expect("error while building tmjLens")
+        .run(|_app, event| {
+            // Closing the window must end every stream; a follow left running would
+            // keep the API server writing output into a process that is going away.
+            if let tauri::RunEvent::ExitRequested { .. } | tauri::RunEvent::Exit = event {
+                logs::stop_all();
+                watch::stop_all();
+                portforward::stop_all();
+                exec::stop_all();
+            }
+        });
 }
 
 #[cfg(test)]
