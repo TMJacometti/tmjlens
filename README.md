@@ -105,7 +105,8 @@ scaffolding. This table is the honest state, not the roadmap.
 | Configuration: maps, secrets, quotas, budgets, admission webhooks | ✅ Working |
 | Storage: claims, volumes, classes, and what is provisioned but idle | ✅ Working |
 | Namespaces, including ones stuck Terminating and why | ✅ Working |
-| Deploy report: what landed today, per namespace, on demand | ✅ Working |
+| Seven reports: deploys, changes, idle cost, upgrade readiness, security, images, drift | ✅ Working |
+| CSV export of any report | ✅ Working |
 | Executive PDF report, environment marking (prod/staging) | ✅ Working |
 | EC2 correlation, load balancer and storage context | 🚧 Planned |
 | Plugin SDK (Helm, Argo CD, Vault, Prometheus, Grafana) | 🚧 Planned |

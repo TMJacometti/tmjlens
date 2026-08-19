@@ -4,6 +4,7 @@ mod cluster;
 mod configuration;
 mod exec;
 mod graph;
+mod insights;
 mod logs;
 mod namespaces;
 mod network;
@@ -638,6 +639,30 @@ async fn get_deploy_report(
 }
 
 #[tauri::command]
+fn list_report_kinds() -> Vec<insights::ReportKind> {
+    insights::catalogue()
+}
+
+#[tauri::command]
+async fn run_report(
+    context: String,
+    report: String,
+    namespaces: Vec<String>,
+    window: String,
+    compare_context: Option<String>,
+) -> Result<insights::ReportResult, String> {
+    let client = client_for_context(&context).await?;
+    let other = match compare_context {
+        Some(name) if name != context => {
+            let other_client = client_for_context(&name).await?;
+            Some((other_client, context.clone(), name))
+        }
+        _ => None,
+    };
+    insights::run(client, other, &report, namespaces, &window).await
+}
+
+#[tauri::command]
 async fn get_namespace_overview(context: String) -> Result<namespaces::NamespaceOverview, String> {
     let client = client_for_context(&context).await?;
     namespaces::overview(client).await
@@ -1196,6 +1221,8 @@ fn main() {
             get_storage_overview,
             get_deploy_report,
             get_namespace_overview,
+            list_report_kinds,
+            run_report,
             reveal_secret_key,
             read_config_map_key,
             write_secret_key,

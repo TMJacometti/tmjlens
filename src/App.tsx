@@ -15,9 +15,10 @@ import { LogViewer } from './components/logs/LogViewer';
 import { PortForwardPanel } from './components/portforward/PortForwardPanel';
 import { ExecTerminal } from './components/exec/ExecTerminal';
 import type { NetworkOverview } from './types/network';
-import { DeployReportPage } from './components/reports/DeployReportPage';
+import { ReportsPage, type RunRequest } from './components/reports/ReportsPage';
 import { NamespacesPage } from './components/namespaces/NamespacesPage';
-import { DEPLOY_CSV_COLUMNS, type DeployReport, type NamespaceOverview } from './types/reports';
+import type { NamespaceOverview } from './types/reports';
+import { csvColumnsFor, type ReportKind, type ReportResult } from './types/insights';
 import { reportFileName, toCsv, withExcelBom } from './lib/csv';
 import { StoragePage } from './components/storage/StoragePage';
 import type { StorageOverview } from './types/storage';
@@ -50,9 +51,11 @@ export function App() {
   const [isLoadingInventory, setIsLoadingInventory] = useState(false);
   const [selectedDeployment, setSelectedDeployment] = useState('');
   const [isExportingDeployment, setIsExportingDeployment] = useState(false);
-  const [deployReport, setDeployReport] = useState<DeployReport | null>(null);
-  const [deployReportError, setDeployReportError] = useState('');
-  const [isLoadingDeployReport, setIsLoadingDeployReport] = useState(false);
+  const [reportKinds, setReportKinds] = useState<ReportKind[]>([]);
+  const [reportResult, setReportResult] = useState<ReportResult | null>(null);
+  const [reportError, setReportError] = useState('');
+  const [isRunningReport, setIsRunningReport] = useState(false);
+  const [lastReportScope, setLastReportScope] = useState<string[]>([]);
   const [namespaceOverview, setNamespaceOverview] = useState<NamespaceOverview | null>(null);
   const [namespaceError, setNamespaceError] = useState('');
   const [isLoadingNamespaces, setIsLoadingNamespaces] = useState(false);
@@ -264,28 +267,40 @@ export function App() {
     setSelectedContainer(container);
   };
 
-  /** Runs only when the operator picks namespaces and filters. Never on screen open. */
-  const runDeployReport = async (chosen: string[], window: string) => {
-    setIsLoadingDeployReport(true);
+  // The catalogue is defined in Rust and read once, so the two sides cannot drift.
+  useEffect(() => {
+    void invoke<ReportKind[]>('list_report_kinds').then(setReportKinds).catch(() => setReportKinds([]));
+  }, []);
+
+  /** Runs only when the operator chooses a report and its scope. Never on screen open. */
+  const runReport = async (request: RunRequest) => {
+    setIsRunningReport(true);
     try {
-      setDeployReport(await invoke<DeployReport>('get_deploy_report', { context, namespaces: chosen, window }));
-      setDeployReportError('');
+      setReportResult(await invoke<ReportResult>('run_report', {
+        context,
+        report: request.report,
+        namespaces: request.namespaces,
+        window: request.window,
+        compareContext: request.compareContext,
+      }));
+      setLastReportScope(request.namespaces);
+      setReportError('');
     } catch (error) {
-      setDeployReportError(String(error));
-      setDeployReport(null);
+      setReportError(String(error));
+      setReportResult(null);
     } finally {
-      setIsLoadingDeployReport(false);
+      setIsRunningReport(false);
     }
   };
 
   const [isExportingReport, setIsExportingReport] = useState(false);
 
-  const exportDeployReport = async (built: DeployReport) => {
+  const exportReport = async (built: ReportResult) => {
     setIsExportingReport(true);
     try {
-      const csv = withExcelBom(toCsv(DEPLOY_CSV_COLUMNS, built.items));
+      const csv = withExcelBom(toCsv(csvColumnsFor(built), built.rows));
       const path = await invoke<string>('save_to_downloads', {
-        fileName: reportFileName(`deploy-report-${built.window}`, built.namespaces),
+        fileName: reportFileName(built.id, lastReportScope),
         contents: csv,
         extension: 'csv',
       });
@@ -601,7 +616,7 @@ export function App() {
 
   const showEvents = active === 'Events';
   if (active === 'Reports') {
-    return <div className="app"><EnvironmentStripe environment={currentEnvironment}/><header className="topbar"><div className="brand"><span className="shark">🦈</span> tmjLens</div><span className="muted">{context}</span><div className="spacer"/><button className="selector" onClick={() => setActive('Workloads')}>Back to Workloads</button></header><main className="main report-screen"><div className="breadcrumbs">Cluster / {context} / Reports</div><div className="title-row"><div><h1>Deploy report</h1><p>What landed in <b>{context}</b>, for the namespaces you choose</p></div></div><DeployReportPage namespaces={namespaces} report={deployReport} loading={isLoadingDeployReport} error={deployReportError} onRun={(chosen, window) => void runDeployReport(chosen, window)} onExport={(built) => void exportDeployReport(built)} exporting={isExportingReport}/></main></div>;
+    return <div className="app"><EnvironmentStripe environment={currentEnvironment}/><header className="topbar"><div className="brand"><span className="shark">🦈</span> tmjLens</div><span className="muted">{context}</span><div className="spacer"/><button className="selector" onClick={() => setActive('Workloads')}>Back to Workloads</button></header><main className="main report-screen"><div className="breadcrumbs">Cluster / {context} / Reports</div><div className="title-row"><div><h1>Reports</h1><p>Seven questions about <b>{context}</b>, answered on demand</p></div></div><ReportsPage kinds={reportKinds} namespaces={namespaces} contexts={contexts} currentContext={context} result={reportResult} loading={isRunningReport} error={reportError} exporting={isExportingReport} onRun={(request) => void runReport(request)} onExport={(built) => void exportReport(built)}/></main></div>;
   }
   if (active === 'Cluster Overview') {
     return <div className="app"><EnvironmentStripe environment={currentEnvironment}/><header className="topbar"><div className="brand"><span className="shark">🦈</span> tmjLens</div><span className="muted">{context}</span><div className="spacer"/><button className="selector" onClick={() => setActive('Workloads')}>Back to Workloads</button></header><main className="main report-screen"><div className="breadcrumbs">Cluster / {context} / Overview</div><div className="title-row"><div><h1>Cluster Overview</h1><p>Cluster health, capacity, and node operations for <b>{context}</b></p></div></div><ClusterOverviewPage data={clusterOverview} loading={isLoadingCluster} error={clusterError} capabilities={nodeCapabilities} onRefresh={() => void loadClusterOverview()} onNodeAction={nodeAction} onGenerateReport={() => void generateReport()} generatingReport={isGeneratingReport}/></main></div>;

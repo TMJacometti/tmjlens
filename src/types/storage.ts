@@ -1,4 +1,4 @@
-import type { Severity } from '../components/cluster/charts';
+import type { Severity } from './cluster';
 
 export type ClaimInfo = {
   name: string;
