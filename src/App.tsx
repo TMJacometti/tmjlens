@@ -12,6 +12,8 @@ import type { WorkloadInventory, WorkloadRow } from './types/workload-list';
 import { NetworkPage } from './components/network/NetworkPage';
 import { YamlEditor } from './components/YamlEditor';
 import { LogViewer } from './components/logs/LogViewer';
+import { PortForwardPanel } from './components/portforward/PortForwardPanel';
+import { ExecTerminal } from './components/exec/ExecTerminal';
 import type { NetworkOverview } from './types/network';
 import { DeploymentDetailPanel } from './components/workloads/DeploymentDetailPanel';
 import { textToBase64 } from './lib/encoding';
@@ -29,7 +31,7 @@ type PodRow = { name: string; status: string; ready: string; age: string };
 type DeploymentRow = { name: string; ready: number; desired: number; available: number; age: string };
 type EventInfo = { reason: string; message: string; kind: string; name: string; timestamp?: string };
 type ReportItem = { kind: string; name: string; namespace?: string; created_at: string };
-type Capabilities = { deletePods: boolean; deleteDeployments: boolean; patchDeployments: boolean; patchPods: boolean; patchServices: boolean; patchIngresses: boolean };
+type Capabilities = { deletePods: boolean; deleteDeployments: boolean; patchDeployments: boolean; patchPods: boolean; patchServices: boolean; patchIngresses: boolean; portForward: boolean; podExec: boolean };
 
 export function App() {
   const [active, setActive] = useState('Workloads');
@@ -65,7 +67,7 @@ export function App() {
   const [showSettings, setShowSettings] = useState(false);
   const [showPalette, setShowPalette] = useState(false);
   const [isGeneratingReport, setIsGeneratingReport] = useState(false);
-  const [capabilities, setCapabilities] = useState<Capabilities>({ deletePods: false, deleteDeployments: false, patchDeployments: false, patchPods: false, patchServices: false, patchIngresses: false });
+  const [capabilities, setCapabilities] = useState<Capabilities>({ deletePods: false, deleteDeployments: false, patchDeployments: false, patchPods: false, patchServices: false, patchIngresses: false, portForward: false, podExec: false });
   const refreshGeneration = useRef(0);
 
   // Pods come from a live watch while the screen is showing them; the snapshot from
@@ -110,12 +112,12 @@ export function App() {
   };
 
   const refreshCapabilities = async (targetContext: string, targetNamespace: string) => {
-    const check = (verb: string, resource: string) => invoke<boolean>('check_permission', { context: targetContext, namespace: targetNamespace, verb, resource }).catch(() => false);
-    const [deletePods, deleteDeployments, patchDeployments, patchPods, patchServices, patchIngresses] = await Promise.all([
+    const check = (verb: string, resource: string, subresource?: string) => invoke<boolean>('check_permission', { context: targetContext, namespace: targetNamespace, verb, resource, subresource }).catch(() => false);
+    const [deletePods, deleteDeployments, patchDeployments, patchPods, patchServices, patchIngresses, portForward, podExec] = await Promise.all([
       check('delete', 'pods'), check('delete', 'deployments'), check('patch', 'deployments'), check('patch', 'pods'),
-      check('patch', 'services'), check('patch', 'ingresses'),
+      check('patch', 'services'), check('patch', 'ingresses'), check('create', 'pods', 'portforward'), check('create', 'pods', 'exec'),
     ]);
-    setCapabilities({ deletePods, deleteDeployments, patchDeployments, patchPods, patchServices, patchIngresses });
+    setCapabilities({ deletePods, deleteDeployments, patchDeployments, patchPods, patchServices, patchIngresses, portForward, podExec });
   };
 
   // Nodes are cluster-scoped, so the access review is sent with an empty namespace.
@@ -465,7 +467,7 @@ export function App() {
         selected={selectedDeployment ? `Deployment/${selectedDeployment}` : ''} canDelete={capabilities.deleteDeployments}
         onSelect={(row) => { if (row.kind === 'Deployment') { setSelectedDeployment(row.name); } else { setYamlTarget({ kind: row.kind, name: row.name }); } }}
         onEditYaml={(row) => setYamlTarget({ kind: row.kind, name: row.name })}
-        onDelete={(row) => void deleteWorkload(row)} onExportYaml={(row) => void exportWorkloadYaml(row)}/>}/>{selectedDeployment && <DeploymentDetailPanel context={context} namespace={namespace} deploymentName={selectedDeployment} onClose={() => setSelectedDeployment('')} onExport={() => void exportDeployment(selectedDeployment)} exporting={isExportingDeployment} onOpenLogs={openDeploymentLogs}/>}{showDetail && selectedPod && <PodDetail pod={pods.find((pod) => pod.name === selectedPod)} context={context} namespace={namespace} containers={containers} events={events} selectedContainer={selectedContainer} setSelectedContainer={setSelectedContainer} onOpenYaml={() => setYamlTarget({ kind: 'Pod', name: selectedPod })} onExport={exportLogs} onClose={() => setShowDetail(false)}/>}</> : <div className="empty"><ListTree size={32}/><h2>{active}</h2><p>This screen is scaffolded. The Kubernetes data layer will populate it.</p></div>}
+        onDelete={(row) => void deleteWorkload(row)} onExportYaml={(row) => void exportWorkloadYaml(row)}/>}/>{selectedDeployment && <DeploymentDetailPanel context={context} namespace={namespace} deploymentName={selectedDeployment} onClose={() => setSelectedDeployment('')} onExport={() => void exportDeployment(selectedDeployment)} exporting={isExportingDeployment} onOpenLogs={openDeploymentLogs}/>}{showDetail && selectedPod && <PodDetail pod={pods.find((pod) => pod.name === selectedPod)} context={context} namespace={namespace} containers={containers} events={events} selectedContainer={selectedContainer} setSelectedContainer={setSelectedContainer} onOpenYaml={() => setYamlTarget({ kind: 'Pod', name: selectedPod })} canForward={capabilities.portForward} canExec={capabilities.podExec} environmentWarning={currentEnvironment === 'production' ? `This context is marked Production. Commands run here affect real traffic.` : undefined} notify={notify} onExport={exportLogs} onClose={() => setShowDetail(false)}/>}</> : <div className="empty"><ListTree size={32}/><h2>{active}</h2><p>This screen is scaffolded. The Kubernetes data layer will populate it.</p></div>}
     </main></div>
     <Toast message={toast} onDismiss={() => setToast(null)}/>
     {yamlTarget && <YamlEditor context={context} namespace={namespace} kind={yamlTarget.kind} name={yamlTarget.name}
@@ -477,18 +479,22 @@ export function App() {
 }
 
 function EventsPanel({ events, onRefresh }: { events: EventInfo[]; onRefresh?: () => void }) { return <div className="panel events-panel"><div className="panel-head"><span>Events</span><div className="panel-actions"><span className="muted">{events.length} in namespace</span>{onRefresh && <button onClick={onRefresh}>Refresh</button>}</div></div>{events.length === 0 ? <div className="empty-inline">No events found.</div> : <div className="event-list">{events.map((event) => <article className="event" key={`${event.name}-${event.timestamp}`}><CircleAlert size={16}/><div><strong>{event.reason}</strong><span>{event.message}</span><small>{event.kind} / {event.name}{event.timestamp ? ` · ${event.timestamp}` : ''}</small></div></article>)}</div>}</div>; }
-function PodDetail({ pod, context, namespace, containers, events, selectedContainer, setSelectedContainer, onOpenYaml, onExport, onClose }: { pod?: PodRow; context: string; namespace: string; containers: string[]; events: EventInfo[]; selectedContainer: string; setSelectedContainer: (name: string) => void; onOpenYaml: () => void; onExport: () => void; onClose: () => void }) {
-  const [tab, setTab] = useState<'Logs' | 'YAML' | 'Overview' | 'Events'>('Logs');
+function PodDetail({ pod, context, namespace, containers, events, selectedContainer, setSelectedContainer, onOpenYaml, onExport, onClose, canForward, canExec, environmentWarning, notify }: { pod?: PodRow; canForward: boolean; canExec: boolean; environmentWarning?: string; notify: (text: string, detail: string | undefined, tone: 'good' | 'bad') => void; context: string; namespace: string; containers: string[]; events: EventInfo[]; selectedContainer: string; setSelectedContainer: (name: string) => void; onOpenYaml: () => void; onExport: () => void; onClose: () => void }) {
+  const [tab, setTab] = useState<'Logs' | 'Shell' | 'Forward' | 'Overview' | 'Events'>('Logs');
   const podEvents = events.filter((event) => event.name === pod?.name);
   return <div className="detail"><div className="detail-head"><div><h2>{pod?.name || 'Pod'}</h2><span className="muted">Pod · namespace {namespace}</span></div><button className="icon-btn" title="Close details" onClick={onClose}><X size={17}/></button></div>
     <div className="detail-tabs">
       <button className={`tab ${tab === 'Logs' ? 'active' : ''}`} onClick={() => setTab('Logs')}>Logs</button>
+      <button className={`tab ${tab === 'Shell' ? 'active' : ''}`} onClick={() => setTab('Shell')}>Shell</button>
+      <button className={`tab ${tab === 'Forward' ? 'active' : ''}`} onClick={() => setTab('Forward')}>Port forward</button>
       <button className={`tab ${tab === 'Overview' ? 'active' : ''}`} onClick={() => setTab('Overview')}>Overview</button>
       <button className={`tab ${tab === 'Events' ? 'active' : ''}`} onClick={() => setTab('Events')}>Events ({podEvents.length})</button>
       <span className="spacer"/>
       <button className="tab" onClick={onOpenYaml}>Edit YAML</button>
     </div>
     {tab === 'Logs' ? <LogViewer context={context} namespace={namespace} podName={pod?.name || ''} containers={containers} selectedContainer={selectedContainer} onSelectContainer={setSelectedContainer} onExport={onExport}/>
+      : tab === 'Shell' ? <ExecTerminal context={context} namespace={namespace} podName={pod?.name || ''} containers={containers} canExec={canExec} environmentWarning={environmentWarning}/>
+      : tab === 'Forward' ? <PortForwardPanel context={context} namespace={namespace} podName={pod?.name || ''} canForward={canForward} notify={notify}/>
       : tab === 'Overview' ? <PodOverview pod={pod} containers={containers}/>
       : <EventsPanel events={podEvents}/>}
   </div>;

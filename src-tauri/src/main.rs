@@ -1,9 +1,11 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
 mod cluster;
+mod exec;
 mod graph;
 mod logs;
 mod network;
+mod portforward;
 mod search;
 mod settings;
 mod streams;
@@ -457,6 +459,83 @@ async fn delete_workload(
         other => return Err(format!("Deleting a {other} is not implemented")),
     }
     Ok(())
+}
+
+/// Opens a shell. The command is chosen here rather than typed by the operator: a free
+/// command box would be a generic remote-execution field, which the spec lists as a
+/// non-goal. Interactive shells only, and only where `pods/exec` is granted.
+#[tauri::command]
+async fn start_exec_session(
+    app: tauri::AppHandle,
+    context: String,
+    namespace: String,
+    pod_name: String,
+    container: Option<String>,
+    shell: Option<String>,
+    session_id: String,
+) -> Result<(), String> {
+    let client = client_for_context(&context).await?;
+    let chosen = shell.unwrap_or_else(|| exec::SHELL_CANDIDATES[1].to_string());
+    if !exec::SHELL_CANDIDATES.contains(&chosen.as_str()) {
+        return Err(format!("{chosen} is not one of the shells this app will start."));
+    }
+    exec::start(app, client, namespace, pod_name, container, vec![chosen], session_id).await
+}
+
+#[tauri::command]
+async fn write_exec_session(session_id: String, data: String) -> Result<(), String> {
+    exec::write(&session_id, &data)
+}
+
+#[tauri::command]
+async fn stop_exec_session(session_id: String) -> Result<(), String> {
+    exec::stop(&session_id);
+    Ok(())
+}
+
+#[tauri::command]
+async fn list_pod_ports(
+    context: String,
+    namespace: String,
+    pod_name: String,
+) -> Result<Vec<portforward::PodPort>, String> {
+    let client = client_for_context(&context).await?;
+    portforward::pod_ports(client, &namespace, &pod_name).await
+}
+
+#[tauri::command]
+#[allow(clippy::too_many_arguments)]
+async fn start_port_forward(
+    app: tauri::AppHandle,
+    context: String,
+    namespace: String,
+    pod_name: String,
+    remote_port: u16,
+    local_port: Option<u16>,
+    forward_id: String,
+) -> Result<portforward::ActiveForward, String> {
+    let client = client_for_context(&context).await?;
+    portforward::start(
+        app,
+        client,
+        namespace,
+        pod_name,
+        remote_port,
+        local_port.unwrap_or(0),
+        forward_id,
+    )
+    .await
+}
+
+#[tauri::command]
+async fn stop_port_forward(forward_id: String) -> Result<(), String> {
+    portforward::stop(&forward_id);
+    Ok(())
+}
+
+#[tauri::command]
+async fn list_port_forwards() -> Result<Vec<portforward::ActiveForward>, String> {
+    Ok(portforward::list())
 }
 
 #[tauri::command]
@@ -1018,6 +1097,13 @@ fn main() {
             list_workloads,
             search_cluster,
             get_relation_graph,
+            start_exec_session,
+            write_exec_session,
+            stop_exec_session,
+            list_pod_ports,
+            start_port_forward,
+            stop_port_forward,
+            list_port_forwards,
             delete_workload,
             export_deployment_yaml,
             list_namespace_snapshot,
@@ -1039,6 +1125,8 @@ fn main() {
             if let tauri::RunEvent::ExitRequested { .. } | tauri::RunEvent::Exit = event {
                 logs::stop_all();
                 watch::stop_all();
+                portforward::stop_all();
+                exec::stop_all();
             }
         });
 }
