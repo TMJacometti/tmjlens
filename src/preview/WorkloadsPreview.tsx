@@ -57,6 +57,7 @@ export function WorkloadsPreview() {
         onScaleDeployment={() => undefined}
         onRestartDeployment={() => undefined}
         onExportDeployment={() => undefined}
+        podsLive
         controllers={<WorkloadInventoryTable inventory={inventory} loading={false} error="" selected="" canDelete onSelect={() => undefined} onEditYaml={() => undefined} onDelete={() => undefined} onExportYaml={() => undefined} />}
       />
       {false && deployment && (

@@ -228,6 +228,25 @@ export function installTauriStub() {
         }
         case 'list_workloads':
           return WORKLOAD_INVENTORY;
+        case 'search_cluster': {
+          const q = String((args as { query: string }).query).toLowerCase();
+          const all = [
+            { kind: 'Deployment', name: 'checkout-api', namespace: 'payments', detail: '3/3 ready' },
+            { kind: 'Pod', name: 'checkout-api-7d9f8b6c4d-5kx2m', namespace: 'payments', detail: 'Running' },
+            { kind: 'Pod', name: 'checkout-api-7d9f8b6c4d-9wq8p', namespace: 'payments', detail: 'Running' },
+            { kind: 'Service', name: 'checkout-api', namespace: 'payments', detail: 'ClusterIP' },
+            { kind: 'Ingress', name: 'payments-public', namespace: 'payments', detail: 'class nginx' },
+            { kind: 'ConfigMap', name: 'checkout-config', namespace: 'payments', detail: '4 key(s)' },
+            { kind: 'Secret', name: 'checkout-credentials', namespace: 'payments', detail: '2 key(s), values hidden' },
+            { kind: 'StatefulSet', name: 'postgres', namespace: 'payments', detail: '0/2 ready' },
+            { kind: 'Node', name: 'ip-10-0-12-34', detail: 'Ready' },
+          ];
+          const hits = all
+            .filter((entry) => entry.name.toLowerCase().includes(q))
+            .map((entry) => ({ ...entry, rank: entry.name.toLowerCase() === q ? 0 : entry.name.toLowerCase().startsWith(q) ? 1 : 2 }))
+            .sort((a, b) => a.rank - b.rank || a.name.length - b.name.length);
+          return { query: q, hits, truncated: false, degraded_collectors: [] };
+        }
         case 'load_settings':
           return { context_environments: {}, confirm_destructive_in_production: true };
         case 'save_settings':

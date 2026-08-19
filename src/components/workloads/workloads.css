@@ -325,3 +325,44 @@
   max-width: 30ch;
   overflow-wrap: anywhere;
 }
+
+/* Whether the list is being kept current is stated in words, not just by a dot. */
+.wl-live {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  padding: 0 11px;
+  height: 32px;
+  border-radius: 7px;
+  border: 1px solid #303641;
+  background: #181c23;
+  color: var(--viz-muted);
+  font-size: 11px;
+  white-space: nowrap;
+}
+
+.wl-live-dot {
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: #5b6472;
+  flex: none;
+}
+
+.wl-live.is-live {
+  color: #8fd39a;
+  border-color: #1d4620;
+}
+
+.wl-live.is-live .wl-live-dot {
+  background: var(--status-good);
+  animation: wl-pulse 2s ease-in-out infinite;
+}
+
+@keyframes wl-pulse {
+  50% { opacity: 0.35; }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .wl-live.is-live .wl-live-dot { animation: none; }
+}

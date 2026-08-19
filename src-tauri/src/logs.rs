@@ -2,14 +2,11 @@ use futures::{AsyncBufReadExt, TryStreamExt};
 use k8s_openapi::api::core::v1::Pod;
 use kube::{api::LogParams, Api, Client};
 use serde::Serialize;
-use std::collections::HashMap;
-use std::sync::{Mutex, OnceLock};
 use tauri::Emitter;
-use tokio::task::AbortHandle;
 
-/// Live streams, keyed by the id the frontend generated for the viewer that owns them.
-/// A stream that is not in here is not running, and one that is can always be stopped.
-static STREAMS: OnceLock<Mutex<HashMap<String, AbortHandle>>> = OnceLock::new();
+use crate::streams::StreamRegistry;
+
+static STREAMS: StreamRegistry = StreamRegistry::new();
 
 /// Lines are emitted in batches rather than one event per line: a chatty pod can
 /// produce thousands a second, and one IPC round trip each would starve the UI thread.
@@ -29,30 +26,12 @@ pub struct LogClosed {
     pub error: Option<String>,
 }
 
-fn registry() -> &'static Mutex<HashMap<String, AbortHandle>> {
-    STREAMS.get_or_init(|| Mutex::new(HashMap::new()))
-}
-
-/// Stops a stream and forgets it. Safe to call for an id that is already gone, which
-/// is what makes it usable from a component teardown that may run more than once.
 pub fn stop(stream_id: &str) {
-    if let Ok(mut streams) = registry().lock() {
-        if let Some(handle) = streams.remove(stream_id) {
-            handle.abort();
-        }
-    }
+    STREAMS.stop(stream_id);
 }
 
 pub fn stop_all() {
-    if let Ok(mut streams) = registry().lock() {
-        for (_, handle) in streams.drain() {
-            handle.abort();
-        }
-    }
-}
-
-pub fn active_count() -> usize {
-    registry().lock().map(|streams| streams.len()).unwrap_or(0)
+    STREAMS.stop_all();
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -67,9 +46,6 @@ pub async fn start(
     previous: bool,
     stream_id: String,
 ) -> Result<(), String> {
-    // Replacing a viewer's stream must never leave the old one running.
-    stop(&stream_id);
-
     let api: Api<Pod> = Api::namespaced(client, &namespace);
     let params = LogParams {
         container,
@@ -120,75 +96,11 @@ pub async fn start(
         flush(&app, &mut batch, &id);
         let _ = app.emit("pod-log-closed", LogClosed { stream_id: id.clone(), error });
 
-        if let Ok(mut streams) = registry().lock() {
-            streams.remove(&id);
-        }
+        STREAMS.forget(&id);
     });
 
-    if let Ok(mut streams) = registry().lock() {
-        streams.insert(stream_id, task.abort_handle());
-    }
+    // Registering replaces any stream this viewer already had, aborting it.
+    STREAMS.insert(&stream_id, task.abort_handle());
     Ok(())
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    /// The registry is process-wide, so tests that assert on it cannot run beside each
-    /// other. Serialising them here is cheaper and clearer than making the registry
-    /// injectable purely for the tests.
-    static SERIAL: Mutex<()> = Mutex::new(());
-
-    fn is_active(stream_id: &str) -> bool {
-        registry().lock().unwrap().contains_key(stream_id)
-    }
-
-    fn register(stream_id: &str) {
-        let task = tokio::spawn(async { std::future::pending::<()>().await });
-        registry().lock().unwrap().insert(stream_id.to_string(), task.abort_handle());
-    }
-
-    #[tokio::test]
-    async fn stopping_an_unknown_stream_is_harmless() {
-        let _guard = SERIAL.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
-        // Component teardown can fire more than once; a second stop must not panic.
-        stop("never-started");
-        stop("never-started");
-        assert!(!is_active("never-started"));
-    }
-
-    #[tokio::test]
-    async fn a_registered_stream_is_tracked_until_it_is_stopped() {
-        let _guard = SERIAL.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
-        register("tracked");
-        assert!(is_active("tracked"));
-
-        stop("tracked");
-        assert!(!is_active("tracked"));
-    }
-
-    #[tokio::test]
-    async fn stopping_one_stream_leaves_the_others_running() {
-        let _guard = SERIAL.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
-        register("keep");
-        register("drop");
-
-        stop("drop");
-        assert!(is_active("keep"));
-        assert!(!is_active("drop"));
-        stop("keep");
-    }
-
-    #[tokio::test]
-    async fn stop_all_clears_every_stream() {
-        let _guard = SERIAL.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
-        for id in ["a", "b", "c"] {
-            register(id);
-        }
-        assert_eq!(active_count(), 3);
-
-        stop_all();
-        assert_eq!(active_count(), 0);
-    }
-}

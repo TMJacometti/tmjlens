@@ -15,6 +15,8 @@ import { LogViewer } from './components/logs/LogViewer';
 import type { NetworkOverview } from './types/network';
 import { DeploymentDetailPanel } from './components/workloads/DeploymentDetailPanel';
 import { textToBase64 } from './lib/encoding';
+import { usePodWatch } from './lib/usePodWatch';
+import { CommandPalette, type PaletteCommand, type SearchHit } from './components/palette/CommandPalette';
 import { Toast, ToastMessage } from './components/Toast';
 import { SettingsPanel } from './components/settings/SettingsPanel';
 import { EnvironmentBadge, EnvironmentStripe } from './components/settings/EnvironmentBadge';
@@ -45,7 +47,7 @@ export function App() {
   const [context, setContext] = useState('loading...');
   const [contexts, setContexts] = useState<string[]>([]);
   const [namespaces, setNamespaces] = useState<string[]>([]);
-  const [pods, setPods] = useState<PodRow[]>([]);
+  const [snapshotPods, setPods] = useState<PodRow[]>([]);
   const [deployments, setDeployments] = useState<DeploymentRow[]>([]);
   const [events, setEvents] = useState<EventInfo[]>([]);
   const [reportItems, setReportItems] = useState<ReportItem[]>([]);
@@ -61,11 +63,29 @@ export function App() {
   const [toast, setToast] = useState<ToastMessage | null>(null);
   const [settings, setSettings] = useState<AppSettings>({ context_environments: {}, confirm_destructive_in_production: true });
   const [showSettings, setShowSettings] = useState(false);
+  const [showPalette, setShowPalette] = useState(false);
   const [isGeneratingReport, setIsGeneratingReport] = useState(false);
   const [capabilities, setCapabilities] = useState<Capabilities>({ deletePods: false, deleteDeployments: false, patchDeployments: false, patchPods: false, patchServices: false, patchIngresses: false });
   const refreshGeneration = useRef(0);
 
+  // Pods come from a live watch while the screen is showing them; the snapshot from
+  // list_namespace_snapshot is only a fallback for when the watch cannot run.
+  const podWatch = usePodWatch(context, namespace, active === 'Workloads');
+  const pods = podWatch.live ? podWatch.pods : snapshotPods;
+
   const notify = (text: string, detail: string | undefined, tone: 'good' | 'bad') => setToast({ text, detail, tone });
+
+  // Ctrl/Cmd+K anywhere, and Escape closes whatever is on top.
+  useEffect(() => {
+    const onKeyDown = (event: KeyboardEvent) => {
+      if ((event.ctrlKey || event.metaKey) && event.key.toLowerCase() === 'k') {
+        event.preventDefault();
+        setShowPalette((open) => !open);
+      }
+    };
+    window.addEventListener('keydown', onKeyDown);
+    return () => window.removeEventListener('keydown', onKeyDown);
+  }, []);
 
   const currentEnvironment: EnvironmentId = settings.context_environments[context] ?? 'unset';
 
@@ -278,6 +298,59 @@ export function App() {
     }
   };
 
+  /** Where a search result leads. Kinds without a screen of their own open in the
+   *  YAML editor, which is honest: it is what the app can actually show for them. */
+  const openSearchHit = (found: SearchHit) => {
+    if (found.namespace && found.namespace !== namespace) setNamespace(found.namespace);
+    switch (found.kind) {
+      case 'Pod':
+        setActive('Workloads');
+        setWorkloadView('Pods');
+        selectPod(found.name);
+        break;
+      case 'Deployment':
+        setActive('Workloads');
+        setWorkloadView('Deployments');
+        setSelectedDeployment(found.name);
+        break;
+      case 'StatefulSet':
+      case 'DaemonSet':
+      case 'Job':
+      case 'CronJob':
+        setActive('Workloads');
+        setWorkloadView('Deployments');
+        setYamlTarget({ kind: found.kind, name: found.name });
+        break;
+      case 'Service':
+      case 'Ingress':
+        setActive('Network');
+        setYamlTarget({ kind: found.kind, name: found.name });
+        break;
+      case 'Node':
+        setActive('Cluster Overview');
+        break;
+      case 'Namespace':
+        setNamespace(found.name);
+        setActive('Workloads');
+        break;
+      default:
+        notify(`${found.kind} ${found.name}`, 'No dedicated screen for this kind yet.', 'bad');
+    }
+  };
+
+  const paletteCommands: PaletteCommand[] = [
+    { id: 'go-overview', label: 'Go to Cluster Overview', group: 'Navigate', run: () => setActive('Cluster Overview') },
+    { id: 'go-workloads', label: 'Go to Workloads', group: 'Navigate', run: () => setActive('Workloads') },
+    { id: 'go-network', label: 'Go to Network', group: 'Navigate', run: () => setActive('Network') },
+    { id: 'go-events', label: 'Go to Events', group: 'Navigate', run: () => setActive('Events') },
+    { id: 'go-reports', label: 'Go to Reports', group: 'Navigate', run: () => setActive('Reports') },
+    { id: 'open-settings', label: 'Open Settings', group: 'App', run: () => setShowSettings(true) },
+    { id: 'refresh-cluster', label: 'Refresh cluster overview', group: 'Action', run: () => void loadClusterOverview() },
+    { id: 'refresh-network', label: 'Refresh network', group: 'Action', run: () => void loadNetwork() },
+    { id: 'refresh-workloads', label: 'Refresh controllers', group: 'Action', run: () => void loadInventory() },
+    { id: 'report', label: 'Generate executive report', group: 'Action', hint: 'PDF to Downloads', run: () => void generateReport() },
+  ];
+
   const nodeAction = async (action: NodeAction, nodeName: string) => {
     const messages = { cordon: `Cordon node ${nodeName}?`, uncordon: `Uncordon node ${nodeName}?`, drain: `Drain node ${nodeName}? Pods will be evicted.`, delete: `Delete node ${nodeName}?` };
     if (!confirmDestructive(messages[action])) return;
@@ -381,13 +454,13 @@ export function App() {
     <header className="topbar"><div className="brand"><span className="shark">🦈</span> tmjLens</div>
       <label className="selector"><GitBranch size={15}/><select value={context} onChange={(event) => void handleContextChange(event.target.value)}>{contexts.map((entry) => <option key={entry} value={entry}>{entry}</option>)}</select><ChevronDown size={14}/></label><EnvironmentBadge environment={currentEnvironment}/>
       <label className="selector"><Layers3 size={15}/><span>ns:</span><select value={namespace} onChange={(event) => void handleNamespaceChange(event.target.value)}>{namespaces.map((entry) => <option key={entry} value={entry}>{entry}</option>)}</select><ChevronDown size={14}/></label>
-      <div className="spacer"/><button className="icon-btn" title="Search"><Search size={17}/></button><button className="icon-btn" title="Settings" onClick={() => setShowSettings(true)}><Settings size={17}/></button>
+      <div className="spacer"/><button className="icon-btn" title="Search the cluster (Ctrl+K)" onClick={() => setShowPalette(true)}><Search size={17}/></button><button className="icon-btn" title="Settings" onClick={() => setShowSettings(true)}><Settings size={17}/></button>
     </header>
     <div className="body"><aside className="sidebar"><div className="section-title">CLUSTER</div>
       <Nav icon={<Gauge size={16}/>} label="Cluster Overview" active={active === 'Cluster Overview'} onClick={() => setActive('Cluster Overview')} /><Nav icon={<Workflow size={16}/>} label="Workloads" active={active === 'Workloads'} onClick={() => setActive('Workloads')} /><Nav icon={<Network size={16}/>} label="Network" active={active === 'Network'} onClick={() => setActive('Network')} /><Nav icon={<HardDrive size={16}/>} label="Storage" active={active === 'Storage'} onClick={() => setActive('Storage')} /><Nav icon={<FileCog size={16}/>} label="Configuration" active={active === 'Configuration'} onClick={() => setActive('Configuration')} /><Nav icon={<Server size={16}/>} label="Nodes" active={active === 'Nodes'} onClick={() => setActive('Nodes')} /><Nav icon={<CircleAlert size={16}/>} label="Events" active={active === 'Events'} onClick={() => setActive('Events')} /><Nav icon={<BarChart3 size={16}/>} label="Reports" active={active === 'Reports'} onClick={() => setActive('Reports')} />
       <div className="section-title aws">CLOUD</div><Nav icon={<Network size={16}/>} label="Load Balancers"/><Nav icon={<Box size={16}/>} label="Node Pools"/><div className="section-title plugins">PLUGINS</div><Nav icon={<Terminal size={16}/>} label="Helm"/><Nav icon={<Workflow size={16}/>} label="Argo CD"/>
     </aside><main className="main"><div className="breadcrumbs">Cluster / {namespace} / {active}</div><div className="title-row"><div><h1>{active}</h1><p>Live Kubernetes resources from <b>{context}</b></p></div></div>
-      {showEvents ? <EventsPanel events={events} onRefresh={refreshEvents}/> : active === 'Network' ? <NetworkPage data={network} loading={isLoadingNetwork} error={networkError} onRefresh={() => void loadNetwork()} onEditYaml={(kind, name) => setYamlTarget({ kind, name })}/> : active === 'Workloads' ? <><WorkloadsPage view={workloadView} onViewChange={setWorkloadView} pods={pods} deployments={deployments} selectedPod={selectedPod} selectedDeployment={selectedDeployment} capabilities={{ deletePods: capabilities.deletePods, deleteDeployments: capabilities.deleteDeployments, patchDeployments: capabilities.patchDeployments }} onSelectPod={selectPod} onSelectDeployment={(name) => { setSelectedDeployment(name); setShowDetail(false); }} onDeletePod={(name) => void deletePod(name)} onExportPodLogs={(name) => void exportLogsFor(name)} onDeleteDeployment={(name) => void deleteDeployment(name)} onScaleDeployment={(name) => void scaleDeployment(name)} onRestartDeployment={(name) => void restartDeployment(name)} onExportDeployment={(name) => void exportDeployment(name)}
+      {showEvents ? <EventsPanel events={events} onRefresh={refreshEvents}/> : active === 'Network' ? <NetworkPage data={network} loading={isLoadingNetwork} error={networkError} onRefresh={() => void loadNetwork()} onEditYaml={(kind, name) => setYamlTarget({ kind, name })}/> : active === 'Workloads' ? <><WorkloadsPage view={workloadView} onViewChange={setWorkloadView} pods={pods} deployments={deployments} selectedPod={selectedPod} selectedDeployment={selectedDeployment} capabilities={{ deletePods: capabilities.deletePods, deleteDeployments: capabilities.deleteDeployments, patchDeployments: capabilities.patchDeployments }} onSelectPod={selectPod} onSelectDeployment={(name) => { setSelectedDeployment(name); setShowDetail(false); }} onDeletePod={(name) => void deletePod(name)} onExportPodLogs={(name) => void exportLogsFor(name)} onDeleteDeployment={(name) => void deleteDeployment(name)} onScaleDeployment={(name) => void scaleDeployment(name)} onRestartDeployment={(name) => void restartDeployment(name)} onExportDeployment={(name) => void exportDeployment(name)} podsLive={podWatch.live}
       controllers={<WorkloadInventoryTable inventory={inventory} loading={isLoadingInventory} error={inventoryError}
         selected={selectedDeployment ? `Deployment/${selectedDeployment}` : ''} canDelete={capabilities.deleteDeployments}
         onSelect={(row) => { if (row.kind === 'Deployment') { setSelectedDeployment(row.name); } else { setYamlTarget({ kind: row.kind, name: row.name }); } }}
@@ -398,6 +471,7 @@ export function App() {
     {yamlTarget && <YamlEditor context={context} namespace={namespace} kind={yamlTarget.kind} name={yamlTarget.name}
       canEdit={yamlTarget.kind === 'Service' ? capabilities.patchServices : capabilities.patchIngresses}
       onClose={() => setYamlTarget(null)} onSaved={() => void loadNetwork()} notify={notify} confirmSave={confirmDestructive}/>}
+    {showPalette && <CommandPalette context={context} commands={paletteCommands} onOpenHit={openSearchHit} onClose={() => setShowPalette(false)}/>}
     {showSettings && <SettingsPanel settings={settings} onSettingsChange={setSettings} onKubeconfigChanged={() => void reloadContexts()} onClose={() => setShowSettings(false)} notify={notify}/>}
   </div>;
 }

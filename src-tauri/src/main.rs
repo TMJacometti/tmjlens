@@ -3,7 +3,10 @@
 mod cluster;
 mod logs;
 mod network;
+mod search;
 mod settings;
+mod streams;
+mod watch;
 mod workload_list;
 mod workloads;
 
@@ -48,11 +51,40 @@ struct EventInfo {
 }
 
 #[derive(Serialize, Clone)]
-struct PodInfo {
-    name: String,
-    status: String,
-    ready: String,
-    age: String,
+pub struct PodInfo {
+    pub name: String,
+    pub status: String,
+    pub ready: String,
+    pub age: String,
+}
+
+/// The one place a Pod becomes a row. Shared so the list and the watch cannot drift
+/// into describing the same pod differently.
+pub(crate) fn pod_row(pod: Pod) -> Option<PodInfo> {
+    let name = pod.metadata.name.clone()?;
+    let status = pod
+        .status
+        .as_ref()
+        .and_then(|status| status.phase.clone())
+        .unwrap_or_else(|| "Unknown".to_string());
+    let (ready_count, total_count) = pod
+        .status
+        .as_ref()
+        .and_then(|status| status.container_statuses.as_ref())
+        .map(|statuses| (statuses.iter().filter(|container| container.ready).count(), statuses.len()))
+        .unwrap_or((0, pod.spec.as_ref().map(|spec| spec.containers.len()).unwrap_or(0)));
+
+    Some(PodInfo {
+        name,
+        status,
+        ready: format!("{ready_count}/{total_count}"),
+        age: pod
+            .metadata
+            .creation_timestamp
+            .as_ref()
+            .map(|timestamp| format_age(timestamp.0))
+            .unwrap_or_else(|| "n/a".to_string()),
+    })
 }
 
 #[derive(Serialize, Clone)]
@@ -185,31 +217,7 @@ async fn list_pods(context: String, namespace: String) -> Result<Vec<PodInfo>, S
     let client = client_for_context(&context).await?;
     let api: Api<Pod> = Api::namespaced(client, &namespace);
     let pods = api.list(&ListParams::default()).await.map_err(|e| e.to_string())?;
-    Ok(pods.items.into_iter().filter_map(|pod| {
-        let name = pod.metadata.name?;
-        let status = pod
-            .status
-            .as_ref()
-            .and_then(|status| status.phase.clone())
-            .unwrap_or_else(|| "Unknown".to_string());
-        let (ready_count, total_count) = pod
-            .status
-            .as_ref()
-            .and_then(|status| status.container_statuses.as_ref())
-            .map(|statuses| (statuses.iter().filter(|container| container.ready).count(), statuses.len()))
-            .unwrap_or((0, pod.spec.as_ref().map(|spec| spec.containers.len()).unwrap_or(0)));
-        let age = pod
-            .metadata
-            .creation_timestamp
-            .map(|timestamp| format_age(timestamp.0));
-
-        Some(PodInfo {
-            name: name.clone(),
-            status,
-            ready: format!("{ready_count}/{total_count}"),
-            age: age.unwrap_or_else(|| "n/a".to_string()),
-        })
-    }).collect())
+    Ok(pods.items.into_iter().filter_map(pod_row).collect())
 }
 
 #[tauri::command]
@@ -451,6 +459,12 @@ async fn delete_workload(
 }
 
 #[tauri::command]
+async fn search_cluster(context: String, query: String) -> Result<search::SearchResults, String> {
+    let client = client_for_context(&context).await?;
+    search::search(client, &query).await
+}
+
+#[tauri::command]
 async fn list_workloads(context: String, namespace: String) -> Result<workload_list::WorkloadInventory, String> {
     let client = client_for_context(&context).await?;
     workload_list::collect(client, &namespace).await
@@ -488,6 +502,23 @@ async fn start_log_stream(
         stream_id,
     )
     .await
+}
+
+#[tauri::command]
+async fn start_pod_watch(
+    app: tauri::AppHandle,
+    context: String,
+    namespace: String,
+    watch_id: String,
+) -> Result<(), String> {
+    let client = client_for_context(&context).await?;
+    watch::start_pods(app, client, namespace, watch_id).await
+}
+
+#[tauri::command]
+async fn stop_pod_watch(watch_id: String) -> Result<(), String> {
+    watch::stop(&watch_id);
+    Ok(())
 }
 
 #[tauri::command]
@@ -964,6 +995,8 @@ fn main() {
             get_pod_logs,
             start_log_stream,
             stop_log_stream,
+            start_pod_watch,
+            stop_pod_watch,
             delete_pod,
             get_resource_yaml,
             apply_resource_yaml,
@@ -972,6 +1005,7 @@ fn main() {
             get_deployment_detail,
             get_network_overview,
             list_workloads,
+            search_cluster,
             delete_workload,
             export_deployment_yaml,
             list_namespace_snapshot,
@@ -985,8 +1019,16 @@ fn main() {
             restart_deployment,
             list_events
         ])
-        .run(tauri::generate_context!())
-        .expect("error while running tmjLens");
+        .build(tauri::generate_context!())
+        .expect("error while building tmjLens")
+        .run(|_app, event| {
+            // Closing the window must end every stream; a follow left running would
+            // keep the API server writing output into a process that is going away.
+            if let tauri::RunEvent::ExitRequested { .. } | tauri::RunEvent::Exit = event {
+                logs::stop_all();
+                watch::stop_all();
+            }
+        });
 }
 
 #[cfg(test)]

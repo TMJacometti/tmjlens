@@ -83,7 +83,7 @@ pub async fn collect(client: Client, namespace: &str) -> Result<WorkloadInventor
 
     let mut rows = Vec::new();
     let mut degraded_collectors = Vec::new();
-    let mut note = |kind: &str, error: kube::Error, degraded: &mut Vec<String>| {
+    let note = |kind: &str, error: kube::Error, degraded: &mut Vec<String>| {
         degraded.push(format!("{kind} could not be listed ({error})."));
     };
 

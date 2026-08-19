@@ -15,6 +15,8 @@ type Props = {
   view: 'Pods' | 'Deployments';
   /** The controller inventory, rendered in place of the pod table on that view. */
   controllers: React.ReactNode;
+  /** Whether the pod list is being kept current by a watch, or is a static snapshot. */
+  podsLive: boolean;
   onViewChange: (view: 'Pods' | 'Deployments') => void;
   pods: PodRow[];
   deployments: DeploymentRow[];
@@ -32,7 +34,7 @@ type Props = {
 };
 
 export function WorkloadsPage(props: Props) {
-  const { view, pods, deployments, controllers } = props;
+  const { view, pods, deployments, controllers, podsLive } = props;
   const [filter, setFilter] = useState('');
 
   const needle = filter.trim().toLowerCase();
@@ -74,6 +76,12 @@ export function WorkloadsPage(props: Props) {
           <button type="button" className={view === 'Pods' ? 'is-active' : ''} onClick={() => props.onViewChange('Pods')}>
             Pods <span className="viz-count">{pods.length}</span>
           </button>
+          {view === 'Pods' && (
+            <span className={`wl-live${podsLive ? ' is-live' : ''}`} title={podsLive ? 'Following the API server' : 'Static snapshot — the watch is not running'}>
+              <span className="wl-live-dot" aria-hidden />
+              {podsLive ? 'Live' : 'Snapshot'}
+            </span>
+          )}
           <button
             type="button"
             className={view === 'Deployments' ? 'is-active' : ''}
