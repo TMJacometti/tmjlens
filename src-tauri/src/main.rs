@@ -9,6 +9,7 @@ mod network;
 mod portforward;
 mod search;
 mod settings;
+mod storage;
 mod streams;
 mod errors;
 mod velero;
@@ -626,6 +627,15 @@ async fn delete_configuration_key(
 }
 
 #[tauri::command]
+async fn get_storage_overview(
+    context: String,
+    namespace: String,
+) -> Result<storage::StorageOverview, String> {
+    let client = client_for_context(&context).await?;
+    storage::overview(client, &namespace).await
+}
+
+#[tauri::command]
 async fn get_velero_status(
     context: String,
     velero_namespace: Option<String>,
@@ -1223,6 +1233,7 @@ fn main() {
             list_workloads,
             search_cluster,
             get_configuration,
+            get_storage_overview,
             reveal_secret_key,
             read_config_map_key,
             write_secret_key,

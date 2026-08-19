@@ -103,10 +103,11 @@ scaffolding. This table is the honest state, not the roadmap.
 | Network: services, endpoints, ingresses, classes, policies | ✅ Working |
 | Velero: backups, restores, schedules, storage locations | ✅ Working |
 | Configuration: maps, secrets, quotas, budgets, admission webhooks | ✅ Working |
+| Storage: claims, volumes, classes, and what is provisioned but idle | ✅ Working |
 | Executive PDF report, environment marking (prod/staging) | ✅ Working |
 | EC2 correlation, load balancer and storage context | 🚧 Planned |
 | Plugin SDK (Helm, Argo CD, Vault, Prometheus, Grafana) | 🚧 Planned |
-| Storage screen | 🚧 Scaffolded only |
+
 
 See [docs/ROADMAP.md](docs/ROADMAP.md) for the full plan.
 
