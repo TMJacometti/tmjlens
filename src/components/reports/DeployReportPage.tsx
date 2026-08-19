@@ -1,5 +1,5 @@
 import { useState } from 'react';
-import { Check, Rocket, Search, ShieldAlert, X } from 'lucide-react';
+import { Check, Download, Rocket, Search, ShieldAlert, X } from 'lucide-react';
 import { SeverityBadge } from '../cluster/charts';
 import {
   REPORT_WINDOWS, formatDeployDate, formatDeployTime, groupByNamespace, shortImage, summarise,
@@ -14,9 +14,11 @@ type Props = {
   error: string;
   /** Runs only when asked. Nothing is read before the operator picks and filters. */
   onRun: (namespaces: string[], window: string) => void;
+  onExport: (report: DeployReport) => void;
+  exporting: boolean;
 };
 
-export function DeployReportPage({ namespaces, report, loading, error, onRun }: Props) {
+export function DeployReportPage({ namespaces, report, loading, error, onRun, onExport, exporting }: Props) {
   const [selected, setSelected] = useState<string[]>([]);
   const [window, setWindow] = useState('today');
   const [search, setSearch] = useState('');
@@ -151,19 +153,36 @@ export function DeployReportPage({ namespaces, report, loading, error, onRun }: 
         </div>
       )}
 
-      {report && <Results report={report} />}
+      {report && <Results report={report} onExport={onExport} exporting={exporting} />}
     </div>
   );
 }
 
-function Results({ report }: { report: DeployReport }) {
+function Results({
+  report, onExport, exporting,
+}: {
+  report: DeployReport;
+  onExport: (report: DeployReport) => void;
+  exporting: boolean;
+}) {
   const groups = groupByNamespace(report.items);
 
   return (
     <section className="rep-results">
       <div className="rep-summary">
         <strong>{summarise(report)}</strong>
-        <span className="viz-dim">{windowLabel(report.window)}</span>
+        <div className="rep-summary-right">
+          <span className="viz-dim">{windowLabel(report.window)}</span>
+          <button
+            type="button"
+            className="viz-toggle"
+            onClick={() => onExport(report)}
+            disabled={exporting || report.items.length === 0}
+            title={report.items.length === 0 ? 'There is nothing to export.' : 'Save this report to Downloads'}
+          >
+            <Download size={13} aria-hidden /> {exporting ? 'Saving…' : 'Export CSV'}
+          </button>
+        </div>
       </div>
 
       {report.degraded_collectors.length > 0 && (

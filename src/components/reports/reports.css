@@ -171,6 +171,12 @@
   flex-wrap: wrap;
 }
 
+.rep-summary-right {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+
 .rep-degraded {
   margin: 6px 0 0;
   padding-left: 18px;

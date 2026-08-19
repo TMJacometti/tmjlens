@@ -68,6 +68,21 @@ test.describe('deploy report', () => {
     await expect(page.getByRole('row').filter({ hasText: 'reindex-2026-08-19' })).toContainText('by hand');
   });
 
+  test('export appears only once there is a report to export', async ({ page }) => {
+    await expect(page.getByRole('button', { name: /Export CSV/ })).toHaveCount(0);
+
+    await page.getByRole('button', { name: 'payments', exact: true }).click();
+    await page.getByRole('button', { name: /^Filter/ }).click();
+    await expect(page.getByRole('button', { name: /Export CSV/ })).toBeEnabled();
+  });
+
+  test('export is refused when the report found nothing', async ({ page }) => {
+    // An empty CSV is a file that looks like an answer and is not one.
+    await page.getByRole('button', { name: 'kube-public', exact: true }).click();
+    await page.getByRole('button', { name: /^Filter/ }).click();
+    await expect(page.getByRole('button', { name: /Export CSV/ })).toBeDisabled();
+  });
+
   test('selecting all then clearing leaves nothing selected', async ({ page }) => {
     await page.getByRole('button', { name: 'Select all' }).click();
     await expect(page.locator('.rep-count')).toContainText('12 selected');

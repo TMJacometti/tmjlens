@@ -80,6 +80,8 @@ export function ReportPickerPreview() {
         loading={false}
         error=""
         onRun={(chosen, window) => setResult(report(chosen, window))}
+        onExport={() => undefined}
+        exporting={false}
       />
     </>
   );

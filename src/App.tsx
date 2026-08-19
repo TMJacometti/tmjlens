@@ -17,7 +17,8 @@ import { ExecTerminal } from './components/exec/ExecTerminal';
 import type { NetworkOverview } from './types/network';
 import { DeployReportPage } from './components/reports/DeployReportPage';
 import { NamespacesPage } from './components/namespaces/NamespacesPage';
-import type { DeployReport, NamespaceOverview } from './types/reports';
+import { DEPLOY_CSV_COLUMNS, type DeployReport, type NamespaceOverview } from './types/reports';
+import { reportFileName, toCsv, withExcelBom } from './lib/csv';
 import { StoragePage } from './components/storage/StoragePage';
 import type { StorageOverview } from './types/storage';
 import { ConfigurationPage } from './components/configuration/ConfigurationPage';
@@ -277,6 +278,25 @@ export function App() {
     }
   };
 
+  const [isExportingReport, setIsExportingReport] = useState(false);
+
+  const exportDeployReport = async (built: DeployReport) => {
+    setIsExportingReport(true);
+    try {
+      const csv = withExcelBom(toCsv(DEPLOY_CSV_COLUMNS, built.items));
+      const path = await invoke<string>('save_to_downloads', {
+        fileName: reportFileName(`deploy-report-${built.window}`, built.namespaces),
+        contents: csv,
+        extension: 'csv',
+      });
+      notify('Report saved', path, 'good');
+    } catch (error) {
+      notify('The report could not be saved', String(error), 'bad');
+    } finally {
+      setIsExportingReport(false);
+    }
+  };
+
   const loadNamespaceOverview = async () => {
     setIsLoadingNamespaces(true);
     try {
@@ -502,7 +522,7 @@ export function App() {
     if (!podName) return;
     try {
       const fullLogs = await invoke<string>('get_pod_logs', { context, namespace, podName, container: container || undefined, tailLines: null, previous: false });
-      const path = await invoke<string>('save_to_downloads', { fileName: `${podName}-logs`, contents: fullLogs });
+      const path = await invoke<string>('save_to_downloads', { fileName: `${podName}-logs`, contents: fullLogs, extension: 'log' });
       setToast({ tone: 'good', text: `Logs exported for ${podName}`, detail: path });
     } catch (error) {
       setToast({ tone: 'bad', text: 'Log export failed', detail: String(error) });
@@ -581,7 +601,7 @@ export function App() {
 
   const showEvents = active === 'Events';
   if (active === 'Reports') {
-    return <div className="app"><EnvironmentStripe environment={currentEnvironment}/><header className="topbar"><div className="brand"><span className="shark">🦈</span> tmjLens</div><span className="muted">{context}</span><div className="spacer"/><button className="selector" onClick={() => setActive('Workloads')}>Back to Workloads</button></header><main className="main report-screen"><div className="breadcrumbs">Cluster / {context} / Reports</div><div className="title-row"><div><h1>Deploy report</h1><p>What landed in <b>{context}</b>, for the namespaces you choose</p></div></div><DeployReportPage namespaces={namespaces} report={deployReport} loading={isLoadingDeployReport} error={deployReportError} onRun={(chosen, window) => void runDeployReport(chosen, window)}/></main></div>;
+    return <div className="app"><EnvironmentStripe environment={currentEnvironment}/><header className="topbar"><div className="brand"><span className="shark">🦈</span> tmjLens</div><span className="muted">{context}</span><div className="spacer"/><button className="selector" onClick={() => setActive('Workloads')}>Back to Workloads</button></header><main className="main report-screen"><div className="breadcrumbs">Cluster / {context} / Reports</div><div className="title-row"><div><h1>Deploy report</h1><p>What landed in <b>{context}</b>, for the namespaces you choose</p></div></div><DeployReportPage namespaces={namespaces} report={deployReport} loading={isLoadingDeployReport} error={deployReportError} onRun={(chosen, window) => void runDeployReport(chosen, window)} onExport={(built) => void exportDeployReport(built)} exporting={isExportingReport}/></main></div>;
   }
   if (active === 'Cluster Overview') {
     return <div className="app"><EnvironmentStripe environment={currentEnvironment}/><header className="topbar"><div className="brand"><span className="shark">🦈</span> tmjLens</div><span className="muted">{context}</span><div className="spacer"/><button className="selector" onClick={() => setActive('Workloads')}>Back to Workloads</button></header><main className="main report-screen"><div className="breadcrumbs">Cluster / {context} / Overview</div><div className="title-row"><div><h1>Cluster Overview</h1><p>Cluster health, capacity, and node operations for <b>{context}</b></p></div></div><ClusterOverviewPage data={clusterOverview} loading={isLoadingCluster} error={clusterError} capabilities={nodeCapabilities} onRefresh={() => void loadClusterOverview()} onNodeAction={nodeAction} onGenerateReport={() => void generateReport()} generatingReport={isGeneratingReport}/></main></div>;

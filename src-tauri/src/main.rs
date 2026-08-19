@@ -353,6 +353,9 @@ async fn save_to_downloads(
     app: tauri::AppHandle,
     file_name: String,
     contents: String,
+    // Without a dot. Constrained to a short alphanumeric word so the caller cannot
+    // steer the write to an arbitrary path or an executable suffix.
+    extension: Option<String>,
 ) -> Result<String, String> {
     use tauri::Manager;
 
@@ -361,7 +364,10 @@ async fn save_to_downloads(
         .download_dir()
         .map_err(|error| format!("Unable to locate the Downloads folder: {error}"))?;
     let stamp = chrono::Local::now().format("%Y%m%d-%H%M%S");
-    let target = directory.join(format!("{}-{stamp}.log", safe_file_stem(&file_name)));
+    let suffix = extension
+        .filter(|value| !value.is_empty() && value.len() <= 5 && value.chars().all(|c| c.is_ascii_alphanumeric()))
+        .unwrap_or_else(|| "log".to_string());
+    let target = directory.join(format!("{}-{stamp}.{suffix}", safe_file_stem(&file_name)));
 
     tokio::task::spawn_blocking(move || {
         if let Some(parent) = target.parent() {

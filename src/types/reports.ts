@@ -1,3 +1,4 @@
+import type { CsvColumn } from '../lib/csv';
 import type { Severity } from '../components/cluster/charts';
 
 export type DeployedRow = {
@@ -95,3 +96,23 @@ export function summarise(report: DeployReport): string {
   if (partial > 0) return `${total} ${noun} in ${scope}, ${partial} not fully ready.`;
   return `${total} ${noun} in ${scope}, all running.`;
 }
+
+/**
+ * The exported shape. Wider than the table on screen: an export is read in a
+ * spreadsheet where extra columns cost nothing, and the full image reference matters
+ * more there than the shortened one that fits a cell.
+ */
+export const DEPLOY_CSV_COLUMNS: Array<CsvColumn<DeployedRow>> = [
+  { header: 'Namespace', value: (row) => row.namespace },
+  { header: 'Workload', value: (row) => row.name },
+  { header: 'Kind', value: (row) => row.kind },
+  { header: 'State', value: (row) => row.health },
+  { header: 'Detail', value: (row) => row.detail },
+  { header: 'Reason', value: (row) => row.reason },
+  { header: 'Images', value: (row) => row.images },
+  { header: 'Deployed by', value: (row) => row.managed_by ?? 'by hand' },
+  // Both forms: the local one is what a person reads, the ISO one is what sorts and
+  // what another tool can parse.
+  { header: 'Deployed at (local)', value: (row) => new Date(row.deployed_at).toLocaleString() },
+  { header: 'Deployed at (UTC)', value: (row) => row.deployed_at },
+];
