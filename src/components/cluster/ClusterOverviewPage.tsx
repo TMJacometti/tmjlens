@@ -8,7 +8,7 @@ import {
 } from './charts';
 import type { LegendEntry } from './charts';
 import { formatBytes, formatCount, formatCpu, formatPercent, formatRelative, percent, shortNodeName } from '../../lib/format';
-import type { ClusterOverview, NodeAction, NodeInfo, Severity } from '../../types/cluster';
+import type { ClusterOverview, NodeAction, NodeInfo, NodeTaint, Severity } from '../../types/cluster';
 
 const SERIES_USED = 'var(--series-1)';
 const SERIES_REQUESTED = 'var(--series-2)';
@@ -44,7 +44,7 @@ export function ClusterOverviewPage({ data, loading, error, capabilities, onRefr
     const needle = nodeFilter.trim().toLowerCase();
     if (!needle) return nodes;
     return nodes.filter((node) =>
-      [node.name, node.zone, node.instance_type, node.node_pool ?? '', node.capacity_type]
+      [node.name, node.zone, node.instance_type, node.node_pool ?? '', node.capacity_type, ...node.taints.map((taint) => taint.label)]
         .join(' ')
         .toLowerCase()
         .includes(needle),
@@ -380,7 +380,7 @@ export function ClusterOverviewPage({ data, loading, error, capabilities, onRefr
 
         <ChartCard
           title="Fleet composition"
-          subtitle="Capacity type and instance mix, read from node labels."
+          subtitle="Capacity type, instance mix, taints, and node pools — all read from the nodes themselves."
           legend={
             distribution.capacity_types.length > 1
               ? distribution.capacity_types.map((bucket, index) => ({
@@ -423,6 +423,38 @@ export function ClusterOverviewPage({ data, loading, error, capabilities, onRefr
               }))}
             />
           </div>
+          {distribution.taints.length > 0 && (
+            <div className="viz-subgroup">
+              <h4>Nodes per taint</h4>
+              <RankedBars
+                labelWidth={150}
+                max={Math.max(...distribution.taints.map((bucket) => bucket.value), 1)}
+                formatValue={(value) => String(value)}
+                items={distribution.taints.map((bucket) => {
+                  // `key=value:Effect` — neither a key nor a value may contain a colon,
+                  // so the last one always separates the effect. It rides outside the
+                  // label so two taints on the same key stay distinguishable when the
+                  // label truncates.
+                  const split = bucket.label.lastIndexOf(':');
+                  const name = split === -1 ? bucket.label : bucket.label.slice(0, split);
+                  const effect = split === -1 ? '' : bucket.label.slice(split + 1);
+                  return {
+                    key: bucket.label,
+                    label: name,
+                    value: bucket.value,
+                    trailing: effect ? <em className="cluster-effect-tag">{effect}</em> : undefined,
+                    tooltip: (
+                      <>
+                        <strong>{bucket.label}</strong>
+                        <span>{bucket.value} node(s) carry this taint</span>
+                        <span>Only pods with a matching toleration schedule there.</span>
+                      </>
+                    ),
+                  };
+                })}
+              />
+            </div>
+          )}
           {distribution.node_pools.length > 0 && (
             <div className="viz-subgroup">
               <h4>Nodes per node pool</h4>
@@ -583,6 +615,7 @@ export function ClusterOverviewPage({ data, loading, error, capabilities, onRefr
                   <th>CPU</th>
                   <th>Memory</th>
                   <th>Pods</th>
+                  <th>Taints</th>
                   <th>Instance</th>
                   <th>Capacity</th>
                   <th>Zone</th>
@@ -632,6 +665,16 @@ export function ClusterOverviewPage({ data, loading, error, capabilities, onRefr
                       {node.pod_count}
                       <span className="viz-dim"> / {node.pod_capacity}</span>
                     </td>
+                    <td title={node.taints.map((taint) => taint.label).join('\n') || undefined}>
+                      {node.taints.length === 0 ? (
+                        <span className="viz-dim">—</span>
+                      ) : (
+                        <span className="cluster-taint-count">
+                          {node.taints.length}
+                          {node.taints.some((taint) => taint.effect === 'NoExecute') && <em>NoExecute</em>}
+                        </span>
+                      )}
+                    </td>
                     <td>{node.instance_type}</td>
                     <td>{node.capacity_type === 'UNKNOWN' ? '—' : node.capacity_type}</td>
                     <td>{node.zone}</td>
@@ -665,6 +708,30 @@ export function ClusterOverviewPage({ data, loading, error, capabilities, onRefr
  */
 function capacityTypeColor(index: number): string {
   return `var(--series-${(index % 2) + 2})`;
+}
+
+/**
+ * A taint is configuration, not health, so it never wears the reserved status
+ * palette. The effect carries its own weight instead: NoExecute evicts pods that
+ * are already running, NoSchedule only blocks new ones, PreferNoSchedule is a hint.
+ */
+function TaintList({ taints }: { taints: NodeTaint[] }) {
+  if (taints.length === 0) {
+    return <p className="viz-dim cluster-taints-empty">No taints. Every pod that tolerates nothing can still schedule here.</p>;
+  }
+  return (
+    <ul className="cluster-taints">
+      {taints.map((taint) => (
+        <li key={taint.label} className={`cluster-taint cluster-taint-${taint.effect.toLowerCase()}`}>
+          <code>
+            {taint.key}
+            {taint.value ? <span className="cluster-taint-value">={taint.value}</span> : null}
+          </code>
+          <em>{taint.effect}</em>
+        </li>
+      ))}
+    </ul>
+  );
 }
 
 function cpuUtilisation(node: NodeInfo): number {
@@ -860,14 +927,21 @@ function NodeDetail({
               <dd>{node.capacity_type === 'UNKNOWN' ? 'not labelled' : node.capacity_type}</dd>
             </div>
             <div>
-              <dt>Taints</dt>
-              <dd>{node.taints}</dd>
+              <dt>Node pool</dt>
+              <dd>{node.node_pool ?? 'not labelled'}</dd>
             </div>
             <div>
               <dt>Age</dt>
               <dd>{node.age}</dd>
             </div>
           </dl>
+
+          <div>
+            <h4>
+              Taints <span className="viz-count">{node.taints.length}</span>
+            </h4>
+            <TaintList taints={node.taints} />
+          </div>
         </div>
 
         <div className="cluster-node-column">

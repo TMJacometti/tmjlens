@@ -1,12 +1,12 @@
 import { useEffect, useRef, useState } from 'react';
 import { invoke } from '@tauri-apps/api/core';
-import { save } from '@tauri-apps/plugin-dialog';
-import { writeTextFile } from '@tauri-apps/plugin-fs';
 import {
   BarChart3, Box, ChevronDown, CircleAlert, Download, FileCog, Gauge, GitBranch, HardDrive,
-  Layers3, ListTree, MoreVertical, Network, Search, Server, Settings, Terminal,
+  Layers3, ListTree, Network, Search, Server, Settings, Terminal,
   Trash2, Workflow, X, XCircle
 } from 'lucide-react';
+import { ActionMenu } from './components/ActionMenu';
+import { Toast, ToastMessage } from './components/Toast';
 import { ClusterOverviewPage, NodeCapabilities } from './components/cluster/ClusterOverviewPage';
 import type { ClusterOverview, NodeAction } from './types/cluster';
 
@@ -44,7 +44,7 @@ export function App() {
   const [editedYaml, setEditedYaml] = useState('');
   const [yamlError, setYamlError] = useState('');
   const [showDetail, setShowDetail] = useState(false);
-  const [openMenu, setOpenMenu] = useState<string | null>(null);
+  const [toast, setToast] = useState<ToastMessage | null>(null);
   const [capabilities, setCapabilities] = useState<Capabilities>({ deletePods: false, deleteDeployments: false, patchDeployments: false, patchPods: false });
   const refreshGeneration = useRef(0);
 
@@ -88,10 +88,10 @@ export function App() {
     if (generation !== refreshGeneration.current) return;
     const { pods: podList, deployments: deploymentList, events: eventList } = snapshot;
     setPods(podList.length > 0 ? podList : defaultPods);
-    setDeployments(deploymentList); setEvents(eventList); setSelectedPod(''); setShowDetail(false); setOpenMenu(null);
+    setDeployments(deploymentList); setEvents(eventList); setSelectedPod(''); setShowDetail(false);
   };
 
-  const selectPod = (podName: string) => { setSelectedPod(podName); setLogs(''); setYaml(''); setEditedYaml(''); setYamlError(''); setShowDetail(true); setOpenMenu(null); };
+  const selectPod = (podName: string) => { setSelectedPod(podName); setLogs(''); setYaml(''); setEditedYaml(''); setYamlError(''); setShowDetail(true); };
 
   const deletePod = async (podName: string) => {
     if (!window.confirm(`Delete pod ${podName}? Kubernetes may recreate it.`)) return;
@@ -163,15 +163,18 @@ export function App() {
     }
   };
 
-  const exportLogs = async () => {
+  const exportLogsFor = async (podName: string, container?: string) => {
+    if (!podName) return;
     try {
-      const fullLogs = await invoke<string>('get_pod_logs', { context, namespace, podName: selectedPod, container: selectedContainer || undefined, tailLines: null, previous: false });
-      const path = await save({ defaultPath: `${selectedPod}-logs.txt`, filters: [{ name: 'Text', extensions: ['txt', 'log'] }] });
-      if (path) await writeTextFile(path, fullLogs);
+      const fullLogs = await invoke<string>('get_pod_logs', { context, namespace, podName, container: container || undefined, tailLines: null, previous: false });
+      const path = await invoke<string>('save_to_downloads', { fileName: `${podName}-logs`, contents: fullLogs });
+      setToast({ tone: 'good', text: `Logs exported for ${podName}`, detail: path });
     } catch (error) {
-      window.alert(`Export failed: ${String(error)}`);
+      setToast({ tone: 'bad', text: 'Log export failed', detail: String(error) });
     }
   };
+
+  const exportLogs = () => exportLogsFor(selectedPod, selectedContainer);
 
   const loadPodYaml = async () => {
     try {
@@ -265,12 +268,20 @@ export function App() {
       <Nav icon={<Gauge size={16}/>} label="Cluster Overview" active={active === 'Cluster Overview'} onClick={() => setActive('Cluster Overview')} /><Nav icon={<Workflow size={16}/>} label="Workloads" active={active === 'Workloads'} onClick={() => setActive('Workloads')} /><Nav icon={<Network size={16}/>} label="Network" active={active === 'Network'} onClick={() => setActive('Network')} /><Nav icon={<HardDrive size={16}/>} label="Storage" active={active === 'Storage'} onClick={() => setActive('Storage')} /><Nav icon={<FileCog size={16}/>} label="Configuration" active={active === 'Configuration'} onClick={() => setActive('Configuration')} /><Nav icon={<Server size={16}/>} label="Nodes" active={active === 'Nodes'} onClick={() => setActive('Nodes')} /><Nav icon={<CircleAlert size={16}/>} label="Events" active={active === 'Events'} onClick={() => setActive('Events')} /><Nav icon={<BarChart3 size={16}/>} label="Reports" active={active === 'Reports'} onClick={() => setActive('Reports')} />
       <div className="section-title aws">CLOUD</div><Nav icon={<Network size={16}/>} label="Load Balancers"/><Nav icon={<Box size={16}/>} label="Node Pools"/><div className="section-title plugins">PLUGINS</div><Nav icon={<Terminal size={16}/>} label="Helm"/><Nav icon={<Workflow size={16}/>} label="Argo CD"/>
     </aside><main className="main"><div className="breadcrumbs">Cluster / {namespace} / {active}</div><div className="title-row"><div><h1>{active}</h1><p>Live Kubernetes resources from <b>{context}</b></p></div></div>
-      {showEvents ? <EventsPanel events={events} onRefresh={refreshEvents}/> : active === 'Workloads' ? <><div className="view-switch"><button className={workloadView === 'Pods' ? 'active' : ''} onClick={() => setWorkloadView('Pods')}>Pods ({pods.length})</button><button className={workloadView === 'Deployments' ? 'active' : ''} onClick={() => setWorkloadView('Deployments')}>Deployments ({deployments.length})</button></div>{workloadView === 'Pods' ? <PodsPanel pods={pods} selectedPod={selectedPod} onSelect={selectPod} onDelete={capabilities.deletePods ? deletePod : undefined} openMenu={openMenu} setOpenMenu={setOpenMenu}/> : <DeploymentsPanel deployments={deployments} onDelete={capabilities.deleteDeployments ? deleteDeployment : undefined} onScale={capabilities.patchDeployments ? scaleDeployment : undefined} onRestart={capabilities.patchDeployments ? restartDeployment : undefined} openMenu={openMenu} setOpenMenu={setOpenMenu}/>} {showDetail && selectedPod && <PodDetail pod={pods.find((pod) => pod.name === selectedPod)} namespace={namespace} containers={containers} events={events} selectedContainer={selectedContainer} setSelectedContainer={setSelectedContainer} onLoadLogs={() => void loadPodLogs(selectedPod, selectedContainer)} onLoadYaml={() => void loadPodYaml()} onApplyYaml={capabilities.patchPods ? () => void applyPodYaml() : undefined} yaml={yaml} editedYaml={editedYaml} setEditedYaml={setEditedYaml} yamlError={yamlError} logs={logs} isLoading={isLoadingLogs} onExport={exportLogs} onClose={() => setShowDetail(false)}/>}</> : <div className="empty"><ListTree size={32}/><h2>{active}</h2><p>This screen is scaffolded. The Kubernetes data layer will populate it.</p></div>}
-    </main></div></div>;
+      {showEvents ? <EventsPanel events={events} onRefresh={refreshEvents}/> : active === 'Workloads' ? <><div className="view-switch"><button className={workloadView === 'Pods' ? 'active' : ''} onClick={() => setWorkloadView('Pods')}>Pods ({pods.length})</button><button className={workloadView === 'Deployments' ? 'active' : ''} onClick={() => setWorkloadView('Deployments')}>Deployments ({deployments.length})</button></div>{workloadView === 'Pods' ? <PodsPanel pods={pods} selectedPod={selectedPod} onSelect={selectPod} onDelete={capabilities.deletePods ? deletePod : undefined} onExport={(podName) => void exportLogsFor(podName)}/> : <DeploymentsPanel deployments={deployments} onDelete={capabilities.deleteDeployments ? deleteDeployment : undefined} onScale={capabilities.patchDeployments ? scaleDeployment : undefined} onRestart={capabilities.patchDeployments ? restartDeployment : undefined}/>} {showDetail && selectedPod && <PodDetail pod={pods.find((pod) => pod.name === selectedPod)} namespace={namespace} containers={containers} events={events} selectedContainer={selectedContainer} setSelectedContainer={setSelectedContainer} onLoadLogs={() => void loadPodLogs(selectedPod, selectedContainer)} onLoadYaml={() => void loadPodYaml()} onApplyYaml={capabilities.patchPods ? () => void applyPodYaml() : undefined} yaml={yaml} editedYaml={editedYaml} setEditedYaml={setEditedYaml} yamlError={yamlError} logs={logs} isLoading={isLoadingLogs} onExport={exportLogs} onClose={() => setShowDetail(false)}/>}</> : <div className="empty"><ListTree size={32}/><h2>{active}</h2><p>This screen is scaffolded. The Kubernetes data layer will populate it.</p></div>}
+    </main></div><Toast message={toast} onDismiss={() => setToast(null)}/></div>;
 }
 
-function PodsPanel({ pods, selectedPod, onSelect, onDelete, openMenu, setOpenMenu }: { pods: PodRow[]; selectedPod: string; onSelect: (name: string) => void; onDelete?: (name: string) => void; openMenu: string | null; setOpenMenu: (name: string | null) => void }) { return <><div className="cards"><Stat label="Pods" value={pods.length}/><Stat label="Healthy" value={pods.filter((p) => p.status === 'Running').length}/><Stat label="Warnings" value={pods.filter((p) => p.status !== 'Running').length} danger/></div><div className="panel"><div className="panel-head"><span>Pods</span><div className="search"><Search size={15}/><input placeholder="Filter pods..." /></div></div><table><thead><tr><th>Name</th><th>Status</th><th>Ready</th><th>Age</th><th /></tr></thead><tbody>{pods.map((pod) => <tr key={pod.name} className={selectedPod === pod.name ? 'selected' : ''} onClick={() => onSelect(pod.name)}><td className="mono">{pod.name}</td><td><Status status={pod.status}/></td><td>{pod.ready}</td><td>{pod.age}</td><td className="action-cell"><button className="icon-btn" title="Pod actions" onClick={(event) => { event.stopPropagation(); setOpenMenu(openMenu === pod.name ? null : pod.name); }}><MoreVertical size={16}/></button>{openMenu === pod.name && <div className="action-menu">{onDelete && <button onClick={() => void onDelete(pod.name)}><Trash2 size={14}/> Delete pod</button>}<button onClick={() => onSelect(pod.name)}><Download size={14}/> Download logs</button></div>}</td></tr>)}</tbody></table></div></>; }
-function DeploymentsPanel({ deployments, onDelete, onScale, onRestart, openMenu, setOpenMenu }: { deployments: DeploymentRow[]; onDelete?: (name: string) => void; onScale?: (name: string) => void; onRestart?: (name: string) => void; openMenu: string | null; setOpenMenu: (name: string | null) => void }) { return <div className="panel"><div className="panel-head"><span>Deployments</span></div><table><thead><tr><th>Name</th><th>Ready</th><th>Available</th><th>Age</th><th>Actions</th></tr></thead><tbody>{deployments.map((deployment) => <tr key={deployment.name}><td className="mono">{deployment.name}</td><td>{deployment.ready}/{deployment.desired}</td><td>{deployment.available}</td><td>{deployment.age}</td><td className="action-cell"><button className="icon-btn" title="Deployment actions" onClick={() => setOpenMenu(openMenu === deployment.name ? null : deployment.name)}><MoreVertical size={16}/></button>{openMenu === deployment.name && <div className="action-menu">{onRestart && <button onClick={() => void onRestart(deployment.name)}>Rollout restart</button>}{onScale && <button onClick={() => void onScale(deployment.name)}>Scale replicas</button>}{onDelete && <button onClick={() => void onDelete(deployment.name)}><Trash2 size={14}/> Delete deployment</button>}<button onClick={() => setOpenMenu(null)}>View events</button></div>}</td></tr>)}</tbody></table></div>; }
+function PodsPanel({ pods, selectedPod, onSelect, onDelete, onExport }: { pods: PodRow[]; selectedPod: string; onSelect: (name: string) => void; onDelete?: (name: string) => void; onExport: (name: string) => void }) { return <><div className="cards"><Stat label="Pods" value={pods.length}/><Stat label="Healthy" value={pods.filter((p) => p.status === 'Running').length}/><Stat label="Warnings" value={pods.filter((p) => p.status !== 'Running').length} danger/></div><div className="panel"><div className="panel-head"><span>Pods</span><div className="search"><Search size={15}/><input placeholder="Filter pods..." /></div></div><table><thead><tr><th>Name</th><th>Status</th><th>Ready</th><th>Age</th><th /></tr></thead><tbody>{pods.map((pod) => <tr key={pod.name} className={selectedPod === pod.name ? 'selected' : ''} onClick={() => onSelect(pod.name)}><td className="mono">{pod.name}</td><td><Status status={pod.status}/></td><td>{pod.ready}</td><td>{pod.age}</td><td className="action-cell"><ActionMenu label="Pod actions" items={[
+    { label: 'Open details', icon: <ListTree size={14}/>, onSelect: () => onSelect(pod.name) },
+    { label: 'Download logs', icon: <Download size={14}/>, onSelect: () => void onExport(pod.name) },
+    ...(onDelete ? [{ label: 'Delete pod', icon: <Trash2 size={14}/>, danger: true, onSelect: () => void onDelete(pod.name) }] : []),
+  ]}/></td></tr>)}</tbody></table></div></>; }
+function DeploymentsPanel({ deployments, onDelete, onScale, onRestart }: { deployments: DeploymentRow[]; onDelete?: (name: string) => void; onScale?: (name: string) => void; onRestart?: (name: string) => void }) { return <div className="panel"><div className="panel-head"><span>Deployments</span></div><table><thead><tr><th>Name</th><th>Ready</th><th>Available</th><th>Age</th><th>Actions</th></tr></thead><tbody>{deployments.map((deployment) => <tr key={deployment.name}><td className="mono">{deployment.name}</td><td>{deployment.ready}/{deployment.desired}</td><td>{deployment.available}</td><td>{deployment.age}</td><td className="action-cell"><ActionMenu label="Deployment actions" items={[
+    ...(onRestart ? [{ label: 'Rollout restart', onSelect: () => void onRestart(deployment.name) }] : []),
+    ...(onScale ? [{ label: 'Scale replicas', onSelect: () => void onScale(deployment.name) }] : []),
+    ...(onDelete ? [{ label: 'Delete deployment', icon: <Trash2 size={14}/>, danger: true, onSelect: () => void onDelete(deployment.name) }] : []),
+  ]}/></td></tr>)}</tbody></table></div>; }
 function EventsPanel({ events, onRefresh }: { events: EventInfo[]; onRefresh?: () => void }) { return <div className="panel events-panel"><div className="panel-head"><span>Events</span><div className="panel-actions"><span className="muted">{events.length} in namespace</span>{onRefresh && <button onClick={onRefresh}>Refresh</button>}</div></div>{events.length === 0 ? <div className="empty-inline">No events found.</div> : <div className="event-list">{events.map((event) => <article className="event" key={`${event.name}-${event.timestamp}`}><CircleAlert size={16}/><div><strong>{event.reason}</strong><span>{event.message}</span><small>{event.kind} / {event.name}{event.timestamp ? ` · ${event.timestamp}` : ''}</small></div></article>)}</div>}</div>; }
 function PodDetail({ pod, namespace, containers, events, selectedContainer, setSelectedContainer, onLoadLogs, onLoadYaml, onApplyYaml, yaml, editedYaml, setEditedYaml, yamlError, logs, isLoading, onExport, onClose }: { pod?: PodRow; namespace: string; containers: string[]; events: EventInfo[]; selectedContainer: string; setSelectedContainer: (name: string) => void; onLoadLogs: () => void; onLoadYaml: () => void; onApplyYaml?: () => void; yaml: string; editedYaml: string; setEditedYaml: (value: string) => void; yamlError: string; logs: string; isLoading: boolean; onExport: () => void; onClose: () => void }) {
   const [tab, setTab] = useState<'Logs' | 'YAML' | 'Overview' | 'Events'>('Logs');

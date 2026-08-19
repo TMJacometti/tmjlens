@@ -58,6 +58,16 @@ export type NodeCondition = {
   healthy: boolean;
 };
 
+export type TaintEffect = 'NoExecute' | 'NoSchedule' | 'PreferNoSchedule';
+
+export type NodeTaint = {
+  key: string;
+  value?: string;
+  effect: TaintEffect | string;
+  /** `key=value:Effect`, the form kubectl prints and tolerations are written against. */
+  label: string;
+};
+
 export type NodePodInfo = {
   name: string;
   namespace: string;
@@ -93,7 +103,7 @@ export type NodeInfo = {
   pod_count: number;
   pod_capacity: number;
   conditions: NodeCondition[];
-  taints: number;
+  taints: NodeTaint[];
   pressure_reasons: string[];
   pressure: boolean;
   unschedulable: boolean;
@@ -168,6 +178,7 @@ export type Distribution = {
   instance_types: Bucket[];
   capacity_types: Bucket[];
   node_pools: Bucket[];
+  taints: Bucket[];
   kubelet_versions: Bucket[];
 };
 

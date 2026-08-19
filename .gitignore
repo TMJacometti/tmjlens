@@ -7,3 +7,12 @@ target/
 !.env.example
 .DS_Store
 *.log
+
+# Playwright
+test-results/
+playwright-report/
+.playwright/
+
+# Generated build metadata
+*.tsbuildinfo
+src-tauri/gen/schemas/
