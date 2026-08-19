@@ -7,6 +7,7 @@ import { WorkloadsPreview } from './WorkloadsPreview';
 import { NetworkPreview } from './NetworkPreview';
 import { LogsPreview } from './LogsPreview';
 import { PalettePreview } from './PalettePreview';
+import { PortForwardPreview } from './PortForwardPreview';
 import { installTauriStub } from './tauri-stub';
 import { awsFixture, azureFixture } from './fixture';
 import '../styles.css';
@@ -24,6 +25,7 @@ import '../cluster-overview.css';
  *   ?view=network   services, endpoints, ingresses, classes and policies
  *   ?view=logs      the streaming log viewer, fed by synthetic batches
  *   ?view=palette   the command palette with cluster search
+ *   ?view=forward   the port-forward panel with live tunnels
  */
 
 // The preview runs in a plain browser, where the Tauri IPC bridge does not exist.
@@ -43,7 +45,9 @@ if (view === 'settings') {
   root.render(
     <div className="app" style={{ height: 'auto', overflow: 'visible' }}>
       <main className="main" style={{ overflow: 'visible' }}>
-        {view === 'palette' ? (
+        {view === 'forward' ? (
+          <PortForwardPreview />
+        ) : view === 'palette' ? (
           <PalettePreview />
         ) : view === 'logs' ? (
           <LogsPreview />

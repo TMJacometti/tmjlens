@@ -172,6 +172,12 @@ const RELATION_GRAPH = {
   degraded_collectors: [],
 };
 
+const PORT_FORWARDS = [
+  { id: 'pf-a', namespace: 'payments', pod: 'checkout-api-7d9f8b6c4d-5kx2m', remote_port: 8080, local_port: 51234, local_address: '127.0.0.1', connections: 3 },
+  { id: 'pf-b', namespace: 'payments', pod: 'checkout-api-7d9f8b6c4d-5kx2m', remote_port: 8443, local_port: 51235, local_address: '127.0.0.1', connections: 0 },
+  { id: 'pf-c', namespace: 'payments', pod: 'postgres-0', remote_port: 5432, local_port: 55432, local_address: '127.0.0.1', connections: 1 },
+];
+
 type Internals = {
   invoke: (command: string, args?: unknown) => Promise<unknown>;
   transformCallback: (callback: (payload: unknown) => void, once?: boolean) => number;
@@ -279,6 +285,16 @@ export function installTauriStub() {
         }
         case 'get_relation_graph':
           return RELATION_GRAPH;
+        case 'list_pod_ports':
+          return [
+            { container: 'checkout-api', name: 'http', port: 8080, protocol: 'TCP' },
+            { container: 'checkout-api', name: 'metrics', port: 9090, protocol: 'TCP' },
+            { container: 'envoy-sidecar', name: 'https', port: 8443, protocol: 'TCP' },
+          ];
+        case 'list_port_forwards':
+          return PORT_FORWARDS;
+        case 'open_forward_in_browser':
+          return 'http://127.0.0.1:51234';
         case 'load_settings':
           return { context_environments: {}, confirm_destructive_in_production: true };
         case 'save_settings':

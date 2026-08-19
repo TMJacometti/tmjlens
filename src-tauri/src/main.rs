@@ -533,6 +533,12 @@ async fn stop_port_forward(forward_id: String) -> Result<(), String> {
     Ok(())
 }
 
+/// Opens a forward this app owns in the system browser, by id. Never takes a URL.
+#[tauri::command]
+async fn open_forward_in_browser(forward_id: String) -> Result<String, String> {
+    portforward::open_in_browser(&forward_id).await
+}
+
 #[tauri::command]
 async fn list_port_forwards() -> Result<Vec<portforward::ActiveForward>, String> {
     Ok(portforward::list())
@@ -1104,6 +1110,7 @@ fn main() {
             start_port_forward,
             stop_port_forward,
             list_port_forwards,
+            open_forward_in_browser,
             delete_workload,
             export_deployment_yaml,
             list_namespace_snapshot,

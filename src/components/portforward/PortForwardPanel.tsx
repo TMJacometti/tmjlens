@@ -1,7 +1,7 @@
 import { useEffect, useState } from 'react';
 import { invoke } from '@tauri-apps/api/core';
 import { listen } from '@tauri-apps/api/event';
-import { Copy, Plug, ShieldAlert, Square } from 'lucide-react';
+import { Copy, ExternalLink, Plug, ShieldAlert, Square } from 'lucide-react';
 import './portforward.css';
 
 export type PodPort = {
@@ -188,10 +188,12 @@ function ForwardList({
       ) : (
         <ul>
           {forwards.map((forward) => {
+            const scheme = [443, 8443, 9443].includes(forward.remote_port) ? 'https' : 'http';
             const address = `${forward.local_address}:${forward.local_port}`;
+            const url = `${scheme}://${address}`;
             return (
               <li key={forward.id}>
-                <code className="pf-address">{address}</code>
+                <code className="pf-address">{url}</code>
                 <span className="pf-arrow">→</span>
                 <span className="mono pf-target">
                   {forward.pod}:{forward.remote_port}
@@ -202,9 +204,21 @@ function ForwardList({
                 <button
                   type="button"
                   className="viz-toggle"
+                  title={`Open ${url} in your default browser`}
                   onClick={() => {
-                    void navigator.clipboard?.writeText(address);
-                    notify('Address copied', address, 'good');
+                    void invoke<string>('open_forward_in_browser', { forwardId: forward.id })
+                      .then((opened) => notify('Opened in your browser', opened, 'good'))
+                      .catch((cause) => notify('Could not open the browser', String(cause), 'bad'));
+                  }}
+                >
+                  <ExternalLink size={13} aria-hidden /> Open in browser
+                </button>
+                <button
+                  type="button"
+                  className="viz-toggle"
+                  onClick={() => {
+                    void navigator.clipboard?.writeText(url);
+                    notify('Address copied', url, 'good');
                   }}
                 >
                   <Copy size={13} aria-hidden /> Copy

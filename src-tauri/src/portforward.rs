@@ -159,6 +159,67 @@ pub async fn start(
     Ok(forward)
 }
 
+/// The scheme a forwarded port is most likely speaking.
+///
+/// A guess, and a narrow one: only the ports that conventionally mean TLS. Guessing
+/// wrong costs a browser warning, whereas defaulting everything to https would break
+/// the ordinary case.
+pub fn scheme_for(remote_port: u16) -> &'static str {
+    match remote_port {
+        443 | 8443 | 9443 => "https",
+        _ => "http",
+    }
+}
+
+pub fn url_for(forward: &ActiveForward) -> String {
+    format!(
+        "{}://{}:{}",
+        scheme_for(forward.remote_port),
+        forward.local_address,
+        forward.local_port
+    )
+}
+
+/// Opens one of this app's own forwards in the system browser.
+///
+/// Takes a forward id, never a URL. A command that opened whatever string the frontend
+/// handed it would be a general "launch anything" primitive; this one can only ever
+/// open a loopback address that the app itself opened, and refuses an id it does not
+/// know about.
+pub async fn open_in_browser(forward_id: &str) -> Result<String, String> {
+    let forward = active()
+        .lock()
+        .map_err(|error| error.to_string())?
+        .get(forward_id)
+        .cloned()
+        .ok_or_else(|| "That port forward is no longer open.".to_string())?;
+
+    let url = url_for(&forward);
+    let target = url.clone();
+
+    tokio::task::spawn_blocking(move || {
+        // The URL is built from a port number and a fixed host, so there is nothing
+        // in it for a shell to interpret.
+        let outcome = if cfg!(target_os = "windows") {
+            std::process::Command::new("cmd").args(["/C", "start", "", &target]).status()
+        } else if cfg!(target_os = "macos") {
+            std::process::Command::new("open").arg(&target).status()
+        } else {
+            std::process::Command::new("xdg-open").arg(&target).status()
+        };
+
+        match outcome {
+            Ok(status) if status.success() => Ok(()),
+            Ok(status) => Err(format!("The browser command exited with {status}.")),
+            Err(error) => Err(format!("No default browser could be launched: {error}")),
+        }
+    })
+    .await
+    .map_err(|error| format!("Browser task failed: {error}"))??;
+
+    Ok(url)
+}
+
 /// Ports a pod declares, so the UI can offer them instead of asking the operator to
 /// remember. Container ports are what the pod says it listens on.
 pub async fn pod_ports(client: Client, namespace: &str, pod_name: &str) -> Result<Vec<PodPort>, String> {
@@ -212,6 +273,42 @@ mod tests {
         let second = TcpListener::bind(("127.0.0.1", port)).await;
         assert!(second.is_err());
         assert_eq!(second.unwrap_err().kind(), std::io::ErrorKind::AddrInUse);
+    }
+
+    #[test]
+    fn only_the_conventional_tls_ports_are_guessed_as_https() {
+        assert_eq!(scheme_for(443), "https");
+        assert_eq!(scheme_for(8443), "https");
+        assert_eq!(scheme_for(9443), "https");
+        // Everything else stays http: guessing wrong there breaks the common case.
+        assert_eq!(scheme_for(80), "http");
+        assert_eq!(scheme_for(8080), "http");
+        assert_eq!(scheme_for(3000), "http");
+        assert_eq!(scheme_for(5432), "http");
+    }
+
+    #[test]
+    fn the_url_points_at_loopback_and_the_local_port() {
+        let forward = ActiveForward {
+            id: "x".into(),
+            namespace: "payments".into(),
+            pod: "checkout".into(),
+            remote_port: 8080,
+            local_port: 51234,
+            local_address: "127.0.0.1".into(),
+            connections: 0,
+        };
+        assert_eq!(url_for(&forward), "http://127.0.0.1:51234");
+
+        let secure = ActiveForward { remote_port: 443, ..forward };
+        assert_eq!(url_for(&secure), "https://127.0.0.1:51234");
+    }
+
+    #[tokio::test]
+    async fn opening_an_unknown_forward_is_refused_rather_than_launching_anything() {
+        let outcome = open_in_browser("never-opened").await;
+        assert!(outcome.is_err());
+        assert!(outcome.unwrap_err().contains("no longer open"));
     }
 
     #[test]
