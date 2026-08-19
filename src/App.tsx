@@ -7,6 +7,8 @@ import {
 } from 'lucide-react';
 import { ActionMenu } from './components/ActionMenu';
 import { WorkloadsPage } from './components/workloads/WorkloadsPage';
+import { NetworkPage } from './components/network/NetworkPage';
+import type { NetworkOverview } from './types/network';
 import { DeploymentDetailPanel } from './components/workloads/DeploymentDetailPanel';
 import { textToBase64 } from './lib/encoding';
 import { Toast, ToastMessage } from './components/Toast';
@@ -28,6 +30,9 @@ export function App() {
   const [workloadView, setWorkloadView] = useState<'Pods' | 'Deployments'>('Pods');
   const [selectedDeployment, setSelectedDeployment] = useState('');
   const [isExportingDeployment, setIsExportingDeployment] = useState(false);
+  const [network, setNetwork] = useState<NetworkOverview | null>(null);
+  const [networkError, setNetworkError] = useState('');
+  const [isLoadingNetwork, setIsLoadingNetwork] = useState(false);
   const [namespace, setNamespace] = useState('default');
   const [context, setContext] = useState('loading...');
   const [contexts, setContexts] = useState<string[]>([]);
@@ -234,6 +239,18 @@ export function App() {
     void loadPodLogs(podName, container);
   };
 
+  const loadNetwork = async () => {
+    setIsLoadingNetwork(true);
+    try {
+      setNetwork(await invoke<NetworkOverview>('get_network_overview', { context, namespace }));
+      setNetworkError('');
+    } catch (error) {
+      setNetworkError(String(error));
+    } finally {
+      setIsLoadingNetwork(false);
+    }
+  };
+
   const nodeAction = async (action: NodeAction, nodeName: string) => {
     const messages = { cordon: `Cordon node ${nodeName}?`, uncordon: `Uncordon node ${nodeName}?`, drain: `Drain node ${nodeName}? Pods will be evicted.`, delete: `Delete node ${nodeName}?` };
     if (!confirmDestructive(messages[action])) return;
@@ -334,12 +351,13 @@ export function App() {
   }, [showDetail, selectedPod, namespace, context]);
 
   useEffect(() => {
+    if (active === 'Network') void loadNetwork();
     if (active === 'Reports') void loadCreatedToday();
     if (active === 'Cluster Overview') {
       void loadClusterOverview();
       void refreshNodeCapabilities(context);
     }
-  }, [active, context]);
+  }, [active, context, namespace]);
 
   const showEvents = active === 'Events';
   if (active === 'Reports') {
@@ -359,7 +377,7 @@ export function App() {
       <Nav icon={<Gauge size={16}/>} label="Cluster Overview" active={active === 'Cluster Overview'} onClick={() => setActive('Cluster Overview')} /><Nav icon={<Workflow size={16}/>} label="Workloads" active={active === 'Workloads'} onClick={() => setActive('Workloads')} /><Nav icon={<Network size={16}/>} label="Network" active={active === 'Network'} onClick={() => setActive('Network')} /><Nav icon={<HardDrive size={16}/>} label="Storage" active={active === 'Storage'} onClick={() => setActive('Storage')} /><Nav icon={<FileCog size={16}/>} label="Configuration" active={active === 'Configuration'} onClick={() => setActive('Configuration')} /><Nav icon={<Server size={16}/>} label="Nodes" active={active === 'Nodes'} onClick={() => setActive('Nodes')} /><Nav icon={<CircleAlert size={16}/>} label="Events" active={active === 'Events'} onClick={() => setActive('Events')} /><Nav icon={<BarChart3 size={16}/>} label="Reports" active={active === 'Reports'} onClick={() => setActive('Reports')} />
       <div className="section-title aws">CLOUD</div><Nav icon={<Network size={16}/>} label="Load Balancers"/><Nav icon={<Box size={16}/>} label="Node Pools"/><div className="section-title plugins">PLUGINS</div><Nav icon={<Terminal size={16}/>} label="Helm"/><Nav icon={<Workflow size={16}/>} label="Argo CD"/>
     </aside><main className="main"><div className="breadcrumbs">Cluster / {namespace} / {active}</div><div className="title-row"><div><h1>{active}</h1><p>Live Kubernetes resources from <b>{context}</b></p></div></div>
-      {showEvents ? <EventsPanel events={events} onRefresh={refreshEvents}/> : active === 'Workloads' ? <><WorkloadsPage view={workloadView} onViewChange={setWorkloadView} pods={pods} deployments={deployments} selectedPod={selectedPod} selectedDeployment={selectedDeployment} capabilities={{ deletePods: capabilities.deletePods, deleteDeployments: capabilities.deleteDeployments, patchDeployments: capabilities.patchDeployments }} onSelectPod={selectPod} onSelectDeployment={(name) => { setSelectedDeployment(name); setShowDetail(false); }} onDeletePod={(name) => void deletePod(name)} onExportPodLogs={(name) => void exportLogsFor(name)} onDeleteDeployment={(name) => void deleteDeployment(name)} onScaleDeployment={(name) => void scaleDeployment(name)} onRestartDeployment={(name) => void restartDeployment(name)} onExportDeployment={(name) => void exportDeployment(name)}/>{selectedDeployment && <DeploymentDetailPanel context={context} namespace={namespace} deploymentName={selectedDeployment} onClose={() => setSelectedDeployment('')} onExport={() => void exportDeployment(selectedDeployment)} exporting={isExportingDeployment} onOpenLogs={openDeploymentLogs}/>}{showDetail && selectedPod && <PodDetail pod={pods.find((pod) => pod.name === selectedPod)} namespace={namespace} containers={containers} events={events} selectedContainer={selectedContainer} setSelectedContainer={setSelectedContainer} onLoadLogs={() => void loadPodLogs(selectedPod, selectedContainer)} onLoadYaml={() => void loadPodYaml()} onApplyYaml={capabilities.patchPods ? () => void applyPodYaml() : undefined} yaml={yaml} editedYaml={editedYaml} setEditedYaml={setEditedYaml} yamlError={yamlError} logs={logs} isLoading={isLoadingLogs} onExport={exportLogs} onClose={() => setShowDetail(false)}/>}</> : <div className="empty"><ListTree size={32}/><h2>{active}</h2><p>This screen is scaffolded. The Kubernetes data layer will populate it.</p></div>}
+      {showEvents ? <EventsPanel events={events} onRefresh={refreshEvents}/> : active === 'Network' ? <NetworkPage data={network} loading={isLoadingNetwork} error={networkError} onRefresh={() => void loadNetwork()}/> : active === 'Workloads' ? <><WorkloadsPage view={workloadView} onViewChange={setWorkloadView} pods={pods} deployments={deployments} selectedPod={selectedPod} selectedDeployment={selectedDeployment} capabilities={{ deletePods: capabilities.deletePods, deleteDeployments: capabilities.deleteDeployments, patchDeployments: capabilities.patchDeployments }} onSelectPod={selectPod} onSelectDeployment={(name) => { setSelectedDeployment(name); setShowDetail(false); }} onDeletePod={(name) => void deletePod(name)} onExportPodLogs={(name) => void exportLogsFor(name)} onDeleteDeployment={(name) => void deleteDeployment(name)} onScaleDeployment={(name) => void scaleDeployment(name)} onRestartDeployment={(name) => void restartDeployment(name)} onExportDeployment={(name) => void exportDeployment(name)}/>{selectedDeployment && <DeploymentDetailPanel context={context} namespace={namespace} deploymentName={selectedDeployment} onClose={() => setSelectedDeployment('')} onExport={() => void exportDeployment(selectedDeployment)} exporting={isExportingDeployment} onOpenLogs={openDeploymentLogs}/>}{showDetail && selectedPod && <PodDetail pod={pods.find((pod) => pod.name === selectedPod)} namespace={namespace} containers={containers} events={events} selectedContainer={selectedContainer} setSelectedContainer={setSelectedContainer} onLoadLogs={() => void loadPodLogs(selectedPod, selectedContainer)} onLoadYaml={() => void loadPodYaml()} onApplyYaml={capabilities.patchPods ? () => void applyPodYaml() : undefined} yaml={yaml} editedYaml={editedYaml} setEditedYaml={setEditedYaml} yamlError={yamlError} logs={logs} isLoading={isLoadingLogs} onExport={exportLogs} onClose={() => setShowDetail(false)}/>}</> : <div className="empty"><ListTree size={32}/><h2>{active}</h2><p>This screen is scaffolded. The Kubernetes data layer will populate it.</p></div>}
     </main></div>
     <Toast message={toast} onDismiss={() => setToast(null)}/>
     {showSettings && <SettingsPanel settings={settings} onSettingsChange={setSettings} onKubeconfigChanged={() => void reloadContexts()} onClose={() => setShowSettings(false)} notify={notify}/>}

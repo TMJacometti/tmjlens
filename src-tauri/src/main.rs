@@ -1,6 +1,7 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
 mod cluster;
+mod network;
 mod settings;
 mod workloads;
 
@@ -415,6 +416,12 @@ async fn export_deployment_yaml(
 }
 
 #[tauri::command]
+async fn get_network_overview(context: String, namespace: String) -> Result<network::NetworkOverview, String> {
+    let client = client_for_context(&context).await?;
+    network::collect(client, &namespace).await
+}
+
+#[tauri::command]
 async fn delete_pod(context: String, namespace: String, pod_name: String) -> Result<(), String> {
     let client = client_for_context(&context).await?;
     let api: Api<Pod> = Api::namespaced(client, &namespace);
@@ -818,6 +825,7 @@ fn main() {
             check_permission,
             list_deployments,
             get_deployment_detail,
+            get_network_overview,
             export_deployment_yaml,
             list_namespace_snapshot,
             list_created_today,
