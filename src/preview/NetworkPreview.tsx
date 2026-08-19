@@ -1,4 +1,6 @@
+import { useState } from 'react';
 import { NetworkPage } from '../components/network/NetworkPage';
+import { YamlEditor } from '../components/YamlEditor';
 import type { NetworkOverview } from '../types/network';
 
 /**
@@ -128,6 +130,7 @@ const FIXTURE: NetworkOverview = {
 };
 
 export function NetworkPreview() {
+  const [target, setTarget] = useState<{ kind: string; name: string } | null>({ kind: 'Service', name: 'fraud-scoring' });
   return (
     <>
       <div className="breadcrumbs">Cluster / payments / Network</div>
@@ -139,7 +142,20 @@ export function NetworkPreview() {
           </p>
         </div>
       </div>
-      <NetworkPage data={FIXTURE} loading={false} error="" onRefresh={() => undefined} />
+      <NetworkPage data={FIXTURE} loading={false} error="" onRefresh={() => undefined} onEditYaml={(kind, name) => setTarget({ kind, name })} />
+      {target && (
+        <YamlEditor
+          context="prod-shark"
+          namespace="payments"
+          kind={target.kind}
+          name={target.name}
+          canEdit
+          onClose={() => setTarget(null)}
+          onSaved={() => undefined}
+          notify={(text, detail) => console.log('[toast]', text, detail)}
+          confirmSave={() => true}
+        />
+      )}
     </>
   );
 }

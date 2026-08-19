@@ -1,5 +1,6 @@
 import { Fragment, useMemo, useState } from 'react';
-import { ArrowRight, Globe, Lock, RefreshCw, Search, ShieldAlert } from 'lucide-react';
+import { ArrowRight, FileCode2, Globe, ListTree, Lock, RefreshCw, Search, ShieldAlert } from 'lucide-react';
+import { ActionMenu } from '../ActionMenu';
 import { SeverityBadge, StatTile } from '../cluster/charts';
 import {
   NETWORK_VIEWS, formatPorts, viewCount,
@@ -13,9 +14,11 @@ type Props = {
   loading: boolean;
   error: string;
   onRefresh: () => void;
+  /** Opens the shared YAML editor for a resource in this namespace. */
+  onEditYaml: (kind: 'Service' | 'Ingress', name: string) => void;
 };
 
-export function NetworkPage({ data, loading, error, onRefresh }: Props) {
+export function NetworkPage({ data, loading, error, onRefresh, onEditYaml }: Props) {
   const [view, setView] = useState<NetworkView>('Services');
   const [filter, setFilter] = useState('');
   const [openService, setOpenService] = useState<string | null>(null);
@@ -123,10 +126,10 @@ export function NetworkPage({ data, loading, error, onRefresh }: Props) {
         </div>
       </div>
 
-      {view === 'Services' && <ServicesTable services={services} openService={openService} onToggle={setOpenService} />}
+      {view === 'Services' && <ServicesTable services={services} openService={openService} onToggle={setOpenService} onEditYaml={onEditYaml} />}
       {view === 'Endpoint Slices' && <SlicesTable slices={match(data.endpoint_slices)} />}
       {view === 'Endpoints' && <EndpointsTable endpoints={match(data.endpoints)} />}
-      {view === 'Ingresses' && <IngressList ingresses={ingresses} />}
+      {view === 'Ingresses' && <IngressList ingresses={ingresses} onEditYaml={onEditYaml} />}
       {view === 'Ingress Classes' && <ClassesTable classes={match(data.ingress_classes)} />}
       {view === 'Network Policies' && <PoliciesTable policies={match(data.network_policies)} />}
     </div>
@@ -173,10 +176,12 @@ function ServicesTable({
   services,
   openService,
   onToggle,
+  onEditYaml,
 }: {
   services: ServiceInfo[];
   openService: string | null;
   onToggle: (name: string | null) => void;
+  onEditYaml: (kind: 'Service' | 'Ingress', name: string) => void;
 }) {
   if (services.length === 0) {
     return (
@@ -200,6 +205,7 @@ function ServicesTable({
               <th>Ports</th>
               <th>Endpoints</th>
               <th>Age</th>
+              <th />
             </tr>
           </thead>
           <tbody>
@@ -223,10 +229,23 @@ function ServicesTable({
                     <span className="viz-dim"> / {service.total_endpoints}</span>
                   </td>
                   <td>{service.age}</td>
+                  <td className="wl-actions" onClick={(event) => event.stopPropagation()}>
+                    <ActionMenu
+                      label="Service actions"
+                      items={[
+                        {
+                          label: openService === service.name ? 'Hide endpoints' : 'Show endpoints',
+                          icon: <ListTree size={14} />,
+                          onSelect: () => onToggle(openService === service.name ? null : service.name),
+                        },
+                        { label: 'Edit YAML', icon: <FileCode2 size={14} />, onSelect: () => onEditYaml('Service', service.name) },
+                      ]}
+                    />
+                  </td>
                 </tr>
                 {openService === service.name && (
                   <tr className="net-expanded">
-                    <td colSpan={8}>
+                    <td colSpan={9}>
                       <ServiceDetail service={service} />
                     </td>
                   </tr>
@@ -302,7 +321,7 @@ function ServiceDetail({ service }: { service: ServiceInfo }) {
   );
 }
 
-function IngressList({ ingresses }: { ingresses: IngressInfo[] }) {
+function IngressList({ ingresses, onEditYaml }: { ingresses: IngressInfo[]; onEditYaml: (kind: 'Service' | 'Ingress', name: string) => void }) {
   if (ingresses.length === 0) {
     return (
       <div className="viz-card">
@@ -322,7 +341,13 @@ function IngressList({ ingresses }: { ingresses: IngressInfo[] }) {
                 class {ingress.class} · {ingress.address ?? 'no address assigned'} · {ingress.age}
               </p>
             </div>
-            <SeverityBadge severity={ingress.health} label={ingress.reason} />
+            <div className="net-card-actions">
+              <SeverityBadge severity={ingress.health} label={ingress.reason} />
+              <ActionMenu
+                label="Ingress actions"
+                items={[{ label: 'Edit YAML', icon: <FileCode2 size={14} />, onSelect: () => onEditYaml('Ingress', ingress.name) }]}
+              />
+            </div>
           </header>
 
           {ingress.rules.length === 0 ? (
