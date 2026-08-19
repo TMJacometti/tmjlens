@@ -1,6 +1,7 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
 mod cluster;
+mod logs;
 mod network;
 mod settings;
 mod workloads;
@@ -420,6 +421,40 @@ async fn export_deployment_yaml(
 async fn get_network_overview(context: String, namespace: String) -> Result<network::NetworkOverview, String> {
     let client = client_for_context(&context).await?;
     network::collect(client, &namespace).await
+}
+
+#[tauri::command]
+#[allow(clippy::too_many_arguments)]
+async fn start_log_stream(
+    app: tauri::AppHandle,
+    context: String,
+    namespace: String,
+    pod_name: String,
+    container: Option<String>,
+    tail_lines: Option<i64>,
+    timestamps: Option<bool>,
+    previous: Option<bool>,
+    stream_id: String,
+) -> Result<(), String> {
+    let client = client_for_context(&context).await?;
+    logs::start(
+        app,
+        client,
+        namespace,
+        pod_name,
+        container,
+        tail_lines,
+        timestamps.unwrap_or(false),
+        previous.unwrap_or(false),
+        stream_id,
+    )
+    .await
+}
+
+#[tauri::command]
+async fn stop_log_stream(stream_id: String) -> Result<(), String> {
+    logs::stop(&stream_id);
+    Ok(())
 }
 
 #[tauri::command]
@@ -857,6 +892,8 @@ fn main() {
             list_pods,
             list_pod_containers,
             get_pod_logs,
+            start_log_stream,
+            stop_log_stream,
             delete_pod,
             get_resource_yaml,
             apply_resource_yaml,

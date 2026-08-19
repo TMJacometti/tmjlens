@@ -128,14 +128,57 @@ status:
   loadBalancer: {}
 `;
 
-type Internals = { invoke: (command: string, args?: unknown) => Promise<unknown> };
+type Internals = {
+  invoke: (command: string, args?: unknown) => Promise<unknown>;
+  transformCallback: (callback: (payload: unknown) => void, once?: boolean) => number;
+};
+
+/**
+ * Tauri delivers events by storing a callback on `window` under a generated id and
+ * calling it from the host. Reproducing that here is what lets the preview exercise
+ * the streaming log viewer, which is driven entirely by events rather than by invoke.
+ */
+const pendingCallbacks = new Map<number, (payload: unknown) => void>();
+const listeners = new Map<number, { event: string; handler: (payload: unknown) => void }>();
+let nextCallbackId = 1;
+
+export function emitPreviewEvent(event: string, payload: unknown) {
+  for (const [id, entry] of listeners) {
+    if (entry.event === event) entry.handler({ event, id, payload });
+  }
+}
+
+let streaming: ReturnType<typeof setInterval> | undefined;
+
+function startPreviewStream(streamId: string) {
+  stopPreviewStream();
+  let counter = 0;
+  streaming = setInterval(() => {
+    const lines = Array.from({ length: 3 }, () => {
+      counter += 1;
+      const level = counter % 11 === 0 ? 'WARN ' : counter % 17 === 0 ? 'ERROR' : 'INFO ';
+      return `2026-08-19T13:${String(counter % 60).padStart(2, '0')}:12.418Z ${level} [checkout] request ${counter} handled in ${8 + (counter % 40)}ms`;
+    });
+    emitPreviewEvent('pod-log', { stream_id: streamId, lines });
+  }, 350);
+}
+
+function stopPreviewStream() {
+  if (streaming) clearInterval(streaming);
+  streaming = undefined;
+}
 
 export function installTauriStub() {
   const host = window as unknown as { __TAURI_INTERNALS__?: Internals };
   if (host.__TAURI_INTERNALS__) return;
 
   host.__TAURI_INTERNALS__ = {
-    invoke: async (command) => {
+    transformCallback: (callback) => {
+      const id = nextCallbackId++;
+      pendingCallbacks.set(id, callback);
+      return id;
+    },
+    invoke: async (command, args) => {
       switch (command) {
         case 'read_kubeconfig':
           return KUBECONFIG;
@@ -148,7 +191,27 @@ export function installTauriStub() {
         case 'apply_resource_yaml':
           return SERVICE_YAML;
         case 'save_bytes_to_downloads':
-          return 'C:\Users\operator\Downloads\preview.yaml';
+          return 'C:\\Users\\operator\\Downloads\\preview.yaml';
+        case 'get_pod_logs':
+          return Array.from({ length: 40 }, (_, index) =>
+            `2026-08-19T12:${String(index % 60).padStart(2, '0')}:03.117Z INFO  [checkout] startup step ${index + 1} complete`,
+          ).join('\n');
+        case 'start_log_stream':
+          startPreviewStream((args as { streamId: string }).streamId);
+          return null;
+        case 'stop_log_stream':
+          stopPreviewStream();
+          return null;
+        case 'plugin:event|listen': {
+          const { event, handler } = args as { event: string; handler: number };
+          const stored = pendingCallbacks.get(handler);
+          if (stored) listeners.set(handler, { event, handler: stored });
+          return handler;
+        }
+        case 'plugin:event|unlisten': {
+          listeners.delete((args as { eventId: number }).eventId);
+          return null;
+        }
         case 'load_settings':
           return { context_environments: {}, confirm_destructive_in_production: true };
         case 'save_settings':

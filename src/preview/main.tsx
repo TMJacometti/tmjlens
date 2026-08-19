@@ -5,6 +5,7 @@ import { SettingsPreview } from './SettingsPreview';
 import { ReportPreview } from './ReportPreview';
 import { WorkloadsPreview } from './WorkloadsPreview';
 import { NetworkPreview } from './NetworkPreview';
+import { LogsPreview } from './LogsPreview';
 import { installTauriStub } from './tauri-stub';
 import { awsFixture, azureFixture } from './fixture';
 import '../styles.css';
@@ -20,6 +21,7 @@ import '../cluster-overview.css';
  *   ?view=report    the generated executive PDF, rendered inline
  *   ?view=workloads the modernised workloads screen with a stuck rollout
  *   ?view=network   services, endpoints, ingresses, classes and policies
+ *   ?view=logs      the streaming log viewer, fed by synthetic batches
  */
 
 // The preview runs in a plain browser, where the Tauri IPC bridge does not exist.
@@ -39,7 +41,9 @@ if (view === 'settings') {
   root.render(
     <div className="app" style={{ height: 'auto', overflow: 'visible' }}>
       <main className="main" style={{ overflow: 'visible' }}>
-        {view === 'network' ? (
+        {view === 'logs' ? (
+          <LogsPreview />
+        ) : view === 'network' ? (
           <NetworkPreview />
         ) : view === 'workloads' ? (
           <WorkloadsPreview />

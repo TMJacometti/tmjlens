@@ -1,0 +1,122 @@
+.log-viewer {
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+}
+
+.log-viewer .log-toolbar {
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  flex-wrap: wrap;
+  height: auto;
+  padding: 10px 15px;
+  border-bottom: 1px solid var(--viz-line);
+}
+
+.log-viewer .log-toolbar select {
+  height: 28px;
+  padding: 0 8px;
+  border: 1px solid #303641;
+  border-radius: 6px;
+  background: #181c23;
+  color: #d9dde5;
+  font-size: 11.5px;
+  cursor: pointer;
+}
+
+.log-viewer .log-toolbar button {
+  height: 28px;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 11.5px;
+}
+
+.log-check {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 11.5px;
+  color: var(--viz-ink-2);
+  cursor: pointer;
+  white-space: nowrap;
+}
+
+.log-check input[type='checkbox'] {
+  width: 14px;
+  height: 14px;
+  accent-color: #e7eaf0;
+  cursor: pointer;
+}
+
+.log-search {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  height: 28px;
+  padding: 0 10px;
+  border: 1px solid #303641;
+  border-radius: 6px;
+  background: #0e1116;
+  color: #68717f;
+}
+
+.log-search input {
+  width: 150px;
+  border: 0;
+  outline: 0;
+  background: transparent;
+  color: var(--viz-ink);
+  font-size: 11.5px;
+}
+
+.log-search input::placeholder {
+  color: #59616d;
+}
+
+.log-spacer {
+  flex: 1;
+}
+
+.log-status {
+  font-size: 11px;
+  color: var(--viz-muted);
+  white-space: nowrap;
+}
+
+.log-error {
+  padding: 10px 15px;
+  background: #2a1114;
+  border-bottom: 1px solid #562326;
+  color: #ff9b95;
+  font-size: 11.5px;
+  line-height: 1.5;
+  white-space: pre-wrap;
+}
+
+/* States the reader needs to trust the window: what was dropped, what was filtered. */
+.log-note {
+  padding: 7px 15px;
+  background: #171b22;
+  border-bottom: 1px solid var(--viz-grid);
+  color: var(--viz-muted);
+  font-size: 10.5px;
+}
+
+.log-body {
+  flex: 1;
+  min-height: 320px;
+  max-height: 560px;
+  overflow: auto;
+  background: #0d1015;
+}
+
+.log-body pre {
+  margin: 0;
+  padding: 14px 16px;
+  font: 11.5px/1.7 "JetBrains Mono", Consolas, monospace;
+  color: #c7cdd6;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
