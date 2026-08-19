@@ -118,7 +118,7 @@ pub struct NodeInfo {
     pub pod_count: usize,
     pub pod_capacity: i64,
     pub conditions: Vec<NodeCondition>,
-    pub taints: usize,
+    pub taints: Vec<NodeTaint>,
     pub pressure_reasons: Vec<String>,
     pub pressure: bool,
     pub unschedulable: bool,
@@ -132,6 +132,15 @@ pub struct NodeCondition {
     pub reason: Option<String>,
     pub message: Option<String>,
     pub healthy: bool,
+}
+
+#[derive(Serialize, Clone)]
+pub struct NodeTaint {
+    pub key: String,
+    pub value: Option<String>,
+    pub effect: String,
+    /// `key=value:Effect`, the form kubectl prints and tolerations are written against.
+    pub label: String,
 }
 
 #[derive(Serialize, Clone)]
@@ -211,6 +220,9 @@ pub struct Distribution {
     pub instance_types: Vec<Bucket>,
     pub capacity_types: Vec<Bucket>,
     pub node_pools: Vec<Bucket>,
+    /// Nodes carrying each distinct taint, so the fleet's taints are visible
+    /// without opening every node.
+    pub taints: Vec<Bucket>,
     pub kubelet_versions: Vec<Bucket>,
 }
 
@@ -578,6 +590,24 @@ pub fn detect_provider(provider_ids: &[String], label_keys: &[String], endpoint:
     Provider::Generic
 }
 
+/// NoExecute evicts pods that are already running, so it leads; PreferNoSchedule is
+/// only a hint, so it trails. Within an effect the order is the node's own.
+fn effect_rank(effect: &str) -> u8 {
+    match effect {
+        "NoExecute" => 0,
+        "NoSchedule" => 1,
+        "PreferNoSchedule" => 2,
+        _ => 3,
+    }
+}
+
+pub fn taint_label(key: &str, value: Option<&str>, effect: &str) -> String {
+    match value.filter(|value| !value.is_empty()) {
+        Some(value) => format!("{key}={value}:{effect}"),
+        None => format!("{key}:{effect}"),
+    }
+}
+
 pub fn node_pool_of(labels: &std::collections::BTreeMap<String, String>) -> Option<String> {
     [
         "eks.amazonaws.com/nodegroup",
@@ -834,6 +864,7 @@ pub async fn collect(context: &str, endpoint: String, client: Client) -> Result<
     let mut instance_counts: HashMap<String, usize> = HashMap::new();
     let mut capacity_type_counts: HashMap<String, usize> = HashMap::new();
     let mut node_pool_counts: HashMap<String, usize> = HashMap::new();
+    let mut taint_counts: HashMap<String, usize> = HashMap::new();
     let mut kubelet_counts: HashMap<String, usize> = HashMap::new();
 
     for node in nodes {
@@ -894,6 +925,27 @@ pub async fn collect(context: &str, endpoint: String, client: Client) -> Result<
             .unwrap_or_else(|| "unknown".to_string());
         let capacity_type = capacity_type_of(&labels, provider);
         let node_pool = node_pool_of(&labels);
+
+        let mut node_taints: Vec<NodeTaint> = node
+            .spec
+            .as_ref()
+            .and_then(|spec| spec.taints.as_ref())
+            .map(|taints| {
+                taints
+                    .iter()
+                    .map(|taint| NodeTaint {
+                        label: taint_label(&taint.key, taint.value.as_deref(), &taint.effect),
+                        key: taint.key.clone(),
+                        value: taint.value.clone(),
+                        effect: taint.effect.clone(),
+                    })
+                    .collect()
+            })
+            .unwrap_or_default();
+        node_taints.sort_by_key(|taint| effect_rank(&taint.effect));
+        for taint in &node_taints {
+            *taint_counts.entry(taint.label.clone()).or_default() += 1;
+        }
         let node_system = status.and_then(|status| status.node_info.as_ref());
         let kubelet_version = node_system.map(|info| info.kubelet_version.clone()).unwrap_or_else(|| "unknown".to_string());
 
@@ -965,7 +1017,7 @@ pub async fn collect(context: &str, endpoint: String, client: Client) -> Result<
             pod_count,
             pod_capacity,
             conditions,
-            taints: node.spec.as_ref().and_then(|spec| spec.taints.as_ref()).map(Vec::len).unwrap_or(0),
+            taints: node_taints,
             pressure: !pressure_reasons.is_empty(),
             pressure_reasons,
             unschedulable,
@@ -1033,6 +1085,7 @@ pub async fn collect(context: &str, endpoint: String, client: Client) -> Result<
         instance_types: ranked_buckets(instance_counts, 8),
         capacity_types: ranked_buckets(capacity_type_counts, 4),
         node_pools: ranked_buckets(node_pool_counts, 8),
+        taints: ranked_buckets(taint_counts, 10),
         kubelet_versions: ranked_buckets(kubelet_counts, 6),
     };
 
@@ -1634,6 +1687,21 @@ mod tests {
         // A managed provider with no spot marker is a regular node, not an unknown.
         assert_eq!(capacity_type_of(&labels(&[("agentpool", "system")]), Provider::Aks), "ON_DEMAND");
         assert_eq!(capacity_type_of(&labels(&[]), Provider::Generic), "UNKNOWN");
+    }
+
+    #[test]
+    fn formats_taints_the_way_tolerations_are_written() {
+        assert_eq!(taint_label("dedicated", Some("gpu"), "NoSchedule"), "dedicated=gpu:NoSchedule");
+        assert_eq!(taint_label("node.kubernetes.io/unreachable", None, "NoExecute"), "node.kubernetes.io/unreachable:NoExecute");
+        // An empty value is not the same as `key=:Effect`.
+        assert_eq!(taint_label("spot", Some(""), "NoSchedule"), "spot:NoSchedule");
+    }
+
+    #[test]
+    fn orders_taints_by_how_disruptive_the_effect_is() {
+        let mut effects = ["PreferNoSchedule", "NoSchedule", "NoExecute"];
+        effects.sort_by_key(|effect| effect_rank(effect));
+        assert_eq!(effects, ["NoExecute", "NoSchedule", "PreferNoSchedule"]);
     }
 
     #[test]

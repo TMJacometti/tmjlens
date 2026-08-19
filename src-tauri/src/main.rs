@@ -257,6 +257,48 @@ async fn get_pod_logs(
     }
 }
 
+/// Strips any directory component, so a caller can never escape the target folder.
+fn safe_file_stem(name: &str) -> String {
+    let stem = std::path::Path::new(name)
+        .file_name()
+        .and_then(|name| name.to_str())
+        .unwrap_or("")
+        .trim()
+        .trim_matches('.');
+    if stem.is_empty() { "logs".to_string() } else { stem.to_string() }
+}
+
+/// Writes a text file into the user's Downloads folder and returns the full path.
+///
+/// The frontend has no filesystem permission at all: it passes a file name, never a
+/// path, and this command decides where that lands. The timestamp means exporting
+/// the same pod twice never silently overwrites the earlier capture.
+#[tauri::command]
+async fn save_to_downloads(
+    app: tauri::AppHandle,
+    file_name: String,
+    contents: String,
+) -> Result<String, String> {
+    use tauri::Manager;
+
+    let directory = app
+        .path()
+        .download_dir()
+        .map_err(|error| format!("Unable to locate the Downloads folder: {error}"))?;
+    let stamp = chrono::Local::now().format("%Y%m%d-%H%M%S");
+    let target = directory.join(format!("{}-{stamp}.log", safe_file_stem(&file_name)));
+
+    tokio::task::spawn_blocking(move || {
+        if let Some(parent) = target.parent() {
+            std::fs::create_dir_all(parent).map_err(|error| format!("Unable to create {}: {error}", parent.display()))?;
+        }
+        std::fs::write(&target, contents).map_err(|error| format!("Unable to write {}: {error}", target.display()))?;
+        Ok(target.to_string_lossy().to_string())
+    })
+    .await
+    .map_err(|error| format!("Write task failed: {error}"))?
+}
+
 #[tauri::command]
 async fn delete_pod(context: String, namespace: String, pod_name: String) -> Result<(), String> {
     let client = client_for_context(&context).await?;
@@ -641,9 +683,8 @@ async fn list_events(context: String, namespace: String) -> Result<Vec<EventInfo
 
 fn main() {
     tauri::Builder::default()
-        .plugin(tauri_plugin_dialog::init())
-        .plugin(tauri_plugin_fs::init())
         .invoke_handler(tauri::generate_handler![
+            save_to_downloads,
             current_context,
             list_kube_contexts,
             list_namespaces,
@@ -702,6 +743,17 @@ users:
         .expect("valid kubeconfig");
 
         assert_eq!(namespace_for_context(&kubeconfig, "prod-admin"), Some("payments".to_string()));
+    }
+
+    #[test]
+    fn strips_directory_components_from_a_save_name() {
+        use super::safe_file_stem;
+        assert_eq!(safe_file_stem("checkout-api-abc123-logs"), "checkout-api-abc123-logs");
+        assert_eq!(safe_file_stem("../../../etc/passwd"), "passwd");
+        assert_eq!(safe_file_stem("C:\\Windows\\System32\\config"), "config");
+        assert_eq!(safe_file_stem(""), "logs");
+        assert_eq!(safe_file_stem("   "), "logs");
+        assert_eq!(safe_file_stem(".."), "logs");
     }
 
     #[test]

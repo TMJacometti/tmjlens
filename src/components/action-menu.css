@@ -1,0 +1,47 @@
+/*
+ * Row action menu. Positioned by ActionMenu.tsx and portalled to document.body,
+ * so it is never clipped by a panel's `overflow: hidden`.
+ */
+.tmj-menu {
+  position: fixed;
+  z-index: 200;
+  min-width: 180px;
+  max-width: 280px;
+  padding: 5px;
+  background: #1b2028;
+  border: 1px solid #3a424e;
+  border-radius: 7px;
+  box-shadow: 0 12px 28px #0009;
+}
+
+.tmj-menu button {
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  width: 100%;
+  min-height: 32px;
+  border: 0;
+  background: transparent;
+  color: #d9dde5;
+  text-align: left;
+  padding: 8px 9px;
+  border-radius: 5px;
+  cursor: pointer;
+  font-size: 12px;
+  white-space: nowrap;
+}
+
+.tmj-menu button:hover,
+.tmj-menu button:focus-visible {
+  background: #2a313c;
+  outline: none;
+}
+
+.tmj-menu button.is-danger {
+  color: #ff8a8a;
+}
+
+.tmj-menu button.is-danger:hover,
+.tmj-menu button.is-danger:focus-visible {
+  background: #332226;
+}

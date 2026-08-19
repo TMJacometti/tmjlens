@@ -12,6 +12,10 @@ import type { ClusterOverview, NodeInfo } from '../types/cluster';
 
 const GI = 1024 ** 3;
 
+function taint(key: string, value: string | undefined, effect: string) {
+  return { key, value, effect, label: value ? `${key}=${value}:${effect}` : `${key}:${effect}` };
+}
+
 function node(overrides: Partial<NodeInfo> & Pick<NodeInfo, 'name'>): NodeInfo {
   return {
     ready: true,
@@ -43,7 +47,7 @@ function node(overrides: Partial<NodeInfo> & Pick<NodeInfo, 'name'>): NodeInfo {
       { kind: 'DiskPressure', status: 'False', reason: 'KubeletHasNoDiskPressure', healthy: true },
       { kind: 'PIDPressure', status: 'False', reason: 'KubeletHasSufficientPID', healthy: true },
     ],
-    taints: 0,
+    taints: [],
     pressure_reasons: [],
     pressure: false,
     unschedulable: false,
@@ -110,6 +114,12 @@ export const awsFixture: ClusterOverview = {
       ],
       pressure: true,
       pressure_reasons: ['MemoryPressure'],
+      // A node the control plane has given up on carries the standard eviction taints.
+      taints: [
+        taint('node.kubernetes.io/unreachable', undefined, 'NoExecute'),
+        taint('node.kubernetes.io/unreachable', undefined, 'NoSchedule'),
+        taint('node.kubernetes.io/memory-pressure', undefined, 'NoSchedule'),
+      ],
       pods: [],
       pod_count: 0,
     }),
@@ -122,11 +132,18 @@ export const awsFixture: ClusterOverview = {
       capacity_type: 'SPOT',
       instance_type: 'm6i.4xlarge',
       node_pool: 'ng-spot-b',
+      taints: [
+        taint('workload', 'batch', 'NoSchedule'),
+        taint('nvidia.com/gpu', 'present', 'NoSchedule'),
+        taint('spot-instance', 'true', 'PreferNoSchedule'),
+      ],
       cpu_allocatable_milli: 15_890,
       cpu_requested_milli: 14_100,
+      cpu_limit_milli: 19_200,
       cpu_used_milli: 12_400,
       memory_allocatable_bytes: 62 * GI,
       memory_requested_bytes: 55 * GI,
+      memory_limit_bytes: 71 * GI,
       memory_used_bytes: 48 * GI,
       pod_count: 41,
       pod_capacity: 110,
@@ -219,6 +236,14 @@ export const awsFixture: ClusterOverview = {
       { label: 'ng-spot-c', value: 2 },
       { label: 'ng-general-a', value: 2 },
       { label: 'ng-memory-a', value: 1 },
+    ],
+    taints: [
+      { label: 'workload=batch:NoSchedule', value: 1 },
+      { label: 'nvidia.com/gpu=present:NoSchedule', value: 1 },
+      { label: 'spot-instance=true:PreferNoSchedule', value: 1 },
+      { label: 'node.kubernetes.io/unreachable:NoExecute', value: 1 },
+      { label: 'node.kubernetes.io/unreachable:NoSchedule', value: 1 },
+      { label: 'node.kubernetes.io/memory-pressure:NoSchedule', value: 1 },
     ],
     kubelet_versions: [
       { label: 'v1.30.4-eks-a1b2c3', value: 6 },
@@ -402,7 +427,7 @@ export const azureFixture: ClusterOverview = {
       kubelet_version: 'v1.29.9',
       kubelet_minor: 29,
       roles: ['agent'],
-      taints: 1,
+      taints: [taint('kubernetes.azure.com/scalesetpriority', 'spot', 'NoSchedule')],
       cpu_used_milli: undefined,
       memory_used_bytes: undefined,
       cpu_allocatable_milli: 7820,
@@ -432,6 +457,7 @@ export const azureFixture: ClusterOverview = {
       { label: 'userpool', value: 1 },
       { label: 'spotpool', value: 1 },
     ],
+    taints: [{ label: 'kubernetes.azure.com/scalesetpriority=spot:NoSchedule', value: 1 }],
     kubelet_versions: [{ label: 'v1.29.9', value: 3 }],
   },
   events: {
