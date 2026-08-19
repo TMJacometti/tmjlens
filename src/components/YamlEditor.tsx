@@ -1,7 +1,8 @@
 import { useEffect, useRef, useState } from 'react';
 import { createPortal } from 'react-dom';
 import { invoke } from '@tauri-apps/api/core';
-import { Download, RotateCcw, Save, X } from 'lucide-react';
+import { ArrowLeft, Download, GitCompare, RotateCcw, Save, X } from 'lucide-react';
+import { DiffReview } from './DiffReview';
 import { textToBase64 } from '../lib/encoding';
 import './yaml-editor.css';
 
@@ -23,6 +24,7 @@ export function YamlEditor({ context, namespace, kind, name, canEdit, onClose, o
   const [draft, setDraft] = useState('');
   const [error, setError] = useState('');
   const [busy, setBusy] = useState(false);
+  const [reviewing, setReviewing] = useState(false);
   const area = useRef<HTMLTextAreaElement>(null);
 
   const dirty = loaded !== '' && draft !== loaded;
@@ -39,6 +41,7 @@ export function YamlEditor({ context, namespace, kind, name, canEdit, onClose, o
       });
       setLoaded(body);
       setDraft(body);
+      setReviewing(false);
     } catch (cause) {
       setError(String(cause));
     } finally {
@@ -78,6 +81,7 @@ export function YamlEditor({ context, namespace, kind, name, canEdit, onClose, o
       // adopting it is what lets a second save in a row succeed.
       setLoaded(updated);
       setDraft(updated);
+      setReviewing(false);
       notify(`${kind} ${name} updated`, 'The cluster accepted the document.', 'good');
       onSaved();
     } catch (cause) {
@@ -125,9 +129,20 @@ export function YamlEditor({ context, namespace, kind, name, canEdit, onClose, o
               <RotateCcw size={14} aria-hidden /> Reload
             </button>
             {canEdit ? (
-              <button type="button" className="viz-primary" onClick={() => void save()} disabled={busy || !dirty}>
-                <Save size={14} aria-hidden /> {busy ? 'Saving…' : 'Save to cluster'}
-              </button>
+              reviewing ? (
+                <>
+                  <button type="button" className="viz-toggle" onClick={() => setReviewing(false)} disabled={busy}>
+                    <ArrowLeft size={14} aria-hidden /> Back to editing
+                  </button>
+                  <button type="button" className="viz-primary" onClick={() => void save()} disabled={busy}>
+                    <Save size={14} aria-hidden /> {busy ? 'Applying…' : 'Apply to cluster'}
+                  </button>
+                </>
+              ) : (
+                <button type="button" className="viz-primary" onClick={() => setReviewing(true)} disabled={busy || !dirty}>
+                  <GitCompare size={14} aria-hidden /> Review changes
+                </button>
+              )
             ) : (
               <span className="viz-dim">Kubernetes denied patch access</span>
             )}
@@ -140,20 +155,24 @@ export function YamlEditor({ context, namespace, kind, name, canEdit, onClose, o
         {error && <div className="yaml-error">{error}</div>}
 
         <p className="yaml-lead">
-          This is the stored document, including <code>status</code> and <code>managedFields</code>. Saving replaces it
-          using the <code>resourceVersion</code> it was loaded with, so a change made by someone else in the meantime is
-          reported as a conflict rather than overwritten.
+          {reviewing
+            ? 'Only what you changed, with a few lines of context either side. Nothing has been written to the cluster yet.'
+            : 'This is the stored document, including status and managedFields. Applying replaces it using the resourceVersion it was loaded with, so a change made by someone else in the meantime is reported as a conflict rather than overwritten.'}
         </p>
 
-        <textarea
-          ref={area}
-          className="yaml-area"
-          value={draft}
-          spellCheck={false}
-          readOnly={!canEdit}
-          onChange={(event) => setDraft(event.target.value)}
-          aria-label={`YAML for ${kind} ${name}`}
-        />
+        {reviewing ? (
+          <DiffReview before={loaded} after={draft} />
+        ) : (
+          <textarea
+            ref={area}
+            className="yaml-area"
+            value={draft}
+            spellCheck={false}
+            readOnly={!canEdit}
+            onChange={(event) => setDraft(event.target.value)}
+            aria-label={`YAML for ${kind} ${name}`}
+          />
+        )}
       </section>
     </div>,
     document.body,

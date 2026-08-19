@@ -1,5 +1,5 @@
 import { fileURLToPath } from 'node:url';
-import { defineConfig } from 'vite';
+import { defineConfig } from 'vitest/config';
 import react from '@vitejs/plugin-react';
 
 export default defineConfig({
@@ -15,5 +15,12 @@ export default defineConfig({
   server: {
     host: '0.0.0.0',
     port: 5173,
+  },
+  test: {
+    // Two runners share this tree, so the suffix decides which owns a file:
+    // `.test.ts` is a Vitest unit test, `.spec.ts` is a Playwright end-to-end test.
+    // Without this, Vitest collects the Playwright specs and fails on their hooks.
+    include: ['**/*.test.{ts,tsx}'],
+    exclude: ['node_modules/**', 'dist/**', 'tests/**'],
   },
 });
