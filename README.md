@@ -1,116 +1,206 @@
-# tmjLens 🦈
+<div align="center">
 
-A developer-first Kubernetes/EKS desktop operations console. The goal is to replace the everyday Lens workflow with a lightweight, extensible, security-conscious desktop app.
+# 🦈 tmjLens
 
-## Development
+**A Kubernetes operations console that tells you what is wrong — not just what exists.**
 
-The practical setup, prerequisites, run commands, architecture flow, current implementation status, and troubleshooting steps are documented in [docs/GETTING_STARTED.md](docs/GETTING_STARTED.md).
+Cross-cloud cluster health, real capacity accounting, and RBAC-safe operations
+in a native desktop app that stores none of your credentials.
 
-Quick start from the repository root after installing the prerequisites:
+`Tauri 2` · `Rust` · `React` · `TypeScript`
 
-```powershell
-cd src
-npm install
-cd ../src-tauri
-cargo tauri dev
-```
+[![License: AGPL v3](https://img.shields.io/badge/License-AGPL_v3-blue.svg)](LICENSE)
+![Platform](https://img.shields.io/badge/platform-Windows%20%7C%20Linux%20%7C%20macOS-lightgrey)
+![Status](https://img.shields.io/badge/status-v0.1%20early-orange)
 
-The app uses the active kubeconfig context and Kubernetes RBAC. It does not store cluster credentials locally.
+</div>
 
-Build the Windows executable:
+![tmjLens cluster overview](docs/images/cluster-overview.png)
 
-```powershell
-cd src-tauri
-cargo tauri build
-```
+---
 
-The generated application is placed at `src-tauri/target/release/tmjlens.exe`.
+## Why another Kubernetes UI
 
-## Current status
+Most Kubernetes dashboards are object browsers. They render the same lists `kubectl get`
+already gives you, and leave the actual diagnosis to you.
 
-The working Kubernetes core currently reads kubeconfig contexts, namespaces, pods, deployments, events, pod containers, and bounded pod logs through the Rust/Tauri backend. YAML view/apply for Pods and Deployments, RBAC capability discovery, and workload actions (scale, rollout restart, delete) are in place.
+That is fine until something breaks. Then the questions are never "what pods exist" —
+they are *why is this pod Pending*, *which node is about to evict things*, *did we
+actually run out of capacity or did someone just over-request*, and *am I allowed to
+fix it*.
 
-The Cluster Overview module reports cluster health as a weighted composite score with evidence-backed findings, and charts the capacity model — allocatable versus requests versus limits versus live usage — for the cluster and for every node. It also breaks the fleet down by Availability Zone, capacity type, instance type, and node pool, detects kubelet version skew, and gates node operations on `SelfSubjectAccessReview`.
+tmjLens is built around those questions.
 
-The module is **provider-agnostic**. It detects EKS, AKS, GKE, or a plain Kubernetes cluster from `spec.providerID`, node labels, and the API endpoint, then normalises each provider's node-pool and Spot labels to a single shape:
+## What it does
+
+### Cluster health, scored and explained
+
+A single composite score built from seven weighted signals — node readiness, node
+conditions, pod readiness, container stability, scheduling headroom, version alignment,
+and workload availability. Every signal shows its own score, its weight, and the
+evidence behind it.
+
+<img src="docs/images/health-score.png" alt="Health score with weighted signals" width="720">
+
+Below the score sit **findings**: concrete, evidence-backed statements with the affected
+resources and a next step. Nothing is asserted without a source signal — if a collector
+was denied by RBAC or `metrics-server` is absent, the overview says so instead of
+quietly showing zeros.
+
+### Capacity the way the scheduler sees it
+
+The reason pods go Pending is almost never live CPU usage — it is **requests**, which
+reserve capacity whether or not anything consumes it. tmjLens plots allocatable,
+requested, limits, and live usage on one axis, per cluster and per node, and marks
+where limits cross allocatable so overcommit is visible at a glance.
+
+Requests are computed with the real Kubernetes rule, including init containers competing
+for the maximum and sidecars adding to the sum.
+
+### Multi-cloud with no configuration
+
+Point it at any cluster. tmjLens detects **EKS, AKS, GKE, or plain Kubernetes** from
+`spec.providerID`, node labels, and the API endpoint, then normalises each provider's
+node-pool and Spot labels into one shape:
 
 | | EKS | AKS | GKE |
 |---|---|---|---|
-| Node pool | `eks.amazonaws.com/nodegroup`, `karpenter.sh/nodepool`, `alpha.eksctl.io/nodegroup-name` | `kubernetes.azure.com/agentpool`, `agentpool` | `cloud.google.com/gke-nodepool` |
-| Spot | `eks.amazonaws.com/capacityType`, `karpenter.sh/capacity-type` | `kubernetes.azure.com/scalesetpriority` | `cloud.google.com/gke-spot`, `cloud.google.com/gke-preemptible` |
+| Node pool | `eks.amazonaws.com/nodegroup`, `karpenter.sh/nodepool` | `kubernetes.azure.com/agentpool` | `cloud.google.com/gke-nodepool` |
+| Spot | `eks.amazonaws.com/capacityType` | `kubernetes.azure.com/scalesetpriority` | `cloud.google.com/gke-spot` |
 
-Cloud-specific enrichment is optional and additive: on EKS the control plane status, platform version, and OIDC issuer are read through the AWS CLI. Everything else works identically on every provider, and the module degrades explicitly when `metrics-server` is absent or RBAC denies a collector.
+Cloud SDK calls are strictly additive. Without cloud credentials you lose the control
+plane's platform version and OIDC issuer — nothing else.
 
-Cancellable log follow streams, EC2 correlation through the AWS SDK, load balancer and storage context, and the plugin SDK are still in progress.
+### Node detail that answers scheduling questions
 
-The visual layer can be reviewed without a cluster by running `npm run dev` in `src/` and opening `/preview.html`, which renders the overview against a fixture covering the awkward cases (an unready node, pressure, a cordon, version skew, overcommitted limits). Append `?provider=aks` to review the path with no cloud enrichment and no metrics-server.
+Conditions, taints with their effects, capacity, and every pod on the node.
 
-## Vision
+<img src="docs/images/node-detail.png" alt="Node detail with taints and capacity" width="820">
 
-- Multi-cluster, multi-cloud Kubernetes explorer using the user's kubeconfig and, where present, the cloud provider's own credential chain.
-- Read logs, inspect events, restart workloads, and edit/apply YAML according to Kubernetes RBAC.
-- Strong separation between read-only developer usage and privileged DevOps operations.
-- Cloud-aware views for nodes, node pools, AZs, load balancers, block/file storage and identity context.
-- Resource relationship map: Ingress → Service → Deployment → Pods → ConfigMap/Secret/PVC.
-- Plugin architecture for AWS, Helm, Argo CD, Vault, Prometheus, Grafana and Airflow.
-- No mandatory central backend and no credential storage by tmjLens.
+### Operations gated by Kubernetes, not by the UI
 
-## Proposed stack
+Cordon, drain, delete, scale, rollout restart, and YAML apply are all checked against
+`SelfSubjectAccessReview` before the button appears — and Kubernetes remains the
+authority regardless. There is no client-side permission model to bypass.
 
-- Desktop shell: Tauri 2
-- Frontend: React + TypeScript + Vite
-- UI: Tailwind CSS + shadcn/ui style components
-- Kubernetes: Rust `kube` client in Tauri backend
-- AWS: Rust AWS SDK, using the standard AWS credential chain
-- YAML: Monaco Editor or CodeMirror
-- State: TanStack Query + lightweight local UI state
-- Tests: Vitest + Playwright + Rust unit tests
+## Status
 
-## MVP
+Version `0.1` — the Kubernetes core and the cluster overview are usable; the rest is
+scaffolding. This table is the honest state, not the roadmap.
 
-1. Load kubeconfig contexts.
-2. Connect to Kubernetes using the active context.
-3. Cluster/namespace/resource explorer.
-4. Pods, Deployments, StatefulSets, DaemonSets, Jobs and CronJobs.
-5. Pod logs with follow, timestamps, container selection and previous logs.
-6. Events.
-7. YAML viewer/editor with diff before apply.
-8. Apply/update/delete guarded by Kubernetes RBAC and explicit confirmation.
-9. Context/namespace switcher.
-10. Basic RBAC-aware action visibility.
+| Area | State |
+|---|---|
+| Kubeconfig contexts, namespaces, pods, deployments, events | ✅ Working |
+| Bounded pod logs, container selection, log export | ✅ Working |
+| Cluster overview: health, capacity, distribution, findings | ✅ Working |
+| Provider detection (EKS / AKS / GKE / generic) | ✅ Working |
+| Node operations (cordon, drain, delete) with RBAC gating | ✅ Working |
+| Workload operations (scale, rollout restart, delete) | ✅ Working |
+| YAML view and server-side apply (Pods, Deployments) | ✅ Working |
+| Live log follow (cancellable streams) | 🚧 Planned |
+| Resource relation graph, command palette, global search | 🚧 Planned |
+| EC2 correlation, load balancer and storage context | 🚧 Planned |
+| Plugin SDK (Helm, Argo CD, Vault, Prometheus, Grafana) | 🚧 Planned |
+| Network, Storage, Configuration screens | 🚧 Scaffolded only |
 
-## Phase 2
+See [docs/ROADMAP.md](docs/ROADMAP.md) for the full plan.
 
-- EKS topology and AWS resource context.
-- Resource relationship graph.
-- Helm releases.
-- Port-forward.
-- Safe pod restart/rollout controls.
-- Search across resources.
-- Command palette.
+## Security posture
 
-## Phase 3
+- **No credential storage.** tmjLens never writes Kubernetes tokens, cloud credentials,
+  or Secret values to disk. It uses your existing kubeconfig and your cloud provider's
+  own credential chain.
+- **Kubernetes RBAC is the only authority.** The UI hides actions it knows are
+  unauthorized, but never grants anything; a `403` is handled as an expected state.
+- **Secret values are hidden by default**, even when technically readable.
+- **Destructive actions require explicit confirmation.**
+- **The UI has no filesystem permission.** The webview is granted `core:default` and
+  nothing else — no `fs`, no `dialog`. Log exports go through a single Rust command
+  that writes into your Downloads folder and strips any path component from the file
+  name, so the frontend can never choose where a file lands.
+- **No telemetry.** None, in any build.
 
-- Plugins: AWS, Argo CD, Vault, Prometheus, Grafana, Airflow.
-- Health diagnostics: "Why is this workload broken?"
-- Metrics panels.
-- Audit trail of actions performed by the local client.
-- Optional SSO integrations.
+> **Not yet production-hardened.** This is a `0.1`. It has not had an independent
+> security review, and the Tauri CSP is currently disabled (`"csp": null` in
+> [src-tauri/tauri.conf.json](src-tauri/tauri.conf.json)) — tightening that is tracked
+> for `v1.0`. Treat it accordingly on clusters that matter.
 
-## Security principles
+## Quick start
 
-- Never store AWS credentials, Kubernetes tokens or Secret values on disk by default.
-- Respect Kubernetes RBAC as the source of truth.
-- Never expose Secret values in search, logs or diagnostics unless explicitly requested and authorized.
-- Require confirmation for destructive actions.
-- Separate read-only and write capabilities in the UI.
-- Redact sensitive fields in diagnostics and telemetry.
-- No telemetry in MVP.
+Prerequisites: [Rust](https://rustup.rs/), [Node.js 20+](https://nodejs.org/), and the
+Tauri CLI (`cargo install tauri-cli`). Plus a working `kubectl` context.
 
-## UX principles
+```bash
+cd src && npm install
+cd ../src-tauri && cargo tauri dev
+```
 
-The main workflow should take fewer clicks than kubectl:
+Build a release binary:
 
-`Cluster → Namespace → Resource → Inspect → Logs/YAML/Events → Action`
+```bash
+cd src-tauri && cargo tauri build
+```
 
-The UI should feel like an operations cockpit rather than a generic Kubernetes dashboard.
+The executable lands in `src-tauri/target/release/`. Full prerequisites, kubeconfig
+notes, and troubleshooting are in [CONTRIBUTING.md](CONTRIBUTING.md).
+
+## Development
+
+The visual layer runs against fixtures, so you can iterate on it without a cluster:
+
+```bash
+cd src && npm run dev
+# then open http://localhost:5173/preview.html
+```
+
+| URL | Renders |
+|---|---|
+| `/preview.html` | Cluster overview, EKS fixture with full cloud enrichment |
+| `/preview.html?provider=aks` | The same page with no cloud enrichment and no metrics-server |
+| `/preview.html?view=actions` | Row action menu inside a clipping panel |
+
+The fixtures deliberately cover the awkward cases: an unready node, memory and disk
+pressure, a cordon, kubelet version skew, overcommitted limits, multiple taints, and
+long resource names.
+
+```bash
+cd src-tauri && cargo test    # Rust unit tests
+cd src && npm run build       # type-check and bundle
+cd src && npm run test:e2e    # Playwright regression tests
+```
+
+## Architecture
+
+```text
+React + TypeScript UI
+        │  Tauri commands (typed, async)
+        ▼
+Rust application layer
+  ├── kube client — contexts, resources, logs, SelfSubjectAccessReview
+  ├── cluster overview — provider detection, capacity model, health, findings
+  └── cloud context — optional, read-only enrichment
+```
+
+The frontend never talks to Kubernetes directly and holds no filesystem permission —
+every cluster call and every disk write goes through a typed Rust command. Layer
+details are in [CONTRIBUTING.md](CONTRIBUTING.md); product direction is in
+[docs/ROADMAP.md](docs/ROADMAP.md).
+
+## Contributing
+
+Issues and pull requests are welcome. Please read [AGENTS.md](AGENTS.md) first — it
+documents the engineering rules this codebase holds to, particularly around credential
+handling, RBAC, and never performing destructive operations silently.
+
+## License
+
+Copyright © 2026 Thiago Mattar Jacometti.
+
+Licensed under the **GNU Affero General Public License v3.0** — see [LICENSE](LICENSE).
+
+In practice: fork it, run it, modify it freely. But if you distribute a modified
+version — **or run one as a network service** — you must publish your source under the
+same license. The AGPL's network clause is deliberate: it is what stops tmjLens from
+being turned into a closed hosted product.
+
+Commercial licensing on different terms is available from the copyright holder.

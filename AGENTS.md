@@ -1,39 +1,44 @@
-# Codex instructions for tmjLens
+# Agent instructions for tmjLens
 
-## Goal
-Implement tmjLens as a secure, lightweight desktop Kubernetes/EKS operations console. Read `PROJECT_SPEC.md`, `ARCHITECTURE.md`, and `docs/ROADMAP.md` before making architectural decisions.
+Read [CONTRIBUTING.md](CONTRIBUTING.md) first. Its engineering rules, setup, layout,
+and validation commands apply to you exactly as they apply to a human contributor.
+This file only adds what is specific to working here as an agent.
 
-## Engineering rules
+## Before deciding anything architectural
 
-- Do not store Kubernetes tokens, AWS credentials or Secret values in local app storage.
-- Kubernetes RBAC is authoritative. Never implement a client-side permission bypass.
-- Never silently execute destructive operations.
-- Hide Secret values by default.
-- Use bounded, cancellable Kubernetes watches/log streams.
-- Handle Forbidden responses as expected user authorization states.
-- Keep Kubernetes functionality usable without AWS integration.
-- Keep AWS integration read-only until explicitly added to the roadmap.
-- Prefer small typed service interfaces between React and Rust.
-- Add tests for resource adapters, RBAC capability mapping, YAML diff/apply flows and log stream cancellation.
-- Do not add telemetry in MVP.
+Read [docs/ROADMAP.md](docs/ROADMAP.md) for where the project is going, and
+`src-tauri/src/cluster.rs` for how the overview pipeline is actually built — it is the
+reference for how a subsystem in this codebase is expected to look.
 
-## UX priorities
+## Non-negotiables
 
-1. Logs should be reachable in two clicks from a Pod.
-2. YAML editing should show a diff before Apply.
-3. Cluster and namespace switching must always be visible.
-4. Errors should explain what Kubernetes denied and which resource caused it.
-5. The UI should remain useful in read-only mode.
+The rules in CONTRIBUTING are not suggestions to weigh against convenience. In
+particular, do not:
 
-## Implementation order
+- introduce a client-side permission model, or hide a `403` instead of surfacing it;
+- add a filesystem, shell, or network permission to `capabilities/default.json` when a
+  narrow Rust command would do;
+- render a zero, an empty list, or a neutral state where the real answer is "this
+  could not be collected";
+- add telemetry, analytics, or crash reporting.
 
-1. Complete Tauri metadata/build configuration.
-2. Implement kubeconfig context enumeration.
-3. Implement namespace enumeration.
-4. Implement generic Kubernetes resource APIs.
-5. Implement Pods and logs.
-6. Implement Events.
-7. Implement YAML editor + diff + apply.
-8. Implement RBAC capability discovery.
-9. Add workload operations.
-10. Add EKS and plugin infrastructure.
+## Verify, do not assume
+
+- Run `cargo test`, `npm run build`, and `npm run test:e2e` before reporting done.
+- For UI work, actually render it. `npm run dev` plus `/preview.html` needs no cluster,
+  and the fixtures already cover the awkward states. Screenshot it and look at it.
+- When you fix a bug, prove the regression test catches it by breaking the fix on
+  purpose and watching the test fail.
+- Report what actually happened. If a step was skipped or a test failed, say so.
+
+## Data hygiene
+
+This is a public repository. Never commit real cluster data — no real pod, node,
+namespace, cluster, or account identifiers, in fixtures, tests, comments, or
+screenshots. Invent names.
+
+## Style
+
+Match the surrounding code. Comments are sparse and explain *why*, not *what* — the
+existing ones exist because the reasoning was not recoverable from the code alone.
+Prefer small typed service interfaces between React and Rust.
