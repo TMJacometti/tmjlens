@@ -9,11 +9,19 @@ import { expect, test } from '@playwright/test';
 test.beforeEach(async ({ page }) => {
   await page.setViewportSize({ width: 1400, height: 1000 });
   await page.goto('/preview.html?view=workloads');
-  await page.waitForSelector('.viz-table');
+  // The detail panel below also renders a .viz-table, so waiting for that selector
+  // can pass before the inventory arrives — and the late reflow closes any menu
+  // opened meanwhile (menus close on scroll by design). Wait for inventory content.
+  await page.getByText('nightly-reconcile').waitFor();
 });
 
 const openMenu = async (page: import('@playwright/test').Page, rowText: string) => {
-  await page.getByRole('row').filter({ hasText: rowText }).getByRole('button').click();
+  const trigger = page.getByRole('row').filter({ hasText: rowText }).getByRole('button');
+  // The menu closes on scroll by design, and clicking a row below the fold makes
+  // Playwright scroll to it — so settle the scroll first, then open.
+  await trigger.scrollIntoViewIfNeeded();
+  await page.waitForTimeout(200);
+  await trigger.click();
   return page.locator('.tmj-menu');
 };
 
@@ -43,6 +51,8 @@ test('a job and a cron job offer neither', async ({ page }) => {
   await expect(job).not.toContainText('Scale…');
   await expect(job).not.toContainText('Rollout restart');
   await page.keyboard.press('Escape');
+  // Under load the next click can race the close; wait for the menu to be gone.
+  await expect(page.locator('.tmj-menu')).toHaveCount(0);
 
   const cron = await openMenu(page, 'nightly-reconcile');
   await expect(cron).not.toContainText('Scale…');

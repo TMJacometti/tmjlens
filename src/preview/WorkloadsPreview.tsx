@@ -4,6 +4,7 @@ import { WorkloadsPage } from '../components/workloads/WorkloadsPage';
 import { DeploymentDetailPanel } from '../components/workloads/DeploymentDetailPanel';
 import { WorkloadInventoryTable } from '../components/workloads/WorkloadInventoryTable';
 import type { WorkloadInventory } from '../types/workload-list';
+import type { PodUsageRow } from '../types/metrics';
 
 /**
  * The modernised workloads screen against fixtures, with a deployment whose rollout
@@ -25,6 +26,34 @@ const DEPLOYMENTS = [
   { name: 'ledger-reconciler', ready: 0, desired: 2, available: 0, age: '5d' },
   { name: 'notification-worker', ready: 2, desired: 2, available: 2, age: '88d' },
 ];
+
+const USAGE: Record<string, PodUsageRow> = {
+  'checkout-api-7d9f8b6c4d-5kx2m': {
+    name: 'checkout-api-7d9f8b6c4d-5kx2m', cpu_milli: 182, memory_bytes: 402 * 1024 * 1024,
+    cpu_request_milli: 200, cpu_limit_milli: 500, memory_request_bytes: 256 * 1024 * 1024, memory_limit_bytes: 1024 * 1024 * 1024,
+    sampled_at: new Date(Date.now() - 12_000).toISOString(), window: '30s',
+    containers: [
+      { name: 'api', cpu_milli: 170, memory_bytes: 384 * 1024 * 1024, cpu_request_milli: 200, cpu_limit_milli: 500, memory_request_bytes: 256 * 1024 * 1024, memory_limit_bytes: 1024 * 1024 * 1024 },
+      { name: 'envoy', cpu_milli: 12, memory_bytes: 18 * 1024 * 1024, cpu_request_milli: 0, cpu_limit_milli: 0, memory_request_bytes: 0, memory_limit_bytes: 0 },
+    ],
+  },
+  'checkout-api-7d9f8b6c4d-9wq8p': {
+    name: 'checkout-api-7d9f8b6c4d-9wq8p', cpu_milli: 505, memory_bytes: 981 * 1024 * 1024,
+    cpu_request_milli: 200, cpu_limit_milli: 500, memory_request_bytes: 256 * 1024 * 1024, memory_limit_bytes: 1024 * 1024 * 1024,
+    sampled_at: new Date(Date.now() - 9_000).toISOString(), window: '30s',
+    containers: [
+      { name: 'api', cpu_milli: 505, memory_bytes: 981 * 1024 * 1024, cpu_request_milli: 200, cpu_limit_milli: 500, memory_request_bytes: 256 * 1024 * 1024, memory_limit_bytes: 1024 * 1024 * 1024 },
+    ],
+  },
+  'ledger-reconciler-6d4b9c7f8d-2xk9p': {
+    name: 'ledger-reconciler-6d4b9c7f8d-2xk9p', cpu_milli: 88, memory_bytes: 1.4 * 1024 * 1024 * 1024,
+    cpu_request_milli: 100, cpu_limit_milli: 0, memory_request_bytes: 1024 * 1024 * 1024, memory_limit_bytes: 0,
+    sampled_at: new Date(Date.now() - 20_000).toISOString(), window: '30s',
+    containers: [
+      { name: 'reconciler', cpu_milli: 88, memory_bytes: 1.4 * 1024 * 1024 * 1024, cpu_request_milli: 100, cpu_limit_milli: 0, memory_request_bytes: 1024 * 1024 * 1024, memory_limit_bytes: 0 },
+    ],
+  },
+};
 
 export function WorkloadsPreview() {
   const [view, setView] = useState<'Pods' | 'Deployments'>('Deployments');
@@ -56,6 +85,9 @@ export function WorkloadsPreview() {
         onDeleteDeployment={() => undefined}
         onExportDeployment={() => undefined}
         podsLive
+        usage={USAGE}
+        usageAvailable
+        usageReason=""
         controllers={<WorkloadInventoryTable inventory={inventory} loading={false} error="" selected="" canDelete onSelect={() => undefined} onEditYaml={() => undefined} onDelete={() => undefined} onExportYaml={() => undefined} canPatch={() => true} onScale={() => undefined} onRestart={() => undefined} />}
       />
       {deployment && (

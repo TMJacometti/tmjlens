@@ -2,6 +2,7 @@ import { useEffect, useMemo, useState } from 'react';
 import { Download, ListTree, Search, Trash2 } from 'lucide-react';
 import { ActionMenu } from '../ActionMenu';
 import { ageFrom } from '../../lib/format';
+import { formatCpuMilli, formatMemoryBytes, memorySeverity, pctOf, type PodUsageRow } from '../../types/metrics';
 import { SeverityBadge, StatTile } from '../cluster/charts';
 import { deploymentSeverity, podSeverity, type DeploymentRow, type PodRow } from '../../types/workloads';
 import './workloads.css';
@@ -18,6 +19,9 @@ type Props = {
   controllers: React.ReactNode;
   /** Whether the pod list is being kept current by a watch, or is a static snapshot. */
   podsLive: boolean;
+  usage: Record<string, PodUsageRow>;
+  usageAvailable: boolean;
+  usageReason: string;
   onViewChange: (view: 'Pods' | 'Deployments') => void;
   pods: PodRow[];
   deployments: DeploymentRow[];
@@ -33,7 +37,7 @@ type Props = {
 };
 
 export function WorkloadsPage(props: Props) {
-  const { view, pods, deployments, controllers, podsLive } = props;
+  const { view, pods, deployments, controllers, podsLive, usageAvailable, usageReason } = props;
 
   // Ages are rendered from timestamps, so they need a clock that moves. Thirty
   // seconds is finer than the minute granularity they display.
@@ -110,6 +114,9 @@ export function WorkloadsPage(props: Props) {
         )}
       </div>
 
+      {view === 'Pods' && !usageAvailable && usageReason && (
+        <p className="wl-usage-note viz-dim">{usageReason}</p>
+      )}
       {view === 'Pods' ? <PodsTable {...props} pods={visiblePods} filtered={needle.length > 0} now={now} /> : controllers}
     </div>
   );
@@ -124,6 +131,8 @@ function PodsTable({
   onExportPodLogs,
   filtered,
   now,
+  usage,
+  usageAvailable,
 }: Props & { filtered: boolean; now: number }) {
   if (pods.length === 0) {
     return <div className="viz-card"><div className="viz-empty">{filtered ? 'No pod matches this filter.' : 'No pods in this namespace.'}</div></div>;
@@ -138,6 +147,8 @@ function PodsTable({
               <th>Name</th>
               <th>State</th>
               <th>Ready</th>
+              <th>CPU</th>
+              <th>Memory</th>
               <th>Age</th>
               <th />
             </tr>
@@ -154,6 +165,7 @@ function PodsTable({
                   <SeverityBadge severity={podSeverity(pod)} label={pod.status} />
                 </td>
                 <td>{pod.ready}</td>
+                <UsageCells row={usageAvailable ? usage[pod.name] : undefined} />
                 <td>{pod.created_at ? ageFrom(pod.created_at, now) : pod.age}</td>
                 <td className="wl-actions">
                   <ActionMenu
@@ -173,5 +185,33 @@ function PodsTable({
         </table>
       </div>
     </section>
+  );
+}
+
+/**
+ * Live CPU and memory for one table row. Memory carries a severity only against its
+ * limit — the OOMKill distance — and the percentage is written beside the colour, so
+ * the state is never carried by colour alone.
+ */
+function UsageCells({ row }: { row: PodUsageRow | undefined }) {
+  if (!row) return <><td className="viz-dim">—</td><td className="viz-dim">—</td></>;
+
+  const memoryPct = pctOf(row.memory_bytes, row.memory_limit_bytes);
+  const severity = memorySeverity(memoryPct);
+  const cpuPct = pctOf(row.cpu_milli, row.cpu_limit_milli);
+
+  return (
+    <>
+      <td className="mono wl-usage-cell" title={row.cpu_limit_milli > 0 ? `Limit ${formatCpuMilli(row.cpu_limit_milli)} — at 100% the container is throttled` : 'No CPU limit'}>
+        {row.cpu_milli !== null ? formatCpuMilli(row.cpu_milli) : '—'}
+        {cpuPct !== null && cpuPct >= 100 && <span className="wl-usage-flag usage-text-warning"> throttled</span>}
+      </td>
+      <td className="mono wl-usage-cell" title={row.memory_limit_bytes > 0 ? `Limit ${formatMemoryBytes(row.memory_limit_bytes)} — at 100% the kernel kills the container` : 'No memory limit'}>
+        {row.memory_bytes !== null ? formatMemoryBytes(row.memory_bytes) : '—'}
+        {memoryPct !== null && severity && severity !== 'good' && (
+          <span className={`wl-usage-flag usage-text-${severity}`}> {memoryPct.toFixed(0)}% of limit</span>
+        )}
+      </td>
+    </>
   );
 }

@@ -7,6 +7,7 @@ mod graph;
 mod helm;
 mod insights;
 mod logs;
+mod metrics;
 mod namespaces;
 mod network;
 mod portforward;
@@ -688,6 +689,15 @@ async fn get_storage_overview(
 }
 
 #[tauri::command]
+async fn get_pod_metrics(
+    context: String,
+    namespace: String,
+) -> Result<metrics::PodMetricsSnapshot, String> {
+    let client = client_for_context(&context).await?;
+    metrics::pod_metrics(client, &namespace).await
+}
+
+#[tauri::command]
 async fn get_helm_overview(context: String) -> Result<helm::HelmOverview, String> {
     let client = client_for_context(&context).await?;
     helm::overview(client).await
@@ -1295,6 +1305,7 @@ fn main() {
             write_secret_key,
             write_config_map_key,
             delete_configuration_key,
+            get_pod_metrics,
             get_helm_overview,
             get_helm_release,
             uninstall_helm_release,

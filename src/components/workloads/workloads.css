@@ -366,3 +366,134 @@
 @media (prefers-reduced-motion: reduce) {
   .wl-live.is-live .wl-live-dot { animation: none; }
 }
+
+/* ---------- live usage ---------- */
+
+.wl-usage-note {
+  margin: 0;
+  font-size: 11.5px;
+}
+
+.wl-usage-cell {
+  white-space: nowrap;
+}
+
+.wl-usage-flag {
+  font-size: 11px;
+}
+
+.usage-text-warning { color: var(--viz-warning-text, #e0b25a); }
+.usage-text-serious { color: var(--viz-serious, #c2673a); }
+.usage-text-critical { color: var(--viz-critical-text, #e5736f); }
+.usage-text-good { color: var(--viz-muted); }
+
+.usage-panel {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  padding: 16px;
+}
+
+.usage-head {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 12px;
+  flex-wrap: wrap;
+}
+
+.usage-total {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  font-size: 13px;
+}
+
+.usage-dot { color: var(--viz-muted); }
+
+/* How live "live" is: the sample's own age, not an implied real-time. */
+.usage-sample {
+  font-size: 11.5px;
+  color: var(--viz-muted);
+}
+
+.usage-container {
+  border: 1px solid #272d37;
+  border-radius: 7px;
+  padding: 11px 13px;
+  background: #12161d;
+}
+
+.usage-container h4 {
+  margin: 0 0 8px;
+  font-size: 12.5px;
+}
+
+.usage-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 3px 0;
+  flex-wrap: wrap;
+}
+
+.usage-label {
+  width: 56px;
+  font-size: 11px;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  color: var(--viz-muted);
+}
+
+.usage-value {
+  min-width: 70px;
+  font-size: 12px;
+}
+
+.usage-meter {
+  position: relative;
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  flex: 1 1 180px;
+  max-width: 320px;
+  height: 8px;
+  border-radius: 3px;
+  background: #0b0e13;
+}
+
+.usage-meter-fill {
+  height: 8px;
+  border-radius: 3px;
+  min-width: 2px;
+}
+
+.usage-good { background: var(--viz-good, #4f8a5b); }
+.usage-warning { background: var(--viz-warning, #c9a227); }
+.usage-serious { background: var(--viz-serious, #c2673a); }
+.usage-critical { background: var(--viz-critical, #b3403c); }
+
+.usage-pct {
+  position: absolute;
+  left: calc(100% + 8px);
+  font-size: 11px;
+  white-space: nowrap;
+}
+
+.usage-meter { margin-right: 96px; }
+
+.usage-request,
+.usage-unbounded {
+  font-size: 11px;
+}
+
+.usage-empty {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+  padding: 18px;
+  color: var(--viz-muted);
+  font-size: 12.5px;
+}
+
+.usage-empty p { margin: 0; max-width: 560px; line-height: 1.5; }
