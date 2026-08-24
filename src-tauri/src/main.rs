@@ -67,6 +67,10 @@ pub struct PodInfo {
     pub status: String,
     pub ready: String,
     pub age: String,
+    /// When the pod was created, so the frontend can keep the age ticking. The watch
+    /// only re-sends a pod when it changes, and an age string frozen at the last event
+    /// reads as a pod frozen in time.
+    pub created_at: Option<String>,
 }
 
 /// The one place a Pod becomes a row. Shared so the list and the watch cannot drift
@@ -95,6 +99,11 @@ pub(crate) fn pod_row(pod: Pod) -> Option<PodInfo> {
             .as_ref()
             .map(|timestamp| format_age(timestamp.0))
             .unwrap_or_else(|| "n/a".to_string()),
+        created_at: pod
+            .metadata
+            .creation_timestamp
+            .as_ref()
+            .map(|timestamp| timestamp.0.to_rfc3339()),
     })
 }
 
@@ -1024,14 +1033,7 @@ async fn list_namespace_snapshot(context: String, namespace: String) -> Result<N
         events_api.list(&params),
     ).map_err(|e| errors::humanize(&e.to_string()))?;
 
-    let pod_infos = pods.items.into_iter().filter_map(|pod| {
-        let name = pod.metadata.name?;
-        let status = pod.status.as_ref().and_then(|value| value.phase.clone()).unwrap_or_else(|| "Unknown".to_string());
-        let (ready, total) = pod.status.as_ref().and_then(|value| value.container_statuses.as_ref())
-            .map(|values| (values.iter().filter(|container| container.ready).count(), values.len()))
-            .unwrap_or((0, pod.spec.as_ref().map(|value| value.containers.len()).unwrap_or(0)));
-        Some(PodInfo { name, status, ready: format!("{ready}/{total}"), age: pod.metadata.creation_timestamp.map(|value| format_age(value.0)).unwrap_or_else(|| "n/a".to_string()) })
-    }).collect();
+    let pod_infos = pods.items.into_iter().filter_map(pod_row).collect();
 
     let deployment_infos = deployments.items.into_iter().filter_map(|deployment| {
         let name = deployment.metadata.name?;

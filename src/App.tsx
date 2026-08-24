@@ -484,17 +484,30 @@ export function App() {
     }
   };
 
-  const loadInventory = async () => {
-    setIsLoadingInventory(true);
+  const loadInventory = async (background = false) => {
+    // A background refresh keeps the loading flag down so the table does not blink
+    // every interval; only an explicit load shows as loading.
+    if (!background) setIsLoadingInventory(true);
     try {
       setInventory(await invoke<WorkloadInventory>('list_workloads', { context, namespace }));
       setInventoryError('');
     } catch (error) {
-      setInventoryError(String(error));
+      // A failed background poll keeps the last good table rather than replacing it
+      // with an error page mid-read.
+      if (!background) setInventoryError(String(error));
     } finally {
-      setIsLoadingInventory(false);
+      if (!background) setIsLoadingInventory(false);
     }
   };
+
+  // Controllers have no watch, so the tab re-reads while it is visible. Fifteen
+  // seconds is coarser than the pod watch but honest: the alternative was a table
+  // that only changed when the operator left and came back.
+  useEffect(() => {
+    if (active !== 'Workloads' || workloadView !== 'Deployments') return;
+    const timer = window.setInterval(() => void loadInventory(true), 15_000);
+    return () => window.clearInterval(timer);
+  }, [active, workloadView, context, namespace]);
 
   const deleteWorkload = async (row: WorkloadRow) => {
     if (!confirmDestructive(`Delete ${row.kind} ${row.name}? Its pods go with it.`)) return;

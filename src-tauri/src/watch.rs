@@ -1,6 +1,7 @@
 use futures::StreamExt;
 use k8s_openapi::api::core::v1::Pod;
 use kube::runtime::watcher::{watcher, Config, Event};
+use kube::runtime::WatchStreamExt;
 use kube::{Api, Client};
 use serde::Serialize;
 use tauri::Emitter;
@@ -58,7 +59,8 @@ pub async fn start_pods(
     let id = watch_id.clone();
 
     let task = tokio::spawn(async move {
-        let mut stream = watcher(api, Config::default()).boxed();
+        // Backoff paces the retries; without it a persistent failure hot-loops.
+        let mut stream = watcher(api, Config::default()).default_backoff().boxed();
         // `watcher` reports a relist as InitApply items bracketed by Init/InitDone.
         let mut initial: Vec<PodInfo> = Vec::new();
 
@@ -95,7 +97,18 @@ pub async fn start_pods(
                         );
                     }
                 }
-                Some(Err(error)) => break Some(error.to_string()),
+                Some(Err(error)) => {
+                    // Transient by design: the API server closes watch connections
+                    // routinely, and `watcher` relists on its own once the connection
+                    // is back. Ending the loop here killed the watch on the first
+                    // hiccup and left the screen showing a frozen snapshot that only
+                    // recovered on re-entry. Report not-live and keep polling; the
+                    // relist arrives as Init/InitDone and the Reset flips it back.
+                    let _ = app.emit(
+                        "pod-watch-closed",
+                        WatchClosed { watch_id: id.clone(), error: Some(error.to_string()) },
+                    );
+                }
                 None => break None,
             }
         };

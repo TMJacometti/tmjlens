@@ -43,7 +43,7 @@ export type DeploymentDetail = {
   events: WorkloadEvent[];
 };
 
-export type PodRow = { name: string; status: string; ready: string; age: string };
+export type PodRow = { name: string; status: string; ready: string; age: string; created_at?: string | null };
 export type DeploymentRow = { name: string; ready: number; desired: number; available: number; age: string };
 
 /** A pod is only healthy when it is Running *and* every container is ready. */
