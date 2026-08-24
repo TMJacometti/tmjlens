@@ -342,7 +342,7 @@ fn quantity(map: Option<&BTreeMap<String, Quantity>>, key: &str) -> Option<Strin
 
 /// Effective pod requests follow the Kubernetes rule: regular containers sum,
 /// and each init container must fit on its own, so the larger of the two wins.
-fn pod_resources(pod: &Pod) -> (f64, f64, f64, f64) {
+pub(crate) fn pod_resources(pod: &Pod) -> (f64, f64, f64, f64) {
     let Some(spec) = pod.spec.as_ref() else {
         return (0.0, 0.0, 0.0, 0.0);
     };
