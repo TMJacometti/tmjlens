@@ -11,7 +11,7 @@ in a native desktop app that stores none of your credentials.
 
 [![License: AGPL v3](https://img.shields.io/badge/License-AGPL_v3-blue.svg)](LICENSE)
 ![Platform](https://img.shields.io/badge/platform-Windows%20%7C%20Linux%20%7C%20macOS-lightgrey)
-![Status](https://img.shields.io/badge/status-v0.3-blue)
+![Status](https://img.shields.io/badge/status-v0.4-blue)
 
 </div>
 
@@ -85,7 +85,7 @@ authority regardless. There is no client-side permission model to bypass.
 
 ## Status
 
-Version `0.3` — the daily-operations surface is complete: cluster overview, workloads
+Version `0.4` — the daily-operations surface is complete: cluster overview, workloads
 with a self-healing live watch, network, storage, configuration, namespaces, reports,
 and the Velero and Helm plugins. This table is the honest state, not the roadmap.
 
@@ -100,6 +100,7 @@ and the Velero and Helm plugins. This table is the honest state, not the roadmap
 | YAML view and server-side apply (Pods, Deployments) | ✅ Working |
 | Live log follow (cancellable streams) | ✅ Working |
 | Live pod watch, port-forward, container exec | ✅ Working |
+| Live CPU/memory per pod against requests and limits, in list and detail | ✅ Working |
 | Resource relation graph, command palette, global search | ✅ Working |
 | Network: services, endpoints, ingresses, classes, policies | ✅ Working |
 | Velero: backups, restores, schedules, storage locations | ✅ Working |
@@ -143,7 +144,7 @@ See [docs/ROADMAP.md](docs/ROADMAP.md) for the full plan.
   name, so the frontend can never choose where a file lands.
 - **No telemetry.** None, in any build.
 
-> **Not yet production-hardened.** This is a `0.3`. It has not had an independent
+> **Not yet production-hardened.** This is a `0.4`. It has not had an independent
 > security review, and the Tauri CSP is currently disabled (`"csp": null` in
 > [src-tauri/tauri.conf.json](src-tauri/tauri.conf.json)) — tightening that is tracked
 > for `v1.0`. Treat it accordingly on clusters that matter.
