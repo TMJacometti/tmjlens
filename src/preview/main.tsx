@@ -9,6 +9,7 @@ import { LogsPreview } from './LogsPreview';
 import { PalettePreview } from './PalettePreview';
 import { PortForwardPreview } from './PortForwardPreview';
 import { VeleroPreview } from './VeleroPreview';
+import { HelmPreview } from './HelmPreview';
 import { ConfigurationPreview } from './ConfigurationPreview';
 import { StoragePreview } from './StoragePreview';
 import { NamespacesPreview } from './NamespacesPreview';
@@ -50,7 +51,9 @@ if (view === 'settings') {
   root.render(
     <div className="app" style={{ height: 'auto', overflow: 'visible' }}>
       <main className="main" style={{ overflow: 'visible' }}>
-        {view === 'reports' ? (
+        {view === 'helm' || view === 'helm-nocli' ? (
+          <HelmPreview cli={view === 'helm'} />
+        ) : view === 'reports' ? (
           <ReportsPreview />
         ) : view === 'ns' ? (
           <NamespacesPreview />

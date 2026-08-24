@@ -4,6 +4,7 @@ mod cluster;
 mod configuration;
 mod exec;
 mod graph;
+mod helm;
 mod insights;
 mod logs;
 mod namespaces;
@@ -678,6 +679,41 @@ async fn get_storage_overview(
 }
 
 #[tauri::command]
+async fn get_helm_overview(context: String) -> Result<helm::HelmOverview, String> {
+    let client = client_for_context(&context).await?;
+    helm::overview(client).await
+}
+
+#[tauri::command]
+async fn get_helm_release(
+    context: String,
+    namespace: String,
+    name: String,
+) -> Result<helm::ReleaseDetail, String> {
+    let client = client_for_context(&context).await?;
+    helm::detail(client, &namespace, &name).await
+}
+
+#[tauri::command]
+async fn uninstall_helm_release(
+    context: String,
+    namespace: String,
+    name: String,
+) -> Result<String, String> {
+    helm::uninstall(&context, &namespace, &name).await
+}
+
+#[tauri::command]
+async fn rollback_helm_release(
+    context: String,
+    namespace: String,
+    name: String,
+    revision: i64,
+) -> Result<String, String> {
+    helm::rollback(&context, &namespace, &name, revision).await
+}
+
+#[tauri::command]
 async fn get_velero_status(
     context: String,
     velero_namespace: Option<String>,
@@ -1257,6 +1293,10 @@ fn main() {
             write_secret_key,
             write_config_map_key,
             delete_configuration_key,
+            get_helm_overview,
+            get_helm_release,
+            uninstall_helm_release,
+            rollback_helm_release,
             get_velero_status,
             create_velero_backup,
             create_velero_restore,

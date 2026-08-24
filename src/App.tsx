@@ -24,6 +24,8 @@ import { StoragePage } from './components/storage/StoragePage';
 import type { StorageOverview } from './types/storage';
 import { ConfigurationPage } from './components/configuration/ConfigurationPage';
 import type { ConfigurationOverview, RevealedValue } from './types/configuration';
+import { HelmPage } from './components/helm/HelmPage';
+import type { HelmOverview, ReleaseDetail, ReleaseRow } from './types/helm';
 import { VeleroPage } from './components/velero/VeleroPage';
 import type { VeleroStatus } from './types/velero';
 import { DeploymentDetailPanel } from './components/workloads/DeploymentDetailPanel';
@@ -65,6 +67,9 @@ export function App() {
   const [configuration, setConfiguration] = useState<ConfigurationOverview | null>(null);
   const [configurationError, setConfigurationError] = useState('');
   const [isLoadingConfiguration, setIsLoadingConfiguration] = useState(false);
+  const [helmOverview, setHelmOverview] = useState<HelmOverview | null>(null);
+  const [helmError, setHelmError] = useState('');
+  const [isLoadingHelm, setIsLoadingHelm] = useState(false);
   const [velero, setVelero] = useState<VeleroStatus | null>(null);
   const [veleroError, setVeleroError] = useState('');
   const [isLoadingVelero, setIsLoadingVelero] = useState(false);
@@ -379,6 +384,47 @@ export function App() {
     await invoke('delete_configuration_key', { context, namespace, kind, name, key });
   };
 
+  const loadHelm = async () => {
+    setIsLoadingHelm(true);
+    try {
+      setHelmOverview(await invoke<HelmOverview>('get_helm_overview', { context }));
+      setHelmError('');
+    } catch (error) {
+      setHelmError(String(error));
+    } finally {
+      setIsLoadingHelm(false);
+    }
+  };
+
+  const openHelmRelease = (row: ReleaseRow) =>
+    invoke<ReleaseDetail>('get_helm_release', { context, namespace: row.namespace, name: row.name });
+
+  const uninstallHelmRelease = async (row: ReleaseRow) => {
+    // Uninstall removes everything the chart installed, so it carries the strongest
+    // confirmation the app has — in production, typing the context name.
+    if (!confirmDestructive(`Uninstall release ${row.name} from ${row.namespace}? Everything the chart installed is removed, and its delete hooks run.`)) return;
+    try {
+      const output = await invoke<string>('uninstall_helm_release', { context, namespace: row.namespace, name: row.name });
+      notify('Release uninstalled', output || `${row.name} removed by helm.`, 'good');
+    } catch (error) {
+      notify('Uninstall failed', String(error), 'bad');
+      return;
+    }
+    await loadHelm();
+  };
+
+  const rollbackHelmRelease = async (detail: ReleaseDetail, revision: number) => {
+    if (!confirmDestructive(`Roll ${detail.name} back to revision ${revision}? Helm re-applies that revision's manifest.`)) return;
+    try {
+      const output = await invoke<string>('rollback_helm_release', { context, namespace: detail.namespace, name: detail.name, revision });
+      notify('Rollback requested', output || `${detail.name} rolling back to revision ${revision}.`, 'good');
+    } catch (error) {
+      notify('Rollback failed', String(error), 'bad');
+      return;
+    }
+    await loadHelm();
+  };
+
   /**
    * Velero's objects live in Velero's own namespace, not the one selected in the
    * toolbar, so this load is deliberately independent of the namespace picker.
@@ -522,6 +568,7 @@ export function App() {
     { id: 'go-workloads', label: 'Go to Workloads', group: 'Navigate', run: () => setActive('Workloads') },
     { id: 'go-network', label: 'Go to Network', group: 'Navigate', run: () => setActive('Network') },
     { id: 'go-velero', label: 'Go to Velero backups', group: 'Navigate', run: () => setActive('Velero') },
+    { id: 'go-helm', label: 'Go to Helm releases', group: 'Navigate', run: () => setActive('Helm') },
     { id: 'go-configuration', label: 'Go to Configuration', group: 'Navigate', run: () => setActive('Configuration') },
     { id: 'go-storage', label: 'Go to Storage', group: 'Navigate', run: () => setActive('Storage') },
     { id: 'go-namespaces', label: 'Go to Namespaces', group: 'Navigate', run: () => setActive('Namespaces') },
@@ -618,6 +665,7 @@ export function App() {
   useEffect(() => {
     if (active === 'Network') void loadNetwork();
     if (active === 'Velero') void loadVelero();
+    if (active === 'Helm') void loadHelm();
     if (active === 'Configuration') void loadConfiguration();
     if (active === 'Storage') void loadStorage();
     if (active === 'Namespaces') void loadNamespaceOverview();
@@ -644,9 +692,9 @@ export function App() {
     </header>
     <div className="body"><aside className="sidebar"><div className="section-title">CLUSTER</div>
       <Nav icon={<Gauge size={16}/>} label="Cluster Overview" active={active === 'Cluster Overview'} onClick={() => setActive('Cluster Overview')} /><Nav icon={<Workflow size={16}/>} label="Workloads" active={active === 'Workloads'} onClick={() => setActive('Workloads')} /><Nav icon={<Network size={16}/>} label="Network" active={active === 'Network'} onClick={() => setActive('Network')} /><Nav icon={<HardDrive size={16}/>} label="Storage" active={active === 'Storage'} onClick={() => setActive('Storage')} /><Nav icon={<FileCog size={16}/>} label="Configuration" active={active === 'Configuration'} onClick={() => setActive('Configuration')} /><Nav icon={<Server size={16}/>} label="Nodes" active={active === 'Nodes'} onClick={() => setActive('Nodes')} /><Nav icon={<Layers3 size={16}/>} label="Namespaces" active={active === 'Namespaces'} onClick={() => setActive('Namespaces')} /><Nav icon={<CircleAlert size={16}/>} label="Events" active={active === 'Events'} onClick={() => setActive('Events')} /><Nav icon={<BarChart3 size={16}/>} label="Reports" active={active === 'Reports'} onClick={() => setActive('Reports')} />
-      <div className="section-title aws">CLOUD</div><Nav icon={<Network size={16}/>} label="Load Balancers"/><Nav icon={<Box size={16}/>} label="Node Pools"/><div className="section-title plugins">PLUGINS</div><Nav icon={<DatabaseBackup size={16}/>} label="Velero" active={active === 'Velero'} onClick={() => setActive('Velero')} /><Nav icon={<Terminal size={16}/>} label="Helm"/><Nav icon={<Workflow size={16}/>} label="Argo CD"/>
+      <div className="section-title aws">CLOUD</div><Nav icon={<Network size={16}/>} label="Load Balancers"/><Nav icon={<Box size={16}/>} label="Node Pools"/><div className="section-title plugins">PLUGINS</div><Nav icon={<DatabaseBackup size={16}/>} label="Velero" active={active === 'Velero'} onClick={() => setActive('Velero')} /><Nav icon={<Terminal size={16}/>} label="Helm" active={active === 'Helm'} onClick={() => setActive('Helm')} /><Nav icon={<Workflow size={16}/>} label="Argo CD"/>
     </aside><main className="main"><div className="breadcrumbs">Cluster / {namespace} / {active}</div><div className="title-row"><div><h1>{active}</h1><p>Live Kubernetes resources from <b>{context}</b></p></div></div>
-      {showEvents ? <EventsPanel events={events} onRefresh={refreshEvents}/> : active === 'Namespaces' ? <NamespacesPage data={namespaceOverview} loading={isLoadingNamespaces} error={namespaceError} current={namespace} onRefresh={() => void loadNamespaceOverview()} onSelect={(name) => void handleNamespaceChange(name)}/> : active === 'Storage' ? <StoragePage data={storage} loading={isLoadingStorage} error={storageError} onRefresh={() => void loadStorage()}/> : active === 'Configuration' ? <ConfigurationPage data={configuration} loading={isLoadingConfiguration} error={configurationError} canEditConfigMaps={capabilities.patchConfigMaps} canEditSecrets={capabilities.patchSecrets} onRefresh={() => void loadConfiguration()} onRead={readConfigurationKey} onSave={saveConfigurationKey} onDelete={deleteConfigurationKey} notify={notify}/> : active === 'Velero' ? <VeleroPage status={velero} loading={isLoadingVelero} error={veleroError} namespaces={namespaces} canBackup={veleroCapabilities.backup} canRestore={veleroCapabilities.restore} onRefresh={() => void loadVelero()} onCreateBackup={createVeleroBackup} onCreateRestore={createVeleroRestore}/> : active === 'Network' ? <NetworkPage data={network} loading={isLoadingNetwork} error={networkError} onRefresh={() => void loadNetwork()} onEditYaml={(kind, name) => setYamlTarget({ kind, name })}/> : active === 'Workloads' ? <><WorkloadsPage view={workloadView} onViewChange={setWorkloadView} pods={pods} deployments={deployments} selectedPod={selectedPod} selectedDeployment={selectedDeployment} capabilities={{ deletePods: capabilities.deletePods, deleteDeployments: capabilities.deleteDeployments, patchDeployments: capabilities.patchDeployments }} onSelectPod={selectPod} onSelectDeployment={(name) => { setSelectedDeployment(name); setShowDetail(false); }} onDeletePod={(name) => void deletePod(name)} onExportPodLogs={(name) => void exportLogsFor(name)} onDeleteDeployment={(name) => void deleteDeployment(name)} onExportDeployment={(name) => void exportDeployment(name)} podsLive={podWatch.live}
+      {showEvents ? <EventsPanel events={events} onRefresh={refreshEvents}/> : active === 'Namespaces' ? <NamespacesPage data={namespaceOverview} loading={isLoadingNamespaces} error={namespaceError} current={namespace} onRefresh={() => void loadNamespaceOverview()} onSelect={(name) => void handleNamespaceChange(name)}/> : active === 'Storage' ? <StoragePage data={storage} loading={isLoadingStorage} error={storageError} onRefresh={() => void loadStorage()}/> : active === 'Configuration' ? <ConfigurationPage data={configuration} loading={isLoadingConfiguration} error={configurationError} canEditConfigMaps={capabilities.patchConfigMaps} canEditSecrets={capabilities.patchSecrets} onRefresh={() => void loadConfiguration()} onRead={readConfigurationKey} onSave={saveConfigurationKey} onDelete={deleteConfigurationKey} notify={notify}/> : active === 'Helm' ? <HelmPage data={helmOverview} loading={isLoadingHelm} error={helmError} onRefresh={() => void loadHelm()} onOpenDetail={openHelmRelease} onUninstall={uninstallHelmRelease} onRollback={rollbackHelmRelease} notify={notify}/> : active === 'Velero' ? <VeleroPage status={velero} loading={isLoadingVelero} error={veleroError} namespaces={namespaces} canBackup={veleroCapabilities.backup} canRestore={veleroCapabilities.restore} onRefresh={() => void loadVelero()} onCreateBackup={createVeleroBackup} onCreateRestore={createVeleroRestore}/> : active === 'Network' ? <NetworkPage data={network} loading={isLoadingNetwork} error={networkError} onRefresh={() => void loadNetwork()} onEditYaml={(kind, name) => setYamlTarget({ kind, name })}/> : active === 'Workloads' ? <><WorkloadsPage view={workloadView} onViewChange={setWorkloadView} pods={pods} deployments={deployments} selectedPod={selectedPod} selectedDeployment={selectedDeployment} capabilities={{ deletePods: capabilities.deletePods, deleteDeployments: capabilities.deleteDeployments, patchDeployments: capabilities.patchDeployments }} onSelectPod={selectPod} onSelectDeployment={(name) => { setSelectedDeployment(name); setShowDetail(false); }} onDeletePod={(name) => void deletePod(name)} onExportPodLogs={(name) => void exportLogsFor(name)} onDeleteDeployment={(name) => void deleteDeployment(name)} onExportDeployment={(name) => void exportDeployment(name)} podsLive={podWatch.live}
       controllers={<WorkloadInventoryTable inventory={inventory} loading={isLoadingInventory} error={inventoryError}
         selected={selectedDeployment ? `Deployment/${selectedDeployment}` : ''} canDelete={capabilities.deleteDeployments}
         onSelect={(row) => { if (row.kind === 'Deployment') { setSelectedDeployment(row.name); } else { setYamlTarget({ kind: row.kind, name: row.name }); } }}

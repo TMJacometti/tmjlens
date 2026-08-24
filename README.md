@@ -102,6 +102,7 @@ scaffolding. This table is the honest state, not the roadmap.
 | Resource relation graph, command palette, global search | ✅ Working |
 | Network: services, endpoints, ingresses, classes, policies | ✅ Working |
 | Velero: backups, restores, schedules, storage locations | ✅ Working |
+| Helm: releases, history, values, manifest; uninstall and rollback via your CLI | ✅ Working |
 | Configuration: maps, secrets, quotas, budgets, admission webhooks | ✅ Working |
 | Storage: claims, volumes, classes, and what is provisioned but idle | ✅ Working |
 | Namespaces, including ones stuck Terminating and why | ✅ Working |
