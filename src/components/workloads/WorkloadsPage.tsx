@@ -28,8 +28,6 @@ type Props = {
   onDeletePod: (name: string) => void;
   onExportPodLogs: (name: string) => void;
   onDeleteDeployment: (name: string) => void;
-  onScaleDeployment: (name: string) => void;
-  onRestartDeployment: (name: string) => void;
   onExportDeployment: (name: string) => void;
 };
 

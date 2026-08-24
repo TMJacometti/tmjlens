@@ -1118,10 +1118,11 @@ async fn delete_deployment(
 }
 
 #[tauri::command]
-async fn scale_deployment(
+async fn scale_workload(
     context: String,
     namespace: String,
-    deployment_name: String,
+    kind: String,
+    name: String,
     replicas: i32,
 ) -> Result<(), String> {
     if !(0..=1000).contains(&replicas) {
@@ -1129,20 +1130,36 @@ async fn scale_deployment(
     }
 
     let client = client_for_context(&context).await?;
-    let api: Api<Deployment> = Api::namespaced(client, &namespace);
     let patch = Patch::Merge(json!({"spec": {"replicas": replicas}}));
-    api.patch(&deployment_name, &merge_patch_params(), &patch).await.map_err(|e| errors::humanize(&e.to_string()))?;
+
+    macro_rules! scale {
+        ($type:ty) => {{
+            let api: Api<$type> = Api::namespaced(client, &namespace);
+            api.patch(&name, &merge_patch_params(), &patch).await.map_err(|e| errors::humanize(&e.to_string()))?;
+        }};
+    }
+
+    // Only the kinds where a replica count is the operator's to set. A ReplicaSet
+    // owned by a Deployment would be scaled straight back by its controller, and a
+    // DaemonSet's count is the node list — offering either would be a trap.
+    match kind.as_str() {
+        "Deployment" => scale!(Deployment),
+        "StatefulSet" => scale!(StatefulSet),
+        other => return Err(format!("A {other} does not have a replica count to set.")),
+    }
     Ok(())
 }
 
+/// The same annotation `kubectl rollout restart` writes, so the rollout obeys the
+/// workload's own update strategy instead of deleting pods behind its back.
 #[tauri::command]
-async fn restart_deployment(
+async fn restart_workload(
     context: String,
     namespace: String,
-    deployment_name: String,
+    kind: String,
+    name: String,
 ) -> Result<(), String> {
     let client = client_for_context(&context).await?;
-    let api: Api<Deployment> = Api::namespaced(client, &namespace);
     let restarted_at = chrono::Utc::now().to_rfc3339();
     let patch = Patch::Merge(json!({
         "spec": {
@@ -1156,7 +1173,19 @@ async fn restart_deployment(
         }
     }));
 
-    api.patch(&deployment_name, &merge_patch_params(), &patch).await.map_err(|e| errors::humanize(&e.to_string()))?;
+    macro_rules! restart {
+        ($type:ty) => {{
+            let api: Api<$type> = Api::namespaced(client, &namespace);
+            api.patch(&name, &merge_patch_params(), &patch).await.map_err(|e| errors::humanize(&e.to_string()))?;
+        }};
+    }
+
+    match kind.as_str() {
+        "Deployment" => restart!(Deployment),
+        "StatefulSet" => restart!(StatefulSet),
+        "DaemonSet" => restart!(DaemonSet),
+        other => return Err(format!("A {other} has no pod template to roll.")),
+    }
     Ok(())
 }
 
@@ -1248,8 +1277,8 @@ fn main() {
             delete_node,
             drain_node,
             delete_deployment,
-            scale_deployment,
-            restart_deployment,
+            scale_workload,
+            restart_workload,
             list_events
         ])
         .build(tauri::generate_context!())

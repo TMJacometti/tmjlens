@@ -41,7 +41,7 @@ type TauriContext = { name: string; current: boolean; namespace?: string };
 type PodRow = { name: string; status: string; ready: string; age: string };
 type DeploymentRow = { name: string; ready: number; desired: number; available: number; age: string };
 type EventInfo = { reason: string; message: string; kind: string; name: string; timestamp?: string };
-type Capabilities = { deletePods: boolean; deleteDeployments: boolean; patchDeployments: boolean; patchPods: boolean; patchServices: boolean; patchIngresses: boolean; patchConfigMaps: boolean; patchSecrets: boolean; portForward: boolean; podExec: boolean };
+type Capabilities = { deletePods: boolean; deleteDeployments: boolean; patchDeployments: boolean; patchPods: boolean; patchServices: boolean; patchIngresses: boolean; patchConfigMaps: boolean; patchSecrets: boolean; patchStatefulSets: boolean; patchDaemonSets: boolean; portForward: boolean; podExec: boolean };
 
 export function App() {
   const [active, setActive] = useState('Workloads');
@@ -93,7 +93,7 @@ export function App() {
   const [showSettings, setShowSettings] = useState(false);
   const [showPalette, setShowPalette] = useState(false);
   const [isGeneratingReport, setIsGeneratingReport] = useState(false);
-  const [capabilities, setCapabilities] = useState<Capabilities>({ deletePods: false, deleteDeployments: false, patchDeployments: false, patchPods: false, patchServices: false, patchIngresses: false, patchConfigMaps: false, patchSecrets: false, portForward: false, podExec: false });
+  const [capabilities, setCapabilities] = useState<Capabilities>({ deletePods: false, deleteDeployments: false, patchDeployments: false, patchPods: false, patchServices: false, patchIngresses: false, patchConfigMaps: false, patchSecrets: false, patchStatefulSets: false, patchDaemonSets: false, portForward: false, podExec: false });
   const refreshGeneration = useRef(0);
 
   // Pods come from a live watch while the screen is showing them; the snapshot from
@@ -139,12 +139,12 @@ export function App() {
 
   const refreshCapabilities = async (targetContext: string, targetNamespace: string) => {
     const check = (verb: string, resource: string, subresource?: string) => invoke<boolean>('check_permission', { context: targetContext, namespace: targetNamespace, verb, resource, subresource, group: null }).catch(() => false);
-    const [deletePods, deleteDeployments, patchDeployments, patchPods, patchServices, patchIngresses, portForward, podExec, patchConfigMaps, patchSecrets] = await Promise.all([
+    const [deletePods, deleteDeployments, patchDeployments, patchPods, patchServices, patchIngresses, portForward, podExec, patchConfigMaps, patchSecrets, patchStatefulSets, patchDaemonSets] = await Promise.all([
       check('delete', 'pods'), check('delete', 'deployments'), check('patch', 'deployments'), check('patch', 'pods'),
       check('patch', 'services'), check('patch', 'ingresses'), check('create', 'pods', 'portforward'), check('create', 'pods', 'exec'),
-      check('patch', 'configmaps'), check('patch', 'secrets'),
+      check('patch', 'configmaps'), check('patch', 'secrets'), check('patch', 'statefulsets'), check('patch', 'daemonsets'),
     ]);
-    setCapabilities({ deletePods, deleteDeployments, patchDeployments, patchPods, patchServices, patchIngresses, portForward, podExec, patchConfigMaps, patchSecrets });
+    setCapabilities({ deletePods, deleteDeployments, patchDeployments, patchPods, patchServices, patchIngresses, portForward, podExec, patchConfigMaps, patchSecrets, patchStatefulSets, patchDaemonSets });
   };
 
   // Nodes are cluster-scoped, so the access review is sent with an empty namespace.
@@ -185,19 +185,33 @@ export function App() {
     await refreshResources(context, namespace);
   };
 
-  const scaleDeployment = async (deploymentName: string) => {
-    const value = window.prompt(`Desired replicas for ${deploymentName}:`, '1');
+  const scaleWorkload = async (row: WorkloadRow) => {
+    const value = window.prompt(`Desired ${row.unit} for ${row.kind.toLowerCase()} ${row.name}:`, String(row.desired));
     if (value === null) return;
     const replicas = Number(value);
     if (!Number.isInteger(replicas) || replicas < 0 || replicas > 1000) { window.alert('Enter a whole number between 0 and 1000.'); return; }
-    await invoke('scale_deployment', { context, namespace, deploymentName, replicas });
-    await refreshResources(context, namespace);
+    // Zero empties the workload, so it carries the same confirmation as a delete.
+    if (replicas === 0 && !confirmDestructive(`Scale ${row.name} to zero? Every pod it runs will stop.`)) return;
+    try {
+      await invoke('scale_workload', { context, namespace, kind: row.kind, name: row.name, replicas });
+      notify('Scale requested', `${row.name} set to ${replicas} ${row.unit}.`, 'good');
+    } catch (error) {
+      notify('Scaling failed', String(error), 'bad');
+      return;
+    }
+    await Promise.all([refreshResources(context, namespace), loadInventory()]);
   };
 
-  const restartDeployment = async (deploymentName: string) => {
-    if (!confirmDestructive(`Rollout restart deployment ${deploymentName}?`)) return;
-    await invoke('restart_deployment', { context, namespace, deploymentName });
-    await refreshResources(context, namespace);
+  const restartWorkload = async (row: WorkloadRow) => {
+    if (!confirmDestructive(`Rollout restart ${row.kind.toLowerCase()} ${row.name}? Pods are replaced following its update strategy.`)) return;
+    try {
+      await invoke('restart_workload', { context, namespace, kind: row.kind, name: row.name });
+      notify('Restart requested', `${row.name} is rolling. Watch it under Workloads.`, 'good');
+    } catch (error) {
+      notify('Restart failed', String(error), 'bad');
+      return;
+    }
+    await Promise.all([refreshResources(context, namespace), loadInventory()]);
   };
 
   const refreshEvents = async () => {
@@ -632,11 +646,13 @@ export function App() {
       <Nav icon={<Gauge size={16}/>} label="Cluster Overview" active={active === 'Cluster Overview'} onClick={() => setActive('Cluster Overview')} /><Nav icon={<Workflow size={16}/>} label="Workloads" active={active === 'Workloads'} onClick={() => setActive('Workloads')} /><Nav icon={<Network size={16}/>} label="Network" active={active === 'Network'} onClick={() => setActive('Network')} /><Nav icon={<HardDrive size={16}/>} label="Storage" active={active === 'Storage'} onClick={() => setActive('Storage')} /><Nav icon={<FileCog size={16}/>} label="Configuration" active={active === 'Configuration'} onClick={() => setActive('Configuration')} /><Nav icon={<Server size={16}/>} label="Nodes" active={active === 'Nodes'} onClick={() => setActive('Nodes')} /><Nav icon={<Layers3 size={16}/>} label="Namespaces" active={active === 'Namespaces'} onClick={() => setActive('Namespaces')} /><Nav icon={<CircleAlert size={16}/>} label="Events" active={active === 'Events'} onClick={() => setActive('Events')} /><Nav icon={<BarChart3 size={16}/>} label="Reports" active={active === 'Reports'} onClick={() => setActive('Reports')} />
       <div className="section-title aws">CLOUD</div><Nav icon={<Network size={16}/>} label="Load Balancers"/><Nav icon={<Box size={16}/>} label="Node Pools"/><div className="section-title plugins">PLUGINS</div><Nav icon={<DatabaseBackup size={16}/>} label="Velero" active={active === 'Velero'} onClick={() => setActive('Velero')} /><Nav icon={<Terminal size={16}/>} label="Helm"/><Nav icon={<Workflow size={16}/>} label="Argo CD"/>
     </aside><main className="main"><div className="breadcrumbs">Cluster / {namespace} / {active}</div><div className="title-row"><div><h1>{active}</h1><p>Live Kubernetes resources from <b>{context}</b></p></div></div>
-      {showEvents ? <EventsPanel events={events} onRefresh={refreshEvents}/> : active === 'Namespaces' ? <NamespacesPage data={namespaceOverview} loading={isLoadingNamespaces} error={namespaceError} current={namespace} onRefresh={() => void loadNamespaceOverview()} onSelect={(name) => void handleNamespaceChange(name)}/> : active === 'Storage' ? <StoragePage data={storage} loading={isLoadingStorage} error={storageError} onRefresh={() => void loadStorage()}/> : active === 'Configuration' ? <ConfigurationPage data={configuration} loading={isLoadingConfiguration} error={configurationError} canEditConfigMaps={capabilities.patchConfigMaps} canEditSecrets={capabilities.patchSecrets} onRefresh={() => void loadConfiguration()} onRead={readConfigurationKey} onSave={saveConfigurationKey} onDelete={deleteConfigurationKey} notify={notify}/> : active === 'Velero' ? <VeleroPage status={velero} loading={isLoadingVelero} error={veleroError} namespaces={namespaces} canBackup={veleroCapabilities.backup} canRestore={veleroCapabilities.restore} onRefresh={() => void loadVelero()} onCreateBackup={createVeleroBackup} onCreateRestore={createVeleroRestore}/> : active === 'Network' ? <NetworkPage data={network} loading={isLoadingNetwork} error={networkError} onRefresh={() => void loadNetwork()} onEditYaml={(kind, name) => setYamlTarget({ kind, name })}/> : active === 'Workloads' ? <><WorkloadsPage view={workloadView} onViewChange={setWorkloadView} pods={pods} deployments={deployments} selectedPod={selectedPod} selectedDeployment={selectedDeployment} capabilities={{ deletePods: capabilities.deletePods, deleteDeployments: capabilities.deleteDeployments, patchDeployments: capabilities.patchDeployments }} onSelectPod={selectPod} onSelectDeployment={(name) => { setSelectedDeployment(name); setShowDetail(false); }} onDeletePod={(name) => void deletePod(name)} onExportPodLogs={(name) => void exportLogsFor(name)} onDeleteDeployment={(name) => void deleteDeployment(name)} onScaleDeployment={(name) => void scaleDeployment(name)} onRestartDeployment={(name) => void restartDeployment(name)} onExportDeployment={(name) => void exportDeployment(name)} podsLive={podWatch.live}
+      {showEvents ? <EventsPanel events={events} onRefresh={refreshEvents}/> : active === 'Namespaces' ? <NamespacesPage data={namespaceOverview} loading={isLoadingNamespaces} error={namespaceError} current={namespace} onRefresh={() => void loadNamespaceOverview()} onSelect={(name) => void handleNamespaceChange(name)}/> : active === 'Storage' ? <StoragePage data={storage} loading={isLoadingStorage} error={storageError} onRefresh={() => void loadStorage()}/> : active === 'Configuration' ? <ConfigurationPage data={configuration} loading={isLoadingConfiguration} error={configurationError} canEditConfigMaps={capabilities.patchConfigMaps} canEditSecrets={capabilities.patchSecrets} onRefresh={() => void loadConfiguration()} onRead={readConfigurationKey} onSave={saveConfigurationKey} onDelete={deleteConfigurationKey} notify={notify}/> : active === 'Velero' ? <VeleroPage status={velero} loading={isLoadingVelero} error={veleroError} namespaces={namespaces} canBackup={veleroCapabilities.backup} canRestore={veleroCapabilities.restore} onRefresh={() => void loadVelero()} onCreateBackup={createVeleroBackup} onCreateRestore={createVeleroRestore}/> : active === 'Network' ? <NetworkPage data={network} loading={isLoadingNetwork} error={networkError} onRefresh={() => void loadNetwork()} onEditYaml={(kind, name) => setYamlTarget({ kind, name })}/> : active === 'Workloads' ? <><WorkloadsPage view={workloadView} onViewChange={setWorkloadView} pods={pods} deployments={deployments} selectedPod={selectedPod} selectedDeployment={selectedDeployment} capabilities={{ deletePods: capabilities.deletePods, deleteDeployments: capabilities.deleteDeployments, patchDeployments: capabilities.patchDeployments }} onSelectPod={selectPod} onSelectDeployment={(name) => { setSelectedDeployment(name); setShowDetail(false); }} onDeletePod={(name) => void deletePod(name)} onExportPodLogs={(name) => void exportLogsFor(name)} onDeleteDeployment={(name) => void deleteDeployment(name)} onExportDeployment={(name) => void exportDeployment(name)} podsLive={podWatch.live}
       controllers={<WorkloadInventoryTable inventory={inventory} loading={isLoadingInventory} error={inventoryError}
         selected={selectedDeployment ? `Deployment/${selectedDeployment}` : ''} canDelete={capabilities.deleteDeployments}
         onSelect={(row) => { if (row.kind === 'Deployment') { setSelectedDeployment(row.name); } else { setYamlTarget({ kind: row.kind, name: row.name }); } }}
         onEditYaml={(row) => setYamlTarget({ kind: row.kind, name: row.name })}
+        canPatch={(kind) => kind === 'Deployment' ? capabilities.patchDeployments : kind === 'StatefulSet' ? capabilities.patchStatefulSets : kind === 'DaemonSet' ? capabilities.patchDaemonSets : false}
+        onScale={(row) => void scaleWorkload(row)} onRestart={(row) => void restartWorkload(row)}
         onDelete={(row) => void deleteWorkload(row)} onExportYaml={(row) => void exportWorkloadYaml(row)}/>}/>{selectedDeployment && <DeploymentDetailPanel context={context} namespace={namespace} deploymentName={selectedDeployment} onClose={() => setSelectedDeployment('')} onExport={() => void exportDeployment(selectedDeployment)} exporting={isExportingDeployment} onOpenLogs={openDeploymentLogs}/>}{showDetail && selectedPod && <PodDetail pod={pods.find((pod) => pod.name === selectedPod)} context={context} namespace={namespace} containers={containers} events={events} selectedContainer={selectedContainer} setSelectedContainer={setSelectedContainer} onOpenYaml={() => setYamlTarget({ kind: 'Pod', name: selectedPod })} canForward={capabilities.portForward} canExec={capabilities.podExec} environmentWarning={currentEnvironment === 'production' ? `This context is marked Production. Commands run here affect real traffic.` : undefined} notify={notify} onExport={exportLogs} onClose={() => setShowDetail(false)}/>}</> : <div className="empty"><ListTree size={32}/><h2>{active}</h2><p>This screen is scaffolded. The Kubernetes data layer will populate it.</p></div>}
     </main></div>
     <Toast message={toast} onDismiss={() => setToast(null)}/>
