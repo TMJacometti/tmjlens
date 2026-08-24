@@ -11,7 +11,7 @@ in a native desktop app that stores none of your credentials.
 
 [![License: AGPL v3](https://img.shields.io/badge/License-AGPL_v3-blue.svg)](LICENSE)
 ![Platform](https://img.shields.io/badge/platform-Windows%20%7C%20Linux%20%7C%20macOS-lightgrey)
-![Status](https://img.shields.io/badge/status-v0.1%20early-orange)
+![Status](https://img.shields.io/badge/status-v0.3-blue)
 
 </div>
 
@@ -85,8 +85,9 @@ authority regardless. There is no client-side permission model to bypass.
 
 ## Status
 
-Version `0.1` — the Kubernetes core and the cluster overview are usable; the rest is
-scaffolding. This table is the honest state, not the roadmap.
+Version `0.3` — the daily-operations surface is complete: cluster overview, workloads
+with a self-healing live watch, network, storage, configuration, namespaces, reports,
+and the Velero and Helm plugins. This table is the honest state, not the roadmap.
 
 | Area | State |
 |---|---|
@@ -102,6 +103,7 @@ scaffolding. This table is the honest state, not the roadmap.
 | Resource relation graph, command palette, global search | ✅ Working |
 | Network: services, endpoints, ingresses, classes, policies | ✅ Working |
 | Velero: backups, restores, schedules, storage locations | ✅ Working |
+| Helm: releases, history, values, manifest; uninstall and rollback via your CLI | ✅ Working |
 | Configuration: maps, secrets, quotas, budgets, admission webhooks | ✅ Working |
 | Storage: claims, volumes, classes, and what is provisioned but idle | ✅ Working |
 | Namespaces, including ones stuck Terminating and why | ✅ Working |
@@ -126,6 +128,11 @@ See [docs/ROADMAP.md](docs/ROADMAP.md) for the full plan.
 - **No object storage access.** The Velero screen reads Velero's own custom resources
   through the Kubernetes API. tmjLens holds no S3, Blob or GCS credential; the bucket is
   reached by Velero, not by this app.
+- **Helm lifecycle runs through your own CLI.** Releases, history, values and manifests
+  are read from Helm's release records in the cluster — no helm binary needed. Uninstall
+  and rollback run your own `helm` with plain arguments, because a faked uninstall would
+  skip the chart's delete hooks; with no CLI on PATH the buttons say so instead of
+  half-working.
 - **Kubernetes RBAC is the only authority.** The UI hides actions it knows are
   unauthorized, but never grants anything; a `403` is handled as an expected state.
 - **Secret values are hidden by default**, even when technically readable.
@@ -136,7 +143,7 @@ See [docs/ROADMAP.md](docs/ROADMAP.md) for the full plan.
   name, so the frontend can never choose where a file lands.
 - **No telemetry.** None, in any build.
 
-> **Not yet production-hardened.** This is a `0.1`. It has not had an independent
+> **Not yet production-hardened.** This is a `0.3`. It has not had an independent
 > security review, and the Tauri CSP is currently disabled (`"csp": null` in
 > [src-tauri/tauri.conf.json](src-tauri/tauri.conf.json)) — tightening that is tracked
 > for `v1.0`. Treat it accordingly on clusters that matter.
@@ -157,8 +164,10 @@ Build a release binary:
 cd src-tauri && cargo tauri build
 ```
 
-The executable lands in `src-tauri/target/release/`. Full prerequisites, kubeconfig
-notes, and troubleshooting are in [CONTRIBUTING.md](CONTRIBUTING.md).
+The executable lands in `src-tauri/target/release/`, and installers in
+`src-tauri/target/release/bundle/` — an MSI and an NSIS setup, both of which upgrade an
+existing install in place. Full prerequisites, kubeconfig notes, and troubleshooting
+are in [CONTRIBUTING.md](CONTRIBUTING.md).
 
 ## Development
 
@@ -173,11 +182,15 @@ cd src && npm run dev
 |---|---|
 | `/preview.html` | Cluster overview, EKS fixture with full cloud enrichment |
 | `/preview.html?provider=aks` | The same page with no cloud enrichment and no metrics-server |
-| `/preview.html?view=actions` | Row action menu inside a clipping panel |
+| `/preview.html?view=workloads` | Workloads with a stuck rollout and every controller kind |
+| `/preview.html?view=network` | Services, endpoints, ingresses, classes and policies |
+| `/preview.html?view=helm` | Helm releases — failed, stuck pending, uninstalled |
+| `/preview.html?view=velero` | Velero with a partial backup and a dead storage location |
+| `/preview.html?view=reports` | The report catalogue |
 
-The fixtures deliberately cover the awkward cases: an unready node, memory and disk
-pressure, a cordon, kubelet version skew, overcommitted limits, multiple taints, and
-long resource names.
+Every screen has a fixture view; the full list is documented at the top of
+[src/preview/main.tsx](src/preview/main.tsx). The fixtures deliberately carry the
+failure states each screen exists to surface.
 
 ```bash
 cd src-tauri && cargo test    # Rust unit tests
@@ -192,8 +205,10 @@ React + TypeScript UI
         │  Tauri commands (typed, async)
         ▼
 Rust application layer
-  ├── kube client — contexts, resources, logs, SelfSubjectAccessReview
+  ├── kube client — contexts, resources, logs, watches, SelfSubjectAccessReview
   ├── cluster overview — provider detection, capacity model, health, findings
+  ├── screens — network, storage, configuration, namespaces, reports
+  ├── plugins — Velero and Helm, read natively from in-cluster records
   └── cloud context — optional, read-only enrichment
 ```
 

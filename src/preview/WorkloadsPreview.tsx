@@ -54,11 +54,9 @@ export function WorkloadsPreview() {
         onDeletePod={() => undefined}
         onExportPodLogs={() => undefined}
         onDeleteDeployment={() => undefined}
-        onScaleDeployment={() => undefined}
-        onRestartDeployment={() => undefined}
         onExportDeployment={() => undefined}
         podsLive
-        controllers={<WorkloadInventoryTable inventory={inventory} loading={false} error="" selected="" canDelete onSelect={() => undefined} onEditYaml={() => undefined} onDelete={() => undefined} onExportYaml={() => undefined} />}
+        controllers={<WorkloadInventoryTable inventory={inventory} loading={false} error="" selected="" canDelete onSelect={() => undefined} onEditYaml={() => undefined} onDelete={() => undefined} onExportYaml={() => undefined} canPatch={() => true} onScale={() => undefined} onRestart={() => undefined} />}
       />
       {deployment && (
         <DeploymentDetailPanel

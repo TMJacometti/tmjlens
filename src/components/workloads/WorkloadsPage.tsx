@@ -1,6 +1,7 @@
-import { useMemo, useState } from 'react';
+import { useEffect, useMemo, useState } from 'react';
 import { Download, ListTree, Search, Trash2 } from 'lucide-react';
 import { ActionMenu } from '../ActionMenu';
+import { ageFrom } from '../../lib/format';
 import { SeverityBadge, StatTile } from '../cluster/charts';
 import { deploymentSeverity, podSeverity, type DeploymentRow, type PodRow } from '../../types/workloads';
 import './workloads.css';
@@ -28,13 +29,19 @@ type Props = {
   onDeletePod: (name: string) => void;
   onExportPodLogs: (name: string) => void;
   onDeleteDeployment: (name: string) => void;
-  onScaleDeployment: (name: string) => void;
-  onRestartDeployment: (name: string) => void;
   onExportDeployment: (name: string) => void;
 };
 
 export function WorkloadsPage(props: Props) {
   const { view, pods, deployments, controllers, podsLive } = props;
+
+  // Ages are rendered from timestamps, so they need a clock that moves. Thirty
+  // seconds is finer than the minute granularity they display.
+  const [now, setNow] = useState(() => Date.now());
+  useEffect(() => {
+    const timer = window.setInterval(() => setNow(Date.now()), 30_000);
+    return () => window.clearInterval(timer);
+  }, []);
   const [filter, setFilter] = useState('');
 
   const needle = filter.trim().toLowerCase();
@@ -103,7 +110,7 @@ export function WorkloadsPage(props: Props) {
         )}
       </div>
 
-      {view === 'Pods' ? <PodsTable {...props} pods={visiblePods} filtered={needle.length > 0} /> : controllers}
+      {view === 'Pods' ? <PodsTable {...props} pods={visiblePods} filtered={needle.length > 0} now={now} /> : controllers}
     </div>
   );
 }
@@ -116,7 +123,8 @@ function PodsTable({
   onDeletePod,
   onExportPodLogs,
   filtered,
-}: Props & { filtered: boolean }) {
+  now,
+}: Props & { filtered: boolean; now: number }) {
   if (pods.length === 0) {
     return <div className="viz-card"><div className="viz-empty">{filtered ? 'No pod matches this filter.' : 'No pods in this namespace.'}</div></div>;
   }
@@ -146,7 +154,7 @@ function PodsTable({
                   <SeverityBadge severity={podSeverity(pod)} label={pod.status} />
                 </td>
                 <td>{pod.ready}</td>
-                <td>{pod.age}</td>
+                <td>{pod.created_at ? ageFrom(pod.created_at, now) : pod.age}</td>
                 <td className="wl-actions">
                   <ActionMenu
                     label="Pod actions"

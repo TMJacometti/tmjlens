@@ -4,6 +4,7 @@ mod cluster;
 mod configuration;
 mod exec;
 mod graph;
+mod helm;
 mod insights;
 mod logs;
 mod namespaces;
@@ -66,6 +67,10 @@ pub struct PodInfo {
     pub status: String,
     pub ready: String,
     pub age: String,
+    /// When the pod was created, so the frontend can keep the age ticking. The watch
+    /// only re-sends a pod when it changes, and an age string frozen at the last event
+    /// reads as a pod frozen in time.
+    pub created_at: Option<String>,
 }
 
 /// The one place a Pod becomes a row. Shared so the list and the watch cannot drift
@@ -94,6 +99,11 @@ pub(crate) fn pod_row(pod: Pod) -> Option<PodInfo> {
             .as_ref()
             .map(|timestamp| format_age(timestamp.0))
             .unwrap_or_else(|| "n/a".to_string()),
+        created_at: pod
+            .metadata
+            .creation_timestamp
+            .as_ref()
+            .map(|timestamp| timestamp.0.to_rfc3339()),
     })
 }
 
@@ -678,6 +688,41 @@ async fn get_storage_overview(
 }
 
 #[tauri::command]
+async fn get_helm_overview(context: String) -> Result<helm::HelmOverview, String> {
+    let client = client_for_context(&context).await?;
+    helm::overview(client).await
+}
+
+#[tauri::command]
+async fn get_helm_release(
+    context: String,
+    namespace: String,
+    name: String,
+) -> Result<helm::ReleaseDetail, String> {
+    let client = client_for_context(&context).await?;
+    helm::detail(client, &namespace, &name).await
+}
+
+#[tauri::command]
+async fn uninstall_helm_release(
+    context: String,
+    namespace: String,
+    name: String,
+) -> Result<String, String> {
+    helm::uninstall(&context, &namespace, &name).await
+}
+
+#[tauri::command]
+async fn rollback_helm_release(
+    context: String,
+    namespace: String,
+    name: String,
+    revision: i64,
+) -> Result<String, String> {
+    helm::rollback(&context, &namespace, &name, revision).await
+}
+
+#[tauri::command]
 async fn get_velero_status(
     context: String,
     velero_namespace: Option<String>,
@@ -988,14 +1033,7 @@ async fn list_namespace_snapshot(context: String, namespace: String) -> Result<N
         events_api.list(&params),
     ).map_err(|e| errors::humanize(&e.to_string()))?;
 
-    let pod_infos = pods.items.into_iter().filter_map(|pod| {
-        let name = pod.metadata.name?;
-        let status = pod.status.as_ref().and_then(|value| value.phase.clone()).unwrap_or_else(|| "Unknown".to_string());
-        let (ready, total) = pod.status.as_ref().and_then(|value| value.container_statuses.as_ref())
-            .map(|values| (values.iter().filter(|container| container.ready).count(), values.len()))
-            .unwrap_or((0, pod.spec.as_ref().map(|value| value.containers.len()).unwrap_or(0)));
-        Some(PodInfo { name, status, ready: format!("{ready}/{total}"), age: pod.metadata.creation_timestamp.map(|value| format_age(value.0)).unwrap_or_else(|| "n/a".to_string()) })
-    }).collect();
+    let pod_infos = pods.items.into_iter().filter_map(pod_row).collect();
 
     let deployment_infos = deployments.items.into_iter().filter_map(|deployment| {
         let name = deployment.metadata.name?;
@@ -1118,10 +1156,11 @@ async fn delete_deployment(
 }
 
 #[tauri::command]
-async fn scale_deployment(
+async fn scale_workload(
     context: String,
     namespace: String,
-    deployment_name: String,
+    kind: String,
+    name: String,
     replicas: i32,
 ) -> Result<(), String> {
     if !(0..=1000).contains(&replicas) {
@@ -1129,20 +1168,36 @@ async fn scale_deployment(
     }
 
     let client = client_for_context(&context).await?;
-    let api: Api<Deployment> = Api::namespaced(client, &namespace);
     let patch = Patch::Merge(json!({"spec": {"replicas": replicas}}));
-    api.patch(&deployment_name, &merge_patch_params(), &patch).await.map_err(|e| errors::humanize(&e.to_string()))?;
+
+    macro_rules! scale {
+        ($type:ty) => {{
+            let api: Api<$type> = Api::namespaced(client, &namespace);
+            api.patch(&name, &merge_patch_params(), &patch).await.map_err(|e| errors::humanize(&e.to_string()))?;
+        }};
+    }
+
+    // Only the kinds where a replica count is the operator's to set. A ReplicaSet
+    // owned by a Deployment would be scaled straight back by its controller, and a
+    // DaemonSet's count is the node list — offering either would be a trap.
+    match kind.as_str() {
+        "Deployment" => scale!(Deployment),
+        "StatefulSet" => scale!(StatefulSet),
+        other => return Err(format!("A {other} does not have a replica count to set.")),
+    }
     Ok(())
 }
 
+/// The same annotation `kubectl rollout restart` writes, so the rollout obeys the
+/// workload's own update strategy instead of deleting pods behind its back.
 #[tauri::command]
-async fn restart_deployment(
+async fn restart_workload(
     context: String,
     namespace: String,
-    deployment_name: String,
+    kind: String,
+    name: String,
 ) -> Result<(), String> {
     let client = client_for_context(&context).await?;
-    let api: Api<Deployment> = Api::namespaced(client, &namespace);
     let restarted_at = chrono::Utc::now().to_rfc3339();
     let patch = Patch::Merge(json!({
         "spec": {
@@ -1156,7 +1211,19 @@ async fn restart_deployment(
         }
     }));
 
-    api.patch(&deployment_name, &merge_patch_params(), &patch).await.map_err(|e| errors::humanize(&e.to_string()))?;
+    macro_rules! restart {
+        ($type:ty) => {{
+            let api: Api<$type> = Api::namespaced(client, &namespace);
+            api.patch(&name, &merge_patch_params(), &patch).await.map_err(|e| errors::humanize(&e.to_string()))?;
+        }};
+    }
+
+    match kind.as_str() {
+        "Deployment" => restart!(Deployment),
+        "StatefulSet" => restart!(StatefulSet),
+        "DaemonSet" => restart!(DaemonSet),
+        other => return Err(format!("A {other} has no pod template to roll.")),
+    }
     Ok(())
 }
 
@@ -1228,6 +1295,10 @@ fn main() {
             write_secret_key,
             write_config_map_key,
             delete_configuration_key,
+            get_helm_overview,
+            get_helm_release,
+            uninstall_helm_release,
+            rollback_helm_release,
             get_velero_status,
             create_velero_backup,
             create_velero_restore,
@@ -1248,8 +1319,8 @@ fn main() {
             delete_node,
             drain_node,
             delete_deployment,
-            scale_deployment,
-            restart_deployment,
+            scale_workload,
+            restart_workload,
             list_events
         ])
         .build(tauri::generate_context!())

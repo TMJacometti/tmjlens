@@ -41,9 +41,11 @@ export function usePodWatch(context: string, namespace: string, enabled: boolean
         if (payload.watch_id !== watchId) return;
         if (payload.change === 'reset') {
           // A relist replaces rather than merges, so pods that vanished while the
-          // watch was down do not linger.
+          // watch was down do not linger. It also means the watch recovered, so the
+          // error it reported while down is stale.
           setPods(payload.pods);
           setLive(true);
+          setError('');
         } else if (payload.change === 'applied') {
           setPods((current) => {
             const index = current.findIndex((row) => row.name === payload.pod.name);

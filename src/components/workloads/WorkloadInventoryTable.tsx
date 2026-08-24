@@ -1,8 +1,8 @@
 import { useMemo, useState } from 'react';
-import { Download, FileCode2, ListTree, Search, ShieldAlert, Trash2 } from 'lucide-react';
+import { ChevronsUpDown, Download, FileCode2, ListTree, RotateCw, Search, ShieldAlert, Trash2 } from 'lucide-react';
 import { ActionMenu } from '../ActionMenu';
 import { SeverityBadge, StatTile } from '../cluster/charts';
-import { WORKLOAD_KINDS, type WorkloadInventory, type WorkloadRow } from '../../types/workload-list';
+import { WORKLOAD_KINDS, canRestartKind, canScaleKind, type WorkloadInventory, type WorkloadRow } from '../../types/workload-list';
 
 type Props = {
   inventory: WorkloadInventory | null;
@@ -10,10 +10,14 @@ type Props = {
   error: string;
   selected: string;
   canDelete: boolean;
+  /** Whether this identity may patch the given kind, checked per resource. */
+  canPatch: (kind: string) => boolean;
   onSelect: (row: WorkloadRow) => void;
   onEditYaml: (row: WorkloadRow) => void;
   onDelete: (row: WorkloadRow) => void;
   onExportYaml: (row: WorkloadRow) => void;
+  onScale: (row: WorkloadRow) => void;
+  onRestart: (row: WorkloadRow) => void;
 };
 
 export function WorkloadInventoryTable({
@@ -22,10 +26,13 @@ export function WorkloadInventoryTable({
   error,
   selected,
   canDelete,
+  canPatch,
   onSelect,
   onEditYaml,
   onDelete,
   onExportYaml,
+  onScale,
+  onRestart,
 }: Props) {
   const [filter, setFilter] = useState('');
   const [kind, setKind] = useState<string>('All');
@@ -186,6 +193,12 @@ export function WorkloadInventoryTable({
                           label={`${row.kind} actions`}
                           items={[
                             { label: 'Open details', icon: <ListTree size={14} />, onSelect: () => onSelect(row) },
+                            ...(canScaleKind(row.kind) && canPatch(row.kind)
+                              ? [{ label: 'Scale…', icon: <ChevronsUpDown size={14} />, onSelect: () => onScale(row) }]
+                              : []),
+                            ...(canRestartKind(row.kind) && canPatch(row.kind)
+                              ? [{ label: 'Rollout restart', icon: <RotateCw size={14} />, onSelect: () => onRestart(row) }]
+                              : []),
                             { label: 'Edit YAML', icon: <FileCode2 size={14} />, onSelect: () => onEditYaml(row) },
                             { label: 'Download YAML', icon: <Download size={14} />, onSelect: () => onExportYaml(row) },
                             ...(canDelete

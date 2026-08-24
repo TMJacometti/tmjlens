@@ -99,11 +99,14 @@ A secret management platform. A CI/CD system. Automatic destructive remediation.
 - [ ] EC2 instance correlation through the AWS SDK
 - [ ] Dedicated node pool view
 - [ ] Load balancer context
-- [ ] Storage context
+- [x] Storage context — claims, volumes and classes, with each volume's cloud disk id
 
 ## v0.5 Plugins
 - [ ] Plugin SDK with an explicit permission manifest
-- [ ] Helm
+- [x] Velero — native, plugin-shaped: backups, restores, schedules and storage
+      locations read from the cluster's CRDs, no bucket credential held
+- [x] Helm — native, plugin-shaped: releases, history, values and manifests read from
+      release records; uninstall and rollback through the operator's own CLI
 - [ ] Argo CD
 - [ ] Vault
 - [ ] Prometheus
@@ -111,7 +114,25 @@ A secret management platform. A CI/CD system. Automatic destructive remediation.
 - [ ] Airflow
 
 Plugins must declare their permissions explicitly and must never silently access
-credentials or arbitrary files.
+credentials or arbitrary files. Velero and Helm shipped natively ahead of the SDK, on
+purpose: designing a plugin API with no real plugin is designing in a vacuum, so they
+are the reference implementations the SDK will be extracted from.
+
+## Shipped beyond the plan
+
+Built along the way because daily operation asked for them:
+
+- [x] Network screen: services, endpoint slices, endpoints, ingresses, classes and
+      policies, with findings
+- [x] Configuration screen: config maps, secrets (values fetched one key at a time,
+      never exported), quotas, limit ranges, autoscalers, disruption budgets, priority
+      and runtime classes, leases, admission webhooks checked against live services
+- [x] Namespaces screen, including ones stuck Terminating and the finalizer to blame
+- [x] Seven on-demand reports — deploys, change trail, idle cost, upgrade readiness,
+      security posture, image hygiene, context drift — with CSV export
+- [x] Executive PDF report and production/staging context marking
+- [x] Humanised auth errors: an expired cloud session names the provider, the command
+      that fixes it, and states that no credential is stored
 
 ## v1.0
 - [ ] Stable Windows/Linux/macOS builds

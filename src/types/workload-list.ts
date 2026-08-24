@@ -24,3 +24,20 @@ export type WorkloadInventory = {
 };
 
 export const WORKLOAD_KINDS = ['Deployment', 'StatefulSet', 'DaemonSet', 'Job', 'CronJob', 'ReplicaSet'] as const;
+
+/**
+ * Which kinds each action applies to. Mirrors the dispatch in the Rust commands, so a
+ * menu never offers what the backend would refuse.
+ *
+ * Scaling is only for kinds whose replica count is the operator's to set: a ReplicaSet
+ * owned by a Deployment is scaled straight back by its controller, and a DaemonSet's
+ * count is the node list.
+ */
+export function canScaleKind(kind: string): boolean {
+  return kind === 'Deployment' || kind === 'StatefulSet';
+}
+
+/** Rollout restart rolls the pod template, which Jobs and CronJobs do not have live. */
+export function canRestartKind(kind: string): boolean {
+  return kind === 'Deployment' || kind === 'StatefulSet' || kind === 'DaemonSet';
+}

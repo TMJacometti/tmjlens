@@ -57,3 +57,20 @@ export function shortNodeName(name: string): string {
   const withoutDomain = name.split('.')[0];
   return withoutDomain.replace(/^ip-/, '');
 }
+
+/**
+ * A pod's age from its creation time, mirroring the backend's format exactly.
+ *
+ * The watch only re-sends a pod when it changes, so the server-built age string
+ * freezes at the last event. Rendering from the timestamp with a ticking clock keeps
+ * ages honest without any traffic.
+ */
+export function ageFrom(createdAt: string, nowMs: number): string {
+  const created = new Date(createdAt).getTime();
+  if (Number.isNaN(created)) return 'n/a';
+  const seconds = Math.max(0, Math.floor((nowMs - created) / 1000));
+  if (seconds < 60) return `${seconds}s`;
+  if (seconds < 3_600) return `${Math.floor(seconds / 60)}m`;
+  if (seconds < 86_400) return `${Math.floor(seconds / 3_600)}h`;
+  return `${Math.floor(seconds / 86_400)}d`;
+}
