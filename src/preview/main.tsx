@@ -11,6 +11,7 @@ import { PortForwardPreview } from './PortForwardPreview';
 import { VeleroPreview } from './VeleroPreview';
 import { HelmPreview } from './HelmPreview';
 import { PodUsagePreview } from './PodUsagePreview';
+import { ArgoPreview } from './ArgoPreview';
 import { ConfigurationPreview } from './ConfigurationPreview';
 import { StoragePreview } from './StoragePreview';
 import { NamespacesPreview } from './NamespacesPreview';
@@ -52,7 +53,9 @@ if (view === 'settings') {
   root.render(
     <div className="app" style={{ height: 'auto', overflow: 'visible' }}>
       <main className="main" style={{ overflow: 'visible' }}>
-        {view === 'pod-usage' ? (
+        {view === 'argo' || view === 'argo-absent' ? (
+          <ArgoPreview installed={view === 'argo'} />
+        ) : view === 'pod-usage' ? (
           <PodUsagePreview />
         ) : view === 'helm' || view === 'helm-nocli' ? (
           <HelmPreview cli={view === 'helm'} />

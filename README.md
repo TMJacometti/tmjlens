@@ -105,6 +105,7 @@ and the Velero and Helm plugins. This table is the honest state, not the roadmap
 | Network: services, endpoints, ingresses, classes, policies | ✅ Working |
 | Velero: backups, restores, schedules, storage locations | ✅ Working |
 | Helm: releases, history, values, manifest; uninstall and rollback via your CLI | ✅ Working |
+| Argo Workflows: runs, crons, templates; image editing with conflict detection | ✅ Working |
 | Configuration: maps, secrets, quotas, budgets, admission webhooks | ✅ Working |
 | Storage: claims, volumes, classes, and what is provisioned but idle | ✅ Working |
 | Namespaces, including ones stuck Terminating and why | ✅ Working |

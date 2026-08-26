@@ -24,6 +24,8 @@ import { StoragePage } from './components/storage/StoragePage';
 import type { StorageOverview } from './types/storage';
 import { ConfigurationPage } from './components/configuration/ConfigurationPage';
 import type { ConfigurationOverview, RevealedValue } from './types/configuration';
+import { ArgoPage } from './components/argo/ArgoPage';
+import type { ArgoOverview, CronRow, ImageSlot, TemplateRow, WorkflowRow } from './types/argo';
 import { HelmPage } from './components/helm/HelmPage';
 import type { HelmOverview, ReleaseDetail, ReleaseRow } from './types/helm';
 import { VeleroPage } from './components/velero/VeleroPage';
@@ -70,6 +72,10 @@ export function App() {
   const [configuration, setConfiguration] = useState<ConfigurationOverview | null>(null);
   const [configurationError, setConfigurationError] = useState('');
   const [isLoadingConfiguration, setIsLoadingConfiguration] = useState(false);
+  const [argoOverview, setArgoOverview] = useState<ArgoOverview | null>(null);
+  const [argoError, setArgoError] = useState('');
+  const [isLoadingArgo, setIsLoadingArgo] = useState(false);
+  const [argoCapabilities, setArgoCapabilities] = useState({ patchTemplates: false, patchCrons: false, createWorkflows: false, deleteWorkflows: false });
   const [helmOverview, setHelmOverview] = useState<HelmOverview | null>(null);
   const [helmError, setHelmError] = useState('');
   const [isLoadingHelm, setIsLoadingHelm] = useState(false);
@@ -388,6 +394,96 @@ export function App() {
     await invoke('delete_configuration_key', { context, namespace, kind, name, key });
   };
 
+  const loadArgo = async () => {
+    setIsLoadingArgo(true);
+    try {
+      const overview = await invoke<ArgoOverview>('get_argo_overview', { context });
+      setArgoOverview(overview);
+      setArgoError('');
+      if (overview.installed) {
+        // Argo's kinds live in their own API group; the empty namespace asks cluster-wide.
+        const check = (verb: string, resource: string) =>
+          invoke<boolean>('check_permission', { context, namespace: '', verb, resource, subresource: null, group: 'argoproj.io' }).catch(() => false);
+        const [patchTemplates, patchCrons, createWorkflows, deleteWorkflows] = await Promise.all([
+          check('patch', 'workflowtemplates'), check('patch', 'cronworkflows'),
+          check('create', 'workflows'), check('delete', 'workflows'),
+        ]);
+        setArgoCapabilities({ patchTemplates, patchCrons, createWorkflows, deleteWorkflows });
+      }
+    } catch (error) {
+      setArgoError(String(error));
+    } finally {
+      setIsLoadingArgo(false);
+    }
+  };
+
+  const setArgoImage = async (
+    target: { kind: 'WorkflowTemplate' | 'CronWorkflow'; name: string; namespace: string },
+    slot: ImageSlot,
+    image: string,
+  ) => {
+    // Changing an image changes what the next run executes, so it carries the same
+    // confirmation as any other write — in production, typing the context name.
+    if (!confirmDestructive(`Change the image of ${slot.template} in ${target.kind.toLowerCase()} ${target.name} to ${image}? The next run uses it.`)) {
+      throw new Error('Cancelled.');
+    }
+    await invoke('set_argo_image', {
+      context, kind: target.kind, namespace: target.namespace, name: target.name,
+      template: slot.template, container: slot.container, expected: slot.image, image,
+    });
+    notify('Image changed', `${slot.template} now runs ${image}.`, 'good');
+    await loadArgo();
+  };
+
+  const suspendArgoCron = async (row: CronRow, suspend: boolean) => {
+    const verb = suspend ? 'Suspend' : 'Resume';
+    if (!confirmDestructive(`${verb} cron workflow ${row.name}? ${suspend ? 'It stops firing on its schedule.' : 'It starts firing on its schedule again.'}`)) return;
+    try {
+      await invoke('set_argo_cron_suspend', { context, namespace: row.namespace, name: row.name, suspend });
+      notify(`${verb}d`, `${row.name} ${suspend ? 'will not run until resumed' : 'is scheduled again'}.`, 'good');
+    } catch (error) {
+      notify(`${verb} failed`, String(error), 'bad');
+      return;
+    }
+    await loadArgo();
+  };
+
+  const submitArgoTemplate = async (row: TemplateRow) => {
+    if (!confirmDestructive(`Start a run of ${row.name} now?`)) return;
+    try {
+      const created = await invoke<string>('submit_argo_template', { context, namespace: row.namespace, name: row.name });
+      notify('Run started', `${created} is running. Watch it under Runs.`, 'good');
+    } catch (error) {
+      notify('The run could not be started', String(error), 'bad');
+      return;
+    }
+    await loadArgo();
+  };
+
+  const stopArgoWorkflow = async (row: WorkflowRow) => {
+    if (!confirmDestructive(`Stop the run ${row.name}? Its exit handlers still execute.`)) return;
+    try {
+      await invoke('stop_argo_workflow', { context, namespace: row.namespace, name: row.name });
+      notify('Stop requested', `${row.name} is shutting down.`, 'good');
+    } catch (error) {
+      notify('Stop failed', String(error), 'bad');
+      return;
+    }
+    await loadArgo();
+  };
+
+  const deleteArgoWorkflow = async (row: WorkflowRow) => {
+    if (!confirmDestructive(`Delete the run ${row.name}? Its record and logs in the cluster go with it.`)) return;
+    try {
+      await invoke('delete_argo_workflow', { context, namespace: row.namespace, name: row.name });
+      notify('Run deleted', row.name, 'good');
+    } catch (error) {
+      notify('Delete failed', String(error), 'bad');
+      return;
+    }
+    await loadArgo();
+  };
+
   const loadHelm = async () => {
     setIsLoadingHelm(true);
     try {
@@ -586,6 +682,7 @@ export function App() {
     { id: 'go-network', label: 'Go to Network', group: 'Navigate', run: () => setActive('Network') },
     { id: 'go-velero', label: 'Go to Velero backups', group: 'Navigate', run: () => setActive('Velero') },
     { id: 'go-helm', label: 'Go to Helm releases', group: 'Navigate', run: () => setActive('Helm') },
+    { id: 'go-argo', label: 'Go to Argo Workflows', group: 'Navigate', run: () => setActive('Argo Workflows') },
     { id: 'go-configuration', label: 'Go to Configuration', group: 'Navigate', run: () => setActive('Configuration') },
     { id: 'go-storage', label: 'Go to Storage', group: 'Navigate', run: () => setActive('Storage') },
     { id: 'go-namespaces', label: 'Go to Namespaces', group: 'Navigate', run: () => setActive('Namespaces') },
@@ -683,6 +780,7 @@ export function App() {
     if (active === 'Network') void loadNetwork();
     if (active === 'Velero') void loadVelero();
     if (active === 'Helm') void loadHelm();
+    if (active === 'Argo Workflows') void loadArgo();
     if (active === 'Configuration') void loadConfiguration();
     if (active === 'Storage') void loadStorage();
     if (active === 'Namespaces') void loadNamespaceOverview();
@@ -709,9 +807,9 @@ export function App() {
     </header>
     <div className="body"><aside className="sidebar"><div className="section-title">CLUSTER</div>
       <Nav icon={<Gauge size={16}/>} label="Cluster Overview" active={active === 'Cluster Overview'} onClick={() => setActive('Cluster Overview')} /><Nav icon={<Workflow size={16}/>} label="Workloads" active={active === 'Workloads'} onClick={() => setActive('Workloads')} /><Nav icon={<Network size={16}/>} label="Network" active={active === 'Network'} onClick={() => setActive('Network')} /><Nav icon={<HardDrive size={16}/>} label="Storage" active={active === 'Storage'} onClick={() => setActive('Storage')} /><Nav icon={<FileCog size={16}/>} label="Configuration" active={active === 'Configuration'} onClick={() => setActive('Configuration')} /><Nav icon={<Server size={16}/>} label="Nodes" active={active === 'Nodes'} onClick={() => setActive('Nodes')} /><Nav icon={<Layers3 size={16}/>} label="Namespaces" active={active === 'Namespaces'} onClick={() => setActive('Namespaces')} /><Nav icon={<CircleAlert size={16}/>} label="Events" active={active === 'Events'} onClick={() => setActive('Events')} /><Nav icon={<BarChart3 size={16}/>} label="Reports" active={active === 'Reports'} onClick={() => setActive('Reports')} />
-      <div className="section-title aws">CLOUD</div><Nav icon={<Network size={16}/>} label="Load Balancers"/><Nav icon={<Box size={16}/>} label="Node Pools"/><div className="section-title plugins">PLUGINS</div><Nav icon={<DatabaseBackup size={16}/>} label="Velero" active={active === 'Velero'} onClick={() => setActive('Velero')} /><Nav icon={<Terminal size={16}/>} label="Helm" active={active === 'Helm'} onClick={() => setActive('Helm')} /><Nav icon={<Workflow size={16}/>} label="Argo CD"/>
+      <div className="section-title aws">CLOUD</div><Nav icon={<Network size={16}/>} label="Load Balancers"/><Nav icon={<Box size={16}/>} label="Node Pools"/><div className="section-title plugins">PLUGINS</div><Nav icon={<DatabaseBackup size={16}/>} label="Velero" active={active === 'Velero'} onClick={() => setActive('Velero')} /><Nav icon={<Terminal size={16}/>} label="Helm" active={active === 'Helm'} onClick={() => setActive('Helm')} /><Nav icon={<Workflow size={16}/>} label="Argo Workflows" active={active === 'Argo Workflows'} onClick={() => setActive('Argo Workflows')} /><Nav icon={<Workflow size={16}/>} label="Argo CD"/>
     </aside><main className="main"><div className="breadcrumbs">Cluster / {namespace} / {active}</div><div className="title-row"><div><h1>{active}</h1><p>Live Kubernetes resources from <b>{context}</b></p></div></div>
-      {showEvents ? <EventsPanel events={events} onRefresh={refreshEvents}/> : active === 'Namespaces' ? <NamespacesPage data={namespaceOverview} loading={isLoadingNamespaces} error={namespaceError} current={namespace} onRefresh={() => void loadNamespaceOverview()} onSelect={(name) => void handleNamespaceChange(name)}/> : active === 'Storage' ? <StoragePage data={storage} loading={isLoadingStorage} error={storageError} onRefresh={() => void loadStorage()}/> : active === 'Configuration' ? <ConfigurationPage data={configuration} loading={isLoadingConfiguration} error={configurationError} canEditConfigMaps={capabilities.patchConfigMaps} canEditSecrets={capabilities.patchSecrets} onRefresh={() => void loadConfiguration()} onRead={readConfigurationKey} onSave={saveConfigurationKey} onDelete={deleteConfigurationKey} notify={notify}/> : active === 'Helm' ? <HelmPage data={helmOverview} loading={isLoadingHelm} error={helmError} onRefresh={() => void loadHelm()} onOpenDetail={openHelmRelease} onUninstall={uninstallHelmRelease} onRollback={rollbackHelmRelease} notify={notify}/> : active === 'Velero' ? <VeleroPage status={velero} loading={isLoadingVelero} error={veleroError} namespaces={namespaces} canBackup={veleroCapabilities.backup} canRestore={veleroCapabilities.restore} onRefresh={() => void loadVelero()} onCreateBackup={createVeleroBackup} onCreateRestore={createVeleroRestore}/> : active === 'Network' ? <NetworkPage data={network} loading={isLoadingNetwork} error={networkError} onRefresh={() => void loadNetwork()} onEditYaml={(kind, name) => setYamlTarget({ kind, name })}/> : active === 'Workloads' ? <><WorkloadsPage view={workloadView} onViewChange={setWorkloadView} pods={pods} deployments={deployments} selectedPod={selectedPod} selectedDeployment={selectedDeployment} capabilities={{ deletePods: capabilities.deletePods, deleteDeployments: capabilities.deleteDeployments, patchDeployments: capabilities.patchDeployments }} onSelectPod={selectPod} onSelectDeployment={(name) => { setSelectedDeployment(name); setShowDetail(false); }} onDeletePod={(name) => void deletePod(name)} onExportPodLogs={(name) => void exportLogsFor(name)} onDeleteDeployment={(name) => void deleteDeployment(name)} onExportDeployment={(name) => void exportDeployment(name)} podsLive={podWatch.live} usage={podMetrics.byPod} usageAvailable={podMetrics.available} usageReason={podMetrics.reason}
+      {showEvents ? <EventsPanel events={events} onRefresh={refreshEvents}/> : active === 'Namespaces' ? <NamespacesPage data={namespaceOverview} loading={isLoadingNamespaces} error={namespaceError} current={namespace} onRefresh={() => void loadNamespaceOverview()} onSelect={(name) => void handleNamespaceChange(name)}/> : active === 'Storage' ? <StoragePage data={storage} loading={isLoadingStorage} error={storageError} onRefresh={() => void loadStorage()}/> : active === 'Configuration' ? <ConfigurationPage data={configuration} loading={isLoadingConfiguration} error={configurationError} canEditConfigMaps={capabilities.patchConfigMaps} canEditSecrets={capabilities.patchSecrets} onRefresh={() => void loadConfiguration()} onRead={readConfigurationKey} onSave={saveConfigurationKey} onDelete={deleteConfigurationKey} notify={notify}/> : active === 'Argo Workflows' ? <ArgoPage data={argoOverview} loading={isLoadingArgo} error={argoError} capabilities={argoCapabilities} onRefresh={() => void loadArgo()} onSetImage={setArgoImage} onSuspendCron={suspendArgoCron} onSubmitTemplate={submitArgoTemplate} onStopWorkflow={stopArgoWorkflow} onDeleteWorkflow={deleteArgoWorkflow}/> : active === 'Helm' ? <HelmPage data={helmOverview} loading={isLoadingHelm} error={helmError} onRefresh={() => void loadHelm()} onOpenDetail={openHelmRelease} onUninstall={uninstallHelmRelease} onRollback={rollbackHelmRelease} notify={notify}/> : active === 'Velero' ? <VeleroPage status={velero} loading={isLoadingVelero} error={veleroError} namespaces={namespaces} canBackup={veleroCapabilities.backup} canRestore={veleroCapabilities.restore} onRefresh={() => void loadVelero()} onCreateBackup={createVeleroBackup} onCreateRestore={createVeleroRestore}/> : active === 'Network' ? <NetworkPage data={network} loading={isLoadingNetwork} error={networkError} onRefresh={() => void loadNetwork()} onEditYaml={(kind, name) => setYamlTarget({ kind, name })}/> : active === 'Workloads' ? <><WorkloadsPage view={workloadView} onViewChange={setWorkloadView} pods={pods} deployments={deployments} selectedPod={selectedPod} selectedDeployment={selectedDeployment} capabilities={{ deletePods: capabilities.deletePods, deleteDeployments: capabilities.deleteDeployments, patchDeployments: capabilities.patchDeployments }} onSelectPod={selectPod} onSelectDeployment={(name) => { setSelectedDeployment(name); setShowDetail(false); }} onDeletePod={(name) => void deletePod(name)} onExportPodLogs={(name) => void exportLogsFor(name)} onDeleteDeployment={(name) => void deleteDeployment(name)} onExportDeployment={(name) => void exportDeployment(name)} podsLive={podWatch.live} usage={podMetrics.byPod} usageAvailable={podMetrics.available} usageReason={podMetrics.reason}
       controllers={<WorkloadInventoryTable inventory={inventory} loading={isLoadingInventory} error={inventoryError}
         selected={selectedDeployment ? `Deployment/${selectedDeployment}` : ''} canDelete={capabilities.deleteDeployments}
         onSelect={(row) => { if (row.kind === 'Deployment') { setSelectedDeployment(row.name); } else { setYamlTarget({ kind: row.kind, name: row.name }); } }}
