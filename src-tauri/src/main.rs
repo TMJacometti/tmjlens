@@ -712,6 +712,34 @@ async fn set_argo_image(
 }
 
 #[tauri::command]
+#[allow(clippy::too_many_arguments)]
+async fn set_argo_resources(
+    context: String,
+    kind: String,
+    namespace: String,
+    name: String,
+    template: String,
+    container: String,
+    expected: argo::ResourcesSpec,
+    resources: argo::ResourcesSpec,
+) -> Result<(), String> {
+    let client = client_for_context(&context).await?;
+    argo::set_resources(client, &kind, &namespace, &name, &template, &container, &expected, &resources).await
+}
+
+#[tauri::command]
+async fn set_argo_schedule(
+    context: String,
+    namespace: String,
+    name: String,
+    expected: String,
+    schedule: String,
+) -> Result<(), String> {
+    let client = client_for_context(&context).await?;
+    argo::set_schedule(client, &namespace, &name, &expected, &schedule).await
+}
+
+#[tauri::command]
 async fn set_argo_cron_suspend(
     context: String,
     namespace: String,
@@ -1363,6 +1391,8 @@ fn main() {
             delete_configuration_key,
             get_argo_overview,
             set_argo_image,
+            set_argo_resources,
+            set_argo_schedule,
             set_argo_cron_suspend,
             submit_argo_template,
             stop_argo_workflow,

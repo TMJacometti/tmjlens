@@ -1,11 +1,36 @@
 import type { Severity } from './cluster';
 
+export type ResourcesSpec = {
+  cpu_request: string | null;
+  cpu_limit: string | null;
+  memory_request: string | null;
+  memory_limit: string | null;
+};
+
+export const EMPTY_RESOURCES: ResourcesSpec = {
+  cpu_request: null, cpu_limit: null, memory_request: null, memory_limit: null,
+};
+
 export type ImageSlot = {
   template: string;
   /** "main" for a container or script step; the member's name inside a containerSet. */
   container: string;
   image: string;
+  resources: ResourcesSpec;
 };
+
+/** "requests 200m · 256Mi, limits 500m · 1Gi" — or plainly that nothing is set. */
+export function summariseResources(spec: ResourcesSpec): string {
+  const pair = (cpu: string | null, memory: string | null) =>
+    cpu || memory ? [cpu, memory].filter(Boolean).join(' · ') : null;
+  const requests = pair(spec.cpu_request, spec.memory_request);
+  const limits = pair(spec.cpu_limit, spec.memory_limit);
+  if (!requests && !limits) return 'no requests or limits set';
+  const parts = [];
+  if (requests) parts.push(`requests ${requests}`);
+  if (limits) parts.push(`limits ${limits}`);
+  return parts.join(', ');
+}
 
 export type WorkflowRow = {
   name: string;
@@ -17,6 +42,8 @@ export type WorkflowRow = {
   started_at: string | null;
   duration: string | null;
   from_template: string | null;
+  cpu_milli: number | null;
+  memory_bytes: number | null;
   age: string;
 };
 

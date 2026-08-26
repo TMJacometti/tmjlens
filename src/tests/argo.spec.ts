@@ -92,6 +92,59 @@ test.describe('argo workflows', () => {
   });
 });
 
+test.describe('argo editing beyond the image', () => {
+  test.beforeEach(async ({ page }) => {
+    await page.setViewportSize({ width: 1500, height: 1000 });
+    await page.goto('/preview.html?view=argo');
+    await page.waitForSelector('.argo-page');
+  });
+
+  test('live usage appears for the running workflow and only for it', async ({ page }) => {
+    const running = page.getByRole('row').filter({ hasText: 'ledger-backfill-p9qrt' });
+    await expect(running).toContainText('1.2 cores · 3.2Gi');
+    const done = page.getByRole('row').filter({ hasText: 'nightly-etl-7ttw4' });
+    await expect(done.locator('.argo-usage')).toContainText('—');
+  });
+
+  test('a cron workflow opens with its schedule editable', async ({ page }) => {
+    await page.getByRole('tab', { name: /Cron workflows/ }).click();
+    await page.getByRole('button', { name: 'nightly-etl', exact: true }).click();
+    const dialog = page.getByRole('dialog');
+    await expect(dialog).toContainText('0 2 * * *');
+
+    await dialog.locator('.argo-schedule').getByRole('button', { name: 'Edit' }).click();
+    await dialog.getByLabel('Cron schedule').fill('0 4 * * *');
+    await dialog.locator('.argo-schedule').getByRole('button', { name: 'Save' }).click();
+    await expect(dialog.locator('.argo-schedule')).toContainText('0 4 * * *');
+  });
+
+  test('each slot shows its resources in words, unset included', async ({ page }) => {
+    await page.getByRole('tab', { name: /Cron workflows/ }).click();
+    await page.getByRole('button', { name: 'nightly-etl', exact: true }).click();
+    const dialog = page.getByRole('dialog');
+
+    const extract = dialog.locator('.argo-slot').filter({ hasText: 'extract' });
+    await expect(extract).toContainText('requests 200m · 512Mi, limits 1 · 2Gi');
+    const load = dialog.locator('.argo-slot').filter({ hasText: 'load' });
+    await expect(load).toContainText('no requests or limits set');
+  });
+
+  test('resources are edited per container and saved in place', async ({ page }) => {
+    await page.getByRole('tab', { name: /Cron workflows/ }).click();
+    await page.getByRole('button', { name: 'nightly-etl', exact: true }).click();
+    const dialog = page.getByRole('dialog');
+
+    const load = dialog.locator('.argo-slot').filter({ hasText: 'load' });
+    await load.getByRole('button', { name: 'Resources' }).click();
+    await expect(load).toContainText('Memory limit is the OOMKill point');
+    await load.getByPlaceholder(/1Gi/).fill('2Gi');
+    await load.getByPlaceholder(/256Mi/).fill('512Mi');
+    await load.getByRole('button', { name: 'Save resources' }).click();
+
+    await expect(load).toContainText('requests 512Mi, limits 2Gi');
+  });
+});
+
 test.describe('argo absent', () => {
   test('absence is a fact with an explanation, not an error page', async ({ page }) => {
     await page.setViewportSize({ width: 1500, height: 900 });

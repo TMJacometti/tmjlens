@@ -13,9 +13,10 @@
 use kube::api::{DeleteParams, ListParams, Patch, PostParams};
 use kube::core::{ApiResource, DynamicObject, GroupVersionKind};
 use kube::{Api, Client};
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 
+use crate::cluster::{parse_cpu_milli, parse_memory_bytes};
 use crate::format_age;
 
 fn resource(kind: &str) -> ApiResource {
@@ -54,6 +55,10 @@ pub struct WorkflowRow {
     pub started_at: Option<String>,
     pub duration: Option<String>,
     pub from_template: Option<String>,
+    /// Live usage summed over the run's pods, present only while it runs and only
+    /// when metrics-server answers.
+    pub cpu_milli: Option<f64>,
+    pub memory_bytes: Option<f64>,
     pub age: String,
 }
 
@@ -88,6 +93,18 @@ pub struct ImageSlot {
     /// containerSet.
     pub container: String,
     pub image: String,
+    pub resources: ResourcesSpec,
+}
+
+/// A container's requests and limits, as the raw quantity strings Kubernetes stores.
+/// None means the field is unset — which for resources is a meaningful state, not a
+/// missing one.
+#[derive(Serialize, Deserialize, Clone, PartialEq, Debug, Default)]
+pub struct ResourcesSpec {
+    pub cpu_request: Option<String>,
+    pub cpu_limit: Option<String>,
+    pub memory_request: Option<String>,
+    pub memory_limit: Option<String>,
 }
 
 // ---------------------------------------------------------------- pure logic
@@ -112,6 +129,57 @@ pub fn phase_health(phase: &str, message: Option<&str>, progress: Option<&str>) 
     }
 }
 
+/// The container-ish object a slot points at: the template's `container` or `script`
+/// for "main", or the named member of its containerSet.
+fn locate_container<'a>(entry: &'a Value, container: &str) -> Option<&'a Value> {
+    if container == "main" {
+        ["container", "script"].into_iter().find_map(|key| entry.get(key)).filter(|value| value.get("image").is_some())
+    } else {
+        entry
+            .pointer("/containerSet/containers")
+            .and_then(Value::as_array)
+            .and_then(|containers| {
+                containers
+                    .iter()
+                    .find(|inner| inner.get("name").and_then(Value::as_str) == Some(container))
+            })
+    }
+}
+
+fn locate_container_mut<'a>(entry: &'a mut Value, container: &str) -> Option<&'a mut Value> {
+    if container == "main" {
+        let key = ["container", "script"]
+            .into_iter()
+            .find(|key| entry.get(key).and_then(|value| value.get("image")).is_some())?;
+        entry.get_mut(key)
+    } else {
+        entry
+            .pointer_mut("/containerSet/containers")
+            .and_then(Value::as_array_mut)
+            .and_then(|containers| {
+                containers
+                    .iter_mut()
+                    .find(|inner| inner.get("name").and_then(Value::as_str) == Some(container))
+            })
+    }
+}
+
+/// The resources a container object declares, as the raw strings Kubernetes stores.
+pub fn resources_of(container: &Value) -> ResourcesSpec {
+    let read = |kind: &str, key: &str| {
+        container
+            .pointer(&format!("/resources/{kind}/{key}"))
+            .and_then(Value::as_str)
+            .map(String::from)
+    };
+    ResourcesSpec {
+        cpu_request: read("requests", "cpu"),
+        cpu_limit: read("limits", "cpu"),
+        memory_request: read("requests", "memory"),
+        memory_limit: read("limits", "memory"),
+    }
+}
+
 /// Every image in a workflow spec's templates, with where it lives.
 ///
 /// Covers the three places Argo puts an image: `container` and `script` steps (whose
@@ -123,12 +191,15 @@ pub fn image_slots(workflow_spec: &Value) -> Vec<ImageSlot> {
         let Some(template_name) = template.get("name").and_then(Value::as_str) else { continue };
 
         for key in ["container", "script"] {
-            if let Some(image) = template.pointer(&format!("/{key}/image")).and_then(Value::as_str) {
-                slots.push(ImageSlot {
-                    template: template_name.to_string(),
-                    container: "main".to_string(),
-                    image: image.to_string(),
-                });
+            if let Some(step) = template.get(key) {
+                if let Some(image) = step.get("image").and_then(Value::as_str) {
+                    slots.push(ImageSlot {
+                        template: template_name.to_string(),
+                        container: "main".to_string(),
+                        image: image.to_string(),
+                        resources: resources_of(step),
+                    });
+                }
             }
         }
         for container in template
@@ -145,6 +216,7 @@ pub fn image_slots(workflow_spec: &Value) -> Vec<ImageSlot> {
                     template: template_name.to_string(),
                     container: name.to_string(),
                     image: image.to_string(),
+                    resources: resources_of(container),
                 });
             }
         }
@@ -183,24 +255,7 @@ pub fn set_image_in(
             continue;
         }
 
-        let target = if container == "main" {
-            // Found immutably first, then borrowed mutably once — a find_map closure
-            // would trap the mutable borrow inside itself.
-            let key = ["container", "script"]
-                .into_iter()
-                .find(|key| entry.pointer(&format!("/{key}/image")).is_some());
-            key.and_then(|key| entry.pointer_mut(&format!("/{key}/image")))
-        } else {
-            entry
-                .pointer_mut("/containerSet/containers")
-                .and_then(Value::as_array_mut)
-                .and_then(|containers| {
-                    containers
-                        .iter_mut()
-                        .find(|inner| inner.get("name").and_then(Value::as_str) == Some(container))
-                })
-                .and_then(|inner| inner.pointer_mut("/image"))
-        };
+        let target = locate_container_mut(entry, container).and_then(|inner| inner.pointer_mut("/image"));
 
         let Some(image) = target else {
             return Err(format!("Template {template} has no container {container} with an image."));
@@ -217,6 +272,132 @@ pub fn set_image_in(
     }
 
     Err(format!("No template named {template} exists in this object."))
+}
+
+/// Replaces a container's requests and limits, only if what is there now is what the
+/// caller saw — the same compare-and-set the image edit uses, for the same reason.
+/// None removes the field; empty request/limit maps are pruned rather than left as
+/// `{}` litter in the spec.
+pub fn set_resources_in(
+    data: &mut Value,
+    root_pointer: &str,
+    template: &str,
+    container: &str,
+    expected: &ResourcesSpec,
+    new: &ResourcesSpec,
+) -> Result<(), String> {
+    // Validate before touching anything: a quantity Kubernetes cannot parse would be
+    // rejected by the API server anyway, but with a far worse message.
+    for (label, value, is_cpu) in [
+        ("CPU request", &new.cpu_request, true),
+        ("CPU limit", &new.cpu_limit, true),
+        ("memory request", &new.memory_request, false),
+        ("memory limit", &new.memory_limit, false),
+    ] {
+        if let Some(raw) = value {
+            let ok = if is_cpu { parse_cpu_milli(raw).is_some() } else { parse_memory_bytes(raw).is_some() };
+            if !ok {
+                return Err(format!("{raw} is not a quantity Kubernetes accepts for a {label}."));
+            }
+        }
+    }
+
+    let templates = data
+        .pointer_mut(&format!("{root_pointer}/templates"))
+        .and_then(Value::as_array_mut)
+        .ok_or_else(|| "This object carries no workflow templates.".to_string())?;
+
+    let entry = templates
+        .iter_mut()
+        .find(|entry| entry.get("name").and_then(Value::as_str) == Some(template))
+        .ok_or_else(|| format!("No template named {template} exists in this object."))?;
+    let target = locate_container_mut(entry, container)
+        .ok_or_else(|| format!("Template {template} has no container {container}."))?;
+
+    let current = resources_of(target);
+    if &current != expected {
+        return Err(
+            "The resources changed since you read them. Refresh and edit again.".to_string(),
+        );
+    }
+
+    let object = target
+        .as_object_mut()
+        .ok_or_else(|| "The container entry is not an object.".to_string())?;
+    let resources = object
+        .entry("resources")
+        .or_insert_with(|| json!({}));
+
+    for (kind, key, value) in [
+        ("requests", "cpu", &new.cpu_request),
+        ("requests", "memory", &new.memory_request),
+        ("limits", "cpu", &new.cpu_limit),
+        ("limits", "memory", &new.memory_limit),
+    ] {
+        let bucket = resources
+            .as_object_mut()
+            .unwrap()
+            .entry(kind)
+            .or_insert_with(|| json!({}));
+        match value {
+            Some(raw) => {
+                bucket.as_object_mut().unwrap().insert(key.to_string(), json!(raw));
+            }
+            None => {
+                bucket.as_object_mut().unwrap().remove(key);
+            }
+        }
+    }
+
+    // Prune what emptied out, so an "unset everything" edit leaves no `{}` behind.
+    if let Some(map) = resources.as_object_mut() {
+        map.retain(|_, bucket| bucket.as_object().is_some_and(|inner| !inner.is_empty()));
+    }
+    if resources.as_object().is_some_and(|map| map.is_empty()) {
+        object.remove("resources");
+    }
+    Ok(())
+}
+
+/// A light check that a cron expression is shaped like one: five fields, or one of the
+/// @-descriptors. The controller is the real authority; this catches the typo before a
+/// broken schedule is written.
+pub fn validate_cron(expression: &str) -> Result<(), String> {
+    let trimmed = expression.trim();
+    if trimmed.starts_with('@') && trimmed.len() > 1 {
+        return Ok(());
+    }
+    let fields = trimmed.split_whitespace().count();
+    if fields == 5 {
+        return Ok(());
+    }
+    Err(format!(
+        "{trimmed:?} does not look like a cron expression: it has {fields} field(s) and a          schedule needs five (minute hour day month weekday), or an @-descriptor like @daily."
+    ))
+}
+
+/// Changes a CronWorkflow's schedule, compare-and-set like every other edit here.
+pub fn set_schedule_in(data: &mut Value, expected: &str, new: &str) -> Result<(), String> {
+    validate_cron(new)?;
+
+    if data.pointer("/spec/schedules").is_some() {
+        return Err(
+            "This cron workflow uses a list of schedules, which this editor does not edit.              Change it through its YAML."
+                .to_string(),
+        );
+    }
+
+    let slot = data
+        .pointer_mut("/spec/schedule")
+        .ok_or_else(|| "This object has no schedule to change.".to_string())?;
+    let current = slot.as_str().unwrap_or_default().to_string();
+    if current != expected {
+        return Err(format!(
+            "The schedule changed since you read it: it is now {current:?}, not {expected:?}.              Refresh and edit again."
+        ));
+    }
+    *slot = json!(new.trim());
+    Ok(())
 }
 
 fn duration_between(started: Option<&str>, finished: Option<&str>) -> Option<String> {
@@ -259,6 +440,8 @@ fn workflow_row(object: DynamicObject) -> WorkflowRow {
         namespace: object.metadata.namespace.clone().unwrap_or_default(),
         duration: duration_between(started.as_deref(), finished.as_deref()),
         from_template: text_at(&object, "/spec/workflowTemplateRef/name"),
+        cpu_milli: None,
+        memory_bytes: None,
         age: age_of(&object),
         name: object.metadata.name.unwrap_or_default(),
         health: health.to_string(),
@@ -350,6 +533,7 @@ pub async fn overview(client: Client) -> Result<ArgoOverview, String> {
     }
 
     let cron_api = api_all(client.clone(), "CronWorkflow");
+    let client_for_usage = client.clone();
     let template_api = api_all(client, "WorkflowTemplate");
     let (crons, templates) = tokio::join!(cron_api.list(&params), template_api.list(&params));
 
@@ -376,6 +560,8 @@ pub async fn overview(client: Client) -> Result<ArgoOverview, String> {
     };
     template_rows.sort_by(|left, right| left.name.cmp(&right.name));
 
+    attach_usage(client_for_usage, &mut workflow_rows, &mut degraded).await;
+
     Ok(ArgoOverview {
         installed: true,
         reason: None,
@@ -384,6 +570,82 @@ pub async fn overview(client: Client) -> Result<ArgoOverview, String> {
         templates: template_rows,
         degraded_collectors: degraded,
     })
+}
+
+/// Sums live pod usage per running workflow.
+///
+/// Argo labels every pod it creates with `workflows.argoproj.io/workflow`, so the join
+/// is: pods carrying the label → their workflow, pod metrics → their usage. Only
+/// namespaces with a running workflow are read, and a missing metrics-server degrades
+/// to a note rather than an error.
+async fn attach_usage(
+    client: Client,
+    workflows: &mut [WorkflowRow],
+    degraded: &mut Vec<String>,
+) -> () {
+    use std::collections::{BTreeSet, HashMap};
+
+    let running_namespaces: BTreeSet<String> = workflows
+        .iter()
+        .filter(|row| row.phase == "Running")
+        .map(|row| row.namespace.clone())
+        .collect();
+    if running_namespaces.is_empty() {
+        return;
+    }
+
+    let mut usage_by_workflow: HashMap<(String, String), (f64, f64)> = HashMap::new();
+    let mut metrics_note = None;
+
+    for namespace in running_namespaces {
+        let pods: Api<k8s_openapi::api::core::v1::Pod> = Api::namespaced(client.clone(), &namespace);
+        let labelled = pods
+            .list(&ListParams::default().labels("workflows.argoproj.io/workflow"))
+            .await;
+        let Ok(labelled) = labelled else { continue };
+
+        let pod_to_workflow: HashMap<String, String> = labelled
+            .items
+            .into_iter()
+            .filter_map(|pod| {
+                let workflow = pod
+                    .metadata
+                    .labels
+                    .as_ref()?
+                    .get("workflows.argoproj.io/workflow")?
+                    .clone();
+                Some((pod.metadata.name?, workflow))
+            })
+            .collect();
+        if pod_to_workflow.is_empty() {
+            continue;
+        }
+
+        match crate::metrics::pod_metrics(client.clone(), &namespace).await {
+            Ok(snapshot) if snapshot.available => {
+                for row in snapshot.pods {
+                    let Some(workflow) = pod_to_workflow.get(&row.name) else { continue };
+                    let entry = usage_by_workflow
+                        .entry((namespace.clone(), workflow.clone()))
+                        .or_insert((0.0, 0.0));
+                    entry.0 += row.cpu_milli.unwrap_or(0.0);
+                    entry.1 += row.memory_bytes.unwrap_or(0.0);
+                }
+            }
+            Ok(snapshot) => metrics_note = snapshot.reason,
+            Err(error) => metrics_note = Some(error),
+        }
+    }
+
+    for row in workflows.iter_mut() {
+        if let Some((cpu, memory)) = usage_by_workflow.get(&(row.namespace.clone(), row.name.clone())) {
+            row.cpu_milli = Some(*cpu);
+            row.memory_bytes = Some(*memory);
+        }
+    }
+    if let Some(note) = metrics_note {
+        degraded.push(format!("Live usage for running workflows is unavailable: {note}"));
+    }
 }
 
 // ---------------------------------------------------------------- writes
@@ -420,6 +682,63 @@ pub async fn set_image(
             kube::Error::Api(response) if response.code == 409 => {
                 "Someone changed this object while you were editing. Refresh and edit again."
                     .to_string()
+            }
+            other => crate::errors::humanize(&other.to_string()),
+        })?;
+    Ok(())
+}
+
+/// Changes a container's resources on a WorkflowTemplate or CronWorkflow, with the
+/// same read-fresh / verify / replace shape as the image edit.
+pub async fn set_resources(
+    client: Client,
+    kind: &str,
+    namespace: &str,
+    name: &str,
+    template: &str,
+    container: &str,
+    expected: &ResourcesSpec,
+    new: &ResourcesSpec,
+) -> Result<(), String> {
+    if kind != "WorkflowTemplate" && kind != "CronWorkflow" {
+        return Err(format!("{kind} is not a kind whose resources this screen edits."));
+    }
+    let api = api_in(client, namespace, kind);
+    let mut object = api
+        .get(name)
+        .await
+        .map_err(|error| crate::errors::humanize(&error.to_string()))?;
+    set_resources_in(&mut object.data, spec_root_pointer(kind), template, container, expected, new)?;
+    api.replace(name, &PostParams::default(), &object)
+        .await
+        .map_err(|error| match &error {
+            kube::Error::Api(response) if response.code == 409 => {
+                "Someone changed this object while you were editing. Refresh and edit again.".to_string()
+            }
+            other => crate::errors::humanize(&other.to_string()),
+        })?;
+    Ok(())
+}
+
+/// Changes a CronWorkflow's schedule.
+pub async fn set_schedule(
+    client: Client,
+    namespace: &str,
+    name: &str,
+    expected: &str,
+    schedule: &str,
+) -> Result<(), String> {
+    let api = api_in(client, namespace, "CronWorkflow");
+    let mut object = api
+        .get(name)
+        .await
+        .map_err(|error| crate::errors::humanize(&error.to_string()))?;
+    set_schedule_in(&mut object.data, expected, schedule)?;
+    api.replace(name, &PostParams::default(), &object)
+        .await
+        .map_err(|error| match &error {
+            kube::Error::Api(response) if response.code == 409 => {
+                "Someone changed this object while you were editing. Refresh and edit again.".to_string()
             }
             other => crate::errors::humanize(&other.to_string()),
         })?;
@@ -505,9 +824,9 @@ mod tests {
     fn every_image_is_found_with_its_place() {
         let slots = image_slots(&spec());
         assert_eq!(slots.len(), 4);
-        assert!(slots.contains(&ImageSlot { template: "build".into(), container: "main".into(), image: "acme/builder:1.4.0".into() }));
-        assert!(slots.contains(&ImageSlot { template: "scan".into(), container: "main".into(), image: "acme/scanner:2.0.1".into() }));
-        assert!(slots.contains(&ImageSlot { template: "publish".into(), container: "sign".into(), image: "acme/signer:1.0.0".into() }));
+        assert!(slots.contains(&ImageSlot { template: "build".into(), container: "main".into(), image: "acme/builder:1.4.0".into(), resources: ResourcesSpec::default() }));
+        assert!(slots.contains(&ImageSlot { template: "scan".into(), container: "main".into(), image: "acme/scanner:2.0.1".into(), resources: ResourcesSpec::default() }));
+        assert!(slots.contains(&ImageSlot { template: "publish".into(), container: "sign".into(), image: "acme/signer:1.0.0".into(), resources: ResourcesSpec::default() }));
     }
 
     #[test]
@@ -574,6 +893,86 @@ mod tests {
             data.pointer("/spec/workflowSpec/templates/0/container/image").and_then(Value::as_str),
             Some("acme/builder:2.0.0")
         );
+    }
+
+    #[test]
+    fn a_slot_carries_its_containers_resources() {
+        let mut with_resources = spec();
+        with_resources["templates"][0]["container"]["resources"] =
+            json!({ "requests": { "cpu": "200m", "memory": "256Mi" }, "limits": { "memory": "1Gi" } });
+        let slots = image_slots(&with_resources);
+        let build = slots.iter().find(|slot| slot.template == "build").expect("build");
+        assert_eq!(build.resources.cpu_request.as_deref(), Some("200m"));
+        assert_eq!(build.resources.memory_limit.as_deref(), Some("1Gi"));
+        // Unset stays None, never an empty string pretending to be a value.
+        assert_eq!(build.resources.cpu_limit, None);
+    }
+
+    #[test]
+    fn resources_are_replaced_only_when_they_match_what_was_seen() {
+        let mut data = json!({ "spec": spec() });
+        let expected = ResourcesSpec::default();
+        let new = ResourcesSpec {
+            memory_limit: Some("2Gi".into()),
+            cpu_request: Some("250m".into()),
+            ..Default::default()
+        };
+        set_resources_in(&mut data, "/spec", "build", "main", &expected, &new).unwrap();
+        assert_eq!(
+            data.pointer("/spec/templates/0/container/resources/limits/memory").and_then(Value::as_str),
+            Some("2Gi")
+        );
+
+        // A second editor with a stale view is refused.
+        let stale = set_resources_in(&mut data, "/spec", "build", "main", &expected, &new);
+        assert!(stale.unwrap_err().contains("changed since you read"));
+    }
+
+    #[test]
+    fn an_unparseable_quantity_is_refused_before_anything_is_written() {
+        let mut data = json!({ "spec": spec() });
+        let bad = ResourcesSpec { memory_limit: Some("lots".into()), ..Default::default() };
+        let error = set_resources_in(&mut data, "/spec", "build", "main", &ResourcesSpec::default(), &bad)
+            .unwrap_err();
+        assert!(error.contains("lots"));
+        assert!(error.contains("memory limit"));
+        assert_eq!(data.pointer("/spec/templates/0/container/resources"), None);
+    }
+
+    #[test]
+    fn unsetting_every_resource_leaves_no_empty_litter_behind() {
+        let mut data = json!({ "spec": spec() });
+        let filled = ResourcesSpec { cpu_request: Some("100m".into()), ..Default::default() };
+        set_resources_in(&mut data, "/spec", "build", "main", &ResourcesSpec::default(), &filled).unwrap();
+        set_resources_in(&mut data, "/spec", "build", "main", &filled, &ResourcesSpec::default()).unwrap();
+        // Not `resources: {}` — the key is gone entirely.
+        assert_eq!(data.pointer("/spec/templates/0/container/resources"), None);
+    }
+
+    #[test]
+    fn a_schedule_is_replaced_with_the_same_compare_and_set() {
+        let mut data = json!({ "spec": { "schedule": "0 2 * * *", "workflowSpec": spec() } });
+        set_schedule_in(&mut data, "0 2 * * *", "0 4 * * *").unwrap();
+        assert_eq!(data.pointer("/spec/schedule").and_then(Value::as_str), Some("0 4 * * *"));
+
+        let stale = set_schedule_in(&mut data, "0 2 * * *", "0 5 * * *").unwrap_err();
+        assert!(stale.contains("0 4 * * *"));
+    }
+
+    #[test]
+    fn a_broken_cron_expression_is_named_before_it_is_written() {
+        assert!(validate_cron("0 2 * * *").is_ok());
+        assert!(validate_cron("@daily").is_ok());
+        let error = validate_cron("0 2 * *").unwrap_err();
+        assert!(error.contains("4 field(s)"));
+        assert!(validate_cron("whenever").is_err());
+    }
+
+    #[test]
+    fn a_multi_schedule_cron_is_declined_rather_than_half_edited() {
+        let mut data = json!({ "spec": { "schedules": ["0 2 * * *", "0 14 * * *"] } });
+        let error = set_schedule_in(&mut data, "0 2 * * *", "0 4 * * *").unwrap_err();
+        assert!(error.contains("list of schedules"));
     }
 
     #[test]

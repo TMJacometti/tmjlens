@@ -6,11 +6,18 @@ import {
   type ArgoOverview, type ArgoView, type CronRow, type ImageSlot, type TemplateRow, type WorkflowRow,
 } from '../../types/argo';
 import { ImageEditorPanel } from './ImageEditorPanel';
+import { formatCpuMilli, formatMemoryBytes } from '../../types/metrics';
+import type { ResourcesSpec } from '../../types/argo';
 import './argo.css';
 
-type EditorTarget =
-  | { kind: 'WorkflowTemplate'; name: string; namespace: string; slots: ImageSlot[] }
-  | { kind: 'CronWorkflow'; name: string; namespace: string; slots: ImageSlot[] };
+type EditorTarget = {
+  kind: 'WorkflowTemplate' | 'CronWorkflow';
+  name: string;
+  namespace: string;
+  slots: ImageSlot[];
+  /** The cron expression, when the target is a single-schedule CronWorkflow. */
+  schedule: string | null;
+};
 
 type Props = {
   data: ArgoOverview | null;
@@ -19,6 +26,8 @@ type Props = {
   capabilities: { patchTemplates: boolean; patchCrons: boolean; createWorkflows: boolean; deleteWorkflows: boolean };
   onRefresh: () => void;
   onSetImage: (target: EditorTarget, slot: ImageSlot, image: string) => Promise<void>;
+  onSetResources: (target: EditorTarget, slot: ImageSlot, resources: ResourcesSpec) => Promise<void>;
+  onSetSchedule: (target: EditorTarget, expected: string, schedule: string) => Promise<void>;
   onSuspendCron: (row: CronRow, suspend: boolean) => Promise<void>;
   onSubmitTemplate: (row: TemplateRow) => Promise<void>;
   onStopWorkflow: (row: WorkflowRow) => Promise<void>;
@@ -26,7 +35,7 @@ type Props = {
 };
 
 export function ArgoPage({
-  data, loading, error, capabilities, onRefresh, onSetImage, onSuspendCron, onSubmitTemplate, onStopWorkflow, onDeleteWorkflow,
+  data, loading, error, capabilities, onRefresh, onSetImage, onSetResources, onSetSchedule, onSuspendCron, onSubmitTemplate, onStopWorkflow, onDeleteWorkflow,
 }: Props) {
   const [view, setView] = useState<ArgoView>('Runs');
   const [filter, setFilter] = useState('');
@@ -146,7 +155,7 @@ export function ArgoPage({
       {view === 'Runs' && (
         <table className="viz-table">
           <thead>
-            <tr><th>Run</th><th>Namespace</th><th>State</th><th>Progress</th><th>Duration</th><th>From</th><th>Age</th><th aria-label="Actions" /></tr>
+            <tr><th>Run</th><th>Namespace</th><th>State</th><th>Progress</th><th>Live usage</th><th>Duration</th><th>From</th><th>Age</th><th aria-label="Actions" /></tr>
           </thead>
           <tbody>
             {matches(data.workflows).map((row) => (
@@ -158,6 +167,11 @@ export function ArgoPage({
                   {row.health !== 'good' && <div className="argo-reason">{row.reason}</div>}
                 </td>
                 <td className="mono">{row.progress ?? '—'}</td>
+                <td className="mono argo-usage">
+                  {row.cpu_milli !== null || row.memory_bytes !== null
+                    ? `${row.cpu_milli !== null ? formatCpuMilli(row.cpu_milli) : '—'} · ${row.memory_bytes !== null ? formatMemoryBytes(row.memory_bytes) : '—'}`
+                    : '—'}
+                </td>
                 <td>{row.duration ?? '—'}</td>
                 <td className="mono viz-dim">{row.from_template ?? '—'}</td>
                 <td>{row.age}</td>
@@ -185,7 +199,7 @@ export function ArgoPage({
               </tr>
             ))}
             {matches(data.workflows).length === 0 && (
-              <tr><td colSpan={8} className="viz-empty">No run matches.</td></tr>
+              <tr><td colSpan={9} className="viz-empty">No run matches.</td></tr>
             )}
           </tbody>
         </table>
@@ -198,7 +212,7 @@ export function ArgoPage({
           </thead>
           <tbody>
             {matches(data.cron_workflows).map((row) => (
-              <tr key={`${row.namespace}/${row.name}`} className="argo-row" onClick={() => setEditor({ kind: 'CronWorkflow', name: row.name, namespace: row.namespace, slots: row.images })}>
+              <tr key={`${row.namespace}/${row.name}`} className="argo-row" onClick={() => setEditor({ kind: 'CronWorkflow', name: row.name, namespace: row.namespace, slots: row.images, schedule: row.schedule })}>
                 <td><button type="button" className="cfg-link mono">{row.name}</button></td>
                 <td className="mono viz-dim">{row.namespace}</td>
                 <td>
@@ -238,7 +252,7 @@ export function ArgoPage({
           </thead>
           <tbody>
             {matches(data.templates).map((row) => (
-              <tr key={`${row.namespace}/${row.name}`} className="argo-row" onClick={() => setEditor({ kind: 'WorkflowTemplate', name: row.name, namespace: row.namespace, slots: row.images })}>
+              <tr key={`${row.namespace}/${row.name}`} className="argo-row" onClick={() => setEditor({ kind: 'WorkflowTemplate', name: row.name, namespace: row.namespace, slots: row.images, schedule: null })}>
                 <td><button type="button" className="cfg-link mono">{row.name}</button></td>
                 <td className="mono viz-dim">{row.namespace}</td>
                 <td className="mono">{row.entrypoint || '—'}</td>
@@ -272,8 +286,26 @@ export function ArgoPage({
           name={editor.name}
           namespace={editor.namespace}
           slots={editor.slots}
+          schedule={editor.schedule}
           canEdit={editor.kind === 'CronWorkflow' ? capabilities.patchCrons : capabilities.patchTemplates}
           onClose={() => setEditor(null)}
+          onSaveResources={async (slot, resources) => {
+            await onSetResources(editor, slot, resources);
+            setEditor((current) =>
+              current && {
+                ...current,
+                slots: current.slots.map((entry) =>
+                  entry.template === slot.template && entry.container === slot.container
+                    ? { ...entry, resources }
+                    : entry,
+                ),
+              },
+            );
+          }}
+          onSaveSchedule={async (expected, schedule) => {
+            await onSetSchedule(editor, expected, schedule);
+            setEditor((current) => current && { ...current, schedule });
+          }}
           onSave={async (slot, image) => {
             await onSetImage(editor, slot, image);
             // The screen refreshes behind the panel; the panel's slots update locally

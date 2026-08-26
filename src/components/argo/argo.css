@@ -173,3 +173,58 @@
   font-size: 12px;
   min-width: 0;
 }
+
+.argo-usage {
+  white-space: nowrap;
+  font-size: 11.5px;
+}
+
+.argo-schedule .argo-slot-name {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+}
+
+/* The resources line sits under the image, full width of the slot. */
+.argo-resources-line,
+.argo-resources-edit {
+  flex-basis: 100%;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  font-size: 11.5px;
+  padding-top: 6px;
+  border-top: 1px dashed #232a34;
+}
+
+.argo-resources-line { justify-content: space-between; }
+
+.argo-resources-edit {
+  flex-wrap: wrap;
+}
+
+.argo-resource-field {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  font-size: 11px;
+  color: var(--viz-muted);
+}
+
+.argo-resource-field input {
+  width: 150px;
+  padding: 6px 8px;
+  border-radius: 6px;
+  border: 1px solid #3a434f;
+  background: #0b0e13;
+  color: #e7eaf0;
+  font-size: 11.5px;
+}
+
+.argo-resources-actions {
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  margin-left: auto;
+  flex-wrap: wrap;
+}
