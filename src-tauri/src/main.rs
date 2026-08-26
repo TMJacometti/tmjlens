@@ -1,5 +1,6 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
+mod argo;
 mod cluster;
 mod configuration;
 mod exec;
@@ -689,6 +690,89 @@ async fn get_storage_overview(
 }
 
 #[tauri::command]
+async fn get_argo_overview(context: String) -> Result<argo::ArgoOverview, String> {
+    let client = client_for_context(&context).await?;
+    argo::overview(client).await
+}
+
+#[tauri::command]
+#[allow(clippy::too_many_arguments)]
+async fn set_argo_image(
+    context: String,
+    kind: String,
+    namespace: String,
+    name: String,
+    template: String,
+    container: String,
+    expected: String,
+    image: String,
+) -> Result<(), String> {
+    let client = client_for_context(&context).await?;
+    argo::set_image(client, &kind, &namespace, &name, &template, &container, &expected, &image).await
+}
+
+#[tauri::command]
+#[allow(clippy::too_many_arguments)]
+async fn set_argo_resources(
+    context: String,
+    kind: String,
+    namespace: String,
+    name: String,
+    template: String,
+    container: String,
+    expected: argo::ResourcesSpec,
+    resources: argo::ResourcesSpec,
+) -> Result<(), String> {
+    let client = client_for_context(&context).await?;
+    argo::set_resources(client, &kind, &namespace, &name, &template, &container, &expected, &resources).await
+}
+
+#[tauri::command]
+async fn set_argo_schedule(
+    context: String,
+    namespace: String,
+    name: String,
+    expected: String,
+    schedule: String,
+) -> Result<(), String> {
+    let client = client_for_context(&context).await?;
+    argo::set_schedule(client, &namespace, &name, &expected, &schedule).await
+}
+
+#[tauri::command]
+async fn set_argo_cron_suspend(
+    context: String,
+    namespace: String,
+    name: String,
+    suspend: bool,
+) -> Result<(), String> {
+    let client = client_for_context(&context).await?;
+    argo::set_cron_suspend(client, &namespace, &name, suspend).await
+}
+
+#[tauri::command]
+async fn submit_argo_template(
+    context: String,
+    namespace: String,
+    name: String,
+) -> Result<String, String> {
+    let client = client_for_context(&context).await?;
+    argo::submit_from_template(client, &namespace, &name).await
+}
+
+#[tauri::command]
+async fn stop_argo_workflow(context: String, namespace: String, name: String) -> Result<(), String> {
+    let client = client_for_context(&context).await?;
+    argo::stop_workflow(client, &namespace, &name).await
+}
+
+#[tauri::command]
+async fn delete_argo_workflow(context: String, namespace: String, name: String) -> Result<(), String> {
+    let client = client_for_context(&context).await?;
+    argo::delete_workflow(client, &namespace, &name).await
+}
+
+#[tauri::command]
 async fn get_pod_metrics(
     context: String,
     namespace: String,
@@ -1305,6 +1389,14 @@ fn main() {
             write_secret_key,
             write_config_map_key,
             delete_configuration_key,
+            get_argo_overview,
+            set_argo_image,
+            set_argo_resources,
+            set_argo_schedule,
+            set_argo_cron_suspend,
+            submit_argo_template,
+            stop_argo_workflow,
+            delete_argo_workflow,
             get_pod_metrics,
             get_helm_overview,
             get_helm_release,

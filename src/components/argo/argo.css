@@ -1,0 +1,230 @@
+/*
+ * Argo Workflows screen. Built on the shared viz-* primitives so it reads as the same
+ * product as Velero and Helm beside it in the Plugins section.
+ */
+.argo-page {
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+  padding-bottom: 40px;
+}
+
+.argo-page.is-refreshing {
+  opacity: 0.62;
+  transition: opacity 120ms ease-out;
+}
+
+.argo-kpis {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(190px, 1fr));
+  gap: 12px;
+}
+
+@media (min-width: 1100px) {
+  .argo-kpis {
+    grid-template-columns: repeat(4, 1fr);
+  }
+}
+
+.argo-toolbar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 14px;
+  flex-wrap: wrap;
+}
+
+.argo-toolbar-right {
+  display: flex;
+  align-items: center;
+  gap: 9px;
+}
+
+.argo-degraded {
+  margin: 6px 0 0;
+  padding-left: 18px;
+  font-size: 12px;
+}
+
+.argo-row {
+  cursor: pointer;
+}
+
+.argo-row:hover {
+  background: #171c24;
+}
+
+.argo-row:hover .cfg-link {
+  text-decoration: underline;
+}
+
+.argo-name,
+.argo-images {
+  max-width: 260px;
+  overflow-wrap: anywhere;
+  font-size: 11.5px;
+}
+
+.argo-reason {
+  margin-top: 2px;
+  font-size: 11px;
+  color: var(--viz-muted);
+  line-height: 1.45;
+  max-width: 300px;
+  overflow-wrap: anywhere;
+}
+
+.argo-actions {
+  white-space: nowrap;
+}
+
+.argo-actions button + button {
+  margin-left: 6px;
+}
+
+/* ---------- image editor ---------- */
+
+.argo-panel {
+  width: min(880px, 100%);
+  max-height: 100%;
+  display: flex;
+  flex-direction: column;
+  background: #0f1319;
+  border: 1px solid #272d37;
+  border-radius: 10px;
+  box-shadow: 0 22px 60px #000a;
+  overflow: hidden;
+}
+
+.argo-panel h2 {
+  margin: 0 0 4px;
+  font-size: 15px;
+  overflow-wrap: anywhere;
+}
+
+.argo-panel-body {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  padding: 16px 18px;
+  overflow-y: auto;
+}
+
+.argo-note {
+  margin: 0;
+  font-size: 12px;
+  line-height: 1.5;
+}
+
+.argo-slots {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.argo-slot {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  flex-wrap: wrap;
+  border: 1px solid #272d37;
+  border-radius: 7px;
+  padding: 10px 12px;
+  background: #12161d;
+}
+
+.argo-slot.is-editing {
+  border-color: #3a434f;
+  background: #151a22;
+}
+
+.argo-slot-name {
+  min-width: 160px;
+  font-size: 12.5px;
+}
+
+.argo-slot-view,
+.argo-slot-edit {
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  flex: 1 1 320px;
+  min-width: 0;
+}
+
+.argo-slot-image {
+  flex: 1;
+  font-size: 12px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.argo-slot-edit input {
+  flex: 1;
+  padding: 7px 9px;
+  border-radius: 6px;
+  border: 1px solid #3a434f;
+  background: #0b0e13;
+  color: inherit;
+  font-size: 12px;
+  min-width: 0;
+}
+
+.argo-usage {
+  white-space: nowrap;
+  font-size: 11.5px;
+}
+
+.argo-schedule .argo-slot-name {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+}
+
+/* The resources line sits under the image, full width of the slot. */
+.argo-resources-line,
+.argo-resources-edit {
+  flex-basis: 100%;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  font-size: 11.5px;
+  padding-top: 6px;
+  border-top: 1px dashed #232a34;
+}
+
+.argo-resources-line { justify-content: space-between; }
+
+.argo-resources-edit {
+  flex-wrap: wrap;
+}
+
+.argo-resource-field {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  font-size: 11px;
+  color: var(--viz-muted);
+}
+
+.argo-resource-field input {
+  width: 150px;
+  padding: 6px 8px;
+  border-radius: 6px;
+  border: 1px solid #3a434f;
+  background: #0b0e13;
+  color: #e7eaf0;
+  font-size: 11.5px;
+}
+
+.argo-resources-actions {
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  margin-left: auto;
+  flex-wrap: wrap;
+}

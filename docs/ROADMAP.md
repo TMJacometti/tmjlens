@@ -107,6 +107,9 @@ A secret management platform. A CI/CD system. Automatic destructive remediation.
       locations read from the cluster's CRDs, no bucket credential held
 - [x] Helm — native, plugin-shaped: releases, history, values and manifests read from
       release records; uninstall and rollback through the operator's own CLI
+- [x] Argo Workflows — native, plugin-shaped: runs, cron workflows and templates read
+      from the cluster's CRDs; image edits verified against the current value and
+      written with the resourceVersion, so concurrent edits conflict instead of losing
 - [ ] Argo CD
 - [ ] Vault
 - [ ] Prometheus
