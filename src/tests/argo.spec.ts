@@ -45,7 +45,7 @@ test.describe('argo workflows', () => {
 
     await page.getByRole('button', { name: 'ledger-backfill', exact: true }).click();
     const dialog = page.getByRole('dialog');
-    await expect(dialog).toContainText('3 images');
+    await expect(dialog).toContainText('3 steps with images');
     // A containerSet member is addressed by template · container.
     await expect(dialog).toContainText('publish · sign');
     await expect(dialog).toContainText('Editing changes what the next run uses');
