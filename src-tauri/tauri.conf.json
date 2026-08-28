@@ -1,7 +1,7 @@
 {
   "$schema": "../node_modules/@tauri-apps/cli/config.schema.json",
   "productName": "tmjLens",
-  "version": "0.5.0",
+  "version": "0.5.1",
   "identifier": "dev.tmjlens",
   "build": {
     "beforeDevCommand": "npm run dev -- --host 0.0.0.0",
