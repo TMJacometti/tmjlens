@@ -29,6 +29,12 @@ export function ConfigurationPage({
   const [view, setView] = useState<ConfigView>('Config Maps');
   const [filter, setFilter] = useState('');
   const [target, setTarget] = useState<Target | null>(null);
+  // The target is captured when the row is clicked; after a save the screen refreshes,
+  // and the panel must follow the fresh data — a key added a moment ago has to appear
+  // without closing and reopening.
+  const liveTarget = target && data
+    ? (target.kind === 'Secret' ? data.secrets : data.config_maps).find((item) => item.name === target.item.name) ?? null
+    : null;
 
   const now = Date.now();
   const needle = filter.trim().toLowerCase();
@@ -439,9 +445,9 @@ export function ConfigurationPage({
           kind={target.kind}
           name={target.item.name}
           namespace={data.namespace}
-          keys={target.item.keys}
-          immutable={target.item.immutable}
-          managedBy={target.item.managed_by}
+          keys={(liveTarget ?? target.item).keys}
+          immutable={(liveTarget ?? target.item).immutable}
+          managedBy={(liveTarget ?? target.item).managed_by}
           canEdit={target.kind === 'Secret' ? canEditSecrets : canEditConfigMaps}
           onClose={() => setTarget(null)}
           onRead={(key) => onRead(target.kind, target.item.name, key)}

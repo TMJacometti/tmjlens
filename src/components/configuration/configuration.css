@@ -439,3 +439,20 @@
   gap: 8px;
   margin-top: 10px;
 }
+
+/* ---------- add key ---------- */
+
+.cfg-add-row {
+  display: flex;
+  justify-content: flex-start;
+}
+
+.cfg-add-key {
+  flex: 1;
+  padding: 7px 9px;
+  border-radius: 6px;
+  border: 1px solid #3a434f;
+  background: #0b0e13;
+  color: inherit;
+  font-size: 12.5px;
+}

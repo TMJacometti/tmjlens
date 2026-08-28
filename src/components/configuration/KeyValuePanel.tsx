@@ -1,6 +1,6 @@
 import { useEffect, useState } from 'react';
 import { createPortal } from 'react-dom';
-import { Copy, Eye, EyeOff, KeyRound, Pencil, ShieldAlert, Trash2, X } from 'lucide-react';
+import { Copy, Eye, EyeOff, KeyRound, Pencil, Plus, ShieldAlert, Trash2, X } from 'lucide-react';
 import { SECRET_MASK, formatBytes, type KeyInfo, type RevealedValue } from '../../types/configuration';
 
 type Props = {
@@ -134,6 +134,46 @@ export function KeyValuePanel({
   };
 
   const locked = immutable || !canEdit;
+
+  // Adding a key is the same write as editing one — a merge patch creates what is not
+  // there — so it goes through the same onSave and the same confirmation.
+  const [adding, setAdding] = useState(false);
+  const [newKey, setNewKey] = useState('');
+  const [newValue, setNewValue] = useState('');
+
+  const addKey = async () => {
+    const key = newKey.trim();
+    if (!key) {
+      setError('A key name cannot be empty.');
+      return;
+    }
+    // The rule Kubernetes applies to ConfigMap and Secret keys.
+    if (!/^[-._a-zA-Z0-9]+$/.test(key)) {
+      setError('A key may hold only letters, digits, dashes, underscores and dots.');
+      return;
+    }
+    if (keys.some((entry) => entry.key === key)) {
+      setError(`${key} already exists — edit it above instead of adding it again.`);
+      return;
+    }
+    setBusyKey(key);
+    setError('');
+    try {
+      await onSave(key, newValue);
+      setRevealed((current) => ({
+        ...current,
+        [key]: { key, value: newValue, bytes: new TextEncoder().encode(newValue).length, binary: false },
+      }));
+      notify(`${key} added`, `${kind} ${name} updated in the cluster.`, 'good');
+      setAdding(false);
+      setNewKey('');
+      setNewValue('');
+    } catch (cause) {
+      setError(String(cause));
+    } finally {
+      setBusyKey('');
+    }
+  };
 
   return createPortal(
     <div className="yaml-scrim" onClick={onClose}>
@@ -297,6 +337,60 @@ export function KeyValuePanel({
             })}
             {keys.length === 0 && <li className="viz-empty">This {kind.toLowerCase()} holds no keys.</li>}
           </ul>
+
+          {adding ? (
+            <div className="cfg-key is-editing cfg-add">
+              <div className="cfg-key-head">
+                <input
+                  className="mono cfg-add-key"
+                  value={newKey}
+                  onChange={(event) => setNewKey(event.target.value)}
+                  placeholder="key name"
+                  aria-label="New key name"
+                  spellCheck={false}
+                  autoFocus
+                />
+              </div>
+              <textarea
+                className="cfg-editor mono"
+                value={newValue}
+                onChange={(event) => setNewValue(event.target.value)}
+                spellCheck={false}
+                aria-label="Value of the new key"
+                placeholder="value"
+                rows={Math.min(16, Math.max(3, newValue.split('\n').length + 1))}
+              />
+              <p className="cfg-encode-note">
+                {isSecret
+                  ? 'Saved as you typed it. tmjLens does the base64 encoding Kubernetes stores it in.'
+                  : 'Saved as you typed it.'}
+              </p>
+              <div className="cfg-edit-actions">
+                <button type="button" className="viz-toggle" onClick={() => { setAdding(false); setError(''); }}>Cancel</button>
+                <button type="button" className="viz-primary" onClick={() => void addKey()} disabled={busyKey !== ''}>
+                  {busyKey ? 'Saving…' : 'Add to cluster'}
+                </button>
+              </div>
+            </div>
+          ) : (
+            <div className="cfg-add-row">
+              <button
+                type="button"
+                className="viz-toggle"
+                disabled={locked}
+                title={
+                  immutable
+                    ? 'This object is immutable.'
+                    : !canEdit
+                      ? `This identity may not change ${isSecret ? 'secrets' : 'config maps'} here.`
+                      : `Add a key to ${name}`
+                }
+                onClick={() => { setAdding(true); setError(''); }}
+              >
+                <Plus size={13} aria-hidden /> Add key
+              </button>
+            </div>
+          )}
         </div>
       </section>
     </div>,
