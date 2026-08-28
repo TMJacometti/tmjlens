@@ -207,7 +207,7 @@ const VALUES: Record<string, string> = {
 };
 
 export function ConfigurationPreview() {
-  const [data] = useState<ConfigurationOverview>(() => fixture());
+  const [data, setData] = useState<ConfigurationOverview>(() => fixture());
 
   const read = async (kind: 'ConfigMap' | 'Secret', name: string, key: string): Promise<RevealedValue> => {
     const value = VALUES[`${name}/${key}`] ?? null;
@@ -230,7 +230,21 @@ export function ConfigurationPreview() {
         canEditSecrets
         onRefresh={() => undefined}
         onRead={read}
-        onSave={async () => undefined}
+        onSave={async (kind, name, key, value) => {
+          // Mirror what the cluster would do, so an added key shows up in the panel.
+          VALUES[`${name}/${key}`] = value;
+          setData((current) => {
+            const bump = <T extends { name: string; keys: { key: string; bytes: number; binary: boolean }[] }>(items: T[]): T[] =>
+              items.map((item) =>
+                item.name === name && !item.keys.some((entry) => entry.key === key)
+                  ? { ...item, keys: [...item.keys, { key, bytes: value.length, binary: false }] }
+                  : item,
+              );
+            return kind === 'Secret'
+              ? { ...current, secrets: bump(current.secrets) }
+              : { ...current, config_maps: bump(current.config_maps) };
+          });
+        }}
         onDelete={async () => undefined}
         notify={() => undefined}
       />

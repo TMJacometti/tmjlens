@@ -83,6 +83,44 @@ test('a binary key is named as binary rather than shown as broken text', async (
   await expect(dialog).toContainText('of binary data');
 });
 
+test('a key can be added to a config map, and appears without reopening', async ({ page }) => {
+  await page.getByRole('button', { name: 'feature-flags', exact: true }).click();
+  const dialog = page.getByRole('dialog');
+  await dialog.getByRole('button', { name: 'Add key' }).click();
+  await dialog.getByLabel('New key name').fill('rollout.percent');
+  await dialog.getByLabel('Value of the new key').fill('25');
+  await dialog.getByRole('button', { name: 'Add to cluster' }).click();
+
+  await expect(dialog).toContainText('rollout.percent');
+  await expect(dialog).toContainText('2 keys');
+  // The form closes; the button returns for the next one.
+  await expect(dialog.getByRole('button', { name: 'Add key' })).toBeVisible();
+});
+
+test('adding a key that exists is refused with a pointer to edit instead', async ({ page }) => {
+  await page.getByRole('button', { name: 'feature-flags', exact: true }).click();
+  const dialog = page.getByRole('dialog');
+  await dialog.getByRole('button', { name: 'Add key' }).click();
+  await dialog.getByLabel('New key name').fill('flags.json');
+  await dialog.getByRole('button', { name: 'Add to cluster' }).click();
+  await expect(dialog).toContainText('already exists');
+});
+
+test('a key name Kubernetes would reject is refused before anything is sent', async ({ page }) => {
+  await page.getByRole('button', { name: 'feature-flags', exact: true }).click();
+  const dialog = page.getByRole('dialog');
+  await dialog.getByRole('button', { name: 'Add key' }).click();
+  await dialog.getByLabel('New key name').fill('bad key/name');
+  await dialog.getByRole('button', { name: 'Add to cluster' }).click();
+  await expect(dialog).toContainText('letters, digits, dashes, underscores and dots');
+});
+
+test('an immutable object offers no Add key', async ({ page }) => {
+  await page.getByRole('tab', { name: /Secrets/ }).click();
+  await page.getByRole('button', { name: 'registry-pull', exact: true }).click();
+  await expect(page.getByRole('dialog').getByRole('button', { name: 'Add key' })).toBeDisabled();
+});
+
 test('an unmeasurable quota says so instead of drawing a bar', async ({ page }) => {
   await page.getByRole('tab', { name: /Resource Quotas/ }).click();
   const row = page.getByRole('row').filter({ hasText: 'count/jobs.batch' });
