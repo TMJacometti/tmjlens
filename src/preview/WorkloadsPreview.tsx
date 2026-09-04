@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react';
-import { invoke } from '@tauri-apps/api/core';
+import { invoke } from '../lib/transport';
 import { WorkloadsPage } from '../components/workloads/WorkloadsPage';
 import { DeploymentDetailPanel } from '../components/workloads/DeploymentDetailPanel';
 import { WorkloadInventoryTable } from '../components/workloads/WorkloadInventoryTable';

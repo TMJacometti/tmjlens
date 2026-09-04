@@ -95,8 +95,10 @@ pub async fn serve() -> Result<(), String> {
 
     let static_dir = std::env::var("TMJLENS_STATIC_DIR").unwrap_or_else(|_| "dist".into());
     let index = std::path::Path::new(&static_dir).join("index.html");
+    // `fallback`, not `not_found_service`: the SPA's index must come back as
+    // 200 on any client-side path, not as a 404 that happens to carry HTML.
     let files = tower_http::services::ServeDir::new(&static_dir)
-        .not_found_service(tower_http::services::ServeFile::new(index));
+        .fallback(tower_http::services::ServeFile::new(index));
 
     let app = Router::new()
         .route("/healthz", get(|| async { "ok" }))

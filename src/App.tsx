@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from 'react';
-import { invoke } from '@tauri-apps/api/core';
+import { invoke } from './lib/transport';
 import {
   BarChart3, Box, ChevronDown, CircleAlert, DatabaseBackup, Download, FileCog, Gauge, GitBranch, HardDrive,
   Layers3, ListTree, Network, Search, Server, Settings, Terminal,

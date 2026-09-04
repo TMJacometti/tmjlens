@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from 'react';
 import { createPortal } from 'react-dom';
-import { invoke } from '@tauri-apps/api/core';
+import { invoke } from '../lib/transport';
 import { ArrowLeft, Download, GitCompare, RotateCcw, Save, X } from 'lucide-react';
 import { DiffReview } from './DiffReview';
 import { textToBase64 } from '../lib/encoding';

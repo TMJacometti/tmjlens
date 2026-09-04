@@ -1,6 +1,6 @@
 import { useEffect, useState } from 'react';
 import { createPortal } from 'react-dom';
-import { invoke } from '@tauri-apps/api/core';
+import { invoke } from '../../lib/transport';
 import { CheckCircle2, FileCog, Info, Layers3, Lock, ShieldAlert, X } from 'lucide-react';
 import { EnvironmentBadge } from './EnvironmentBadge';
 import { ENVIRONMENTS, type AppSettings, type EnvironmentId, type KubeconfigView } from '../../types/settings';

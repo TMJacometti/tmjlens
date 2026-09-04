@@ -1,7 +1,10 @@
 import { useEffect, useRef, useState } from 'react';
-import { invoke } from '@tauri-apps/api/core';
-import { listen } from '@tauri-apps/api/event';
+import { hasBridge, invoke, listen } from './transport';
 import type { PodRow } from '../types/workloads';
+
+/** How often the web build re-lists. Frequent enough to feel live, far apart
+ * enough that a namespace with hundreds of pods is not a self-inflicted DoS. */
+const POLL_MS = 4_000;
 
 type PodWatchEvent =
   | { watch_id: string; change: 'reset'; pods: PodRow[] }
@@ -34,6 +37,32 @@ export function usePodWatch(context: string, namespace: string, enabled: boolean
 
     let cancelled = false;
     setError('');
+
+    if (!hasBridge()) {
+      // Web build: no event bus yet, so the list is re-fetched on a short
+      // interval. Each poll replaces the whole list — a merge would let pods
+      // that vanished while a request failed linger looking healthy.
+      const tick = async () => {
+        try {
+          const rows = await invoke<PodRow[]>('list_pods', { context, namespace });
+          if (cancelled) return;
+          setPods(rows);
+          setLive(true);
+          setError('');
+        } catch (cause) {
+          if (cancelled) return;
+          setLive(false);
+          setError(String(cause));
+        }
+      };
+      void tick();
+      const timer = window.setInterval(() => void tick(), POLL_MS);
+      return () => {
+        cancelled = true;
+        setLive(false);
+        window.clearInterval(timer);
+      };
+    }
 
     const subscriptions = [
       listen<PodWatchEvent>('pod-watch', (event) => {
