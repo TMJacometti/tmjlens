@@ -20,3 +20,10 @@ src-tauri/gen/schemas/
 # tsc output for the Vite config (tsconfig.node.json)
 src/vite.config.js
 src/vite.config.d.ts
+
+# tmjLite local database files (the real one lives on the pod PVC)
+*.tmjp
+*.tmjp.pwal
+*.tmjp.lock
+*.tmjp.shadows/
+data/

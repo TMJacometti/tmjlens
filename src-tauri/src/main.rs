@@ -1,8 +1,10 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
 mod argo;
+mod auth;
 mod cluster;
 mod configuration;
+mod db;
 mod exec;
 mod graph;
 mod helm;
