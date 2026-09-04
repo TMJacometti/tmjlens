@@ -59,7 +59,7 @@ impl Drop for Db {
     }
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, serde::Serialize)]
 pub struct QueryResult {
     pub columns: Vec<String>,
     /// `None` where the engine reported NULL.

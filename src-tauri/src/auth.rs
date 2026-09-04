@@ -27,6 +27,7 @@ pub const PERMISSIONS: &[(&str, &str)] = &[
     ("manage-helm", "Uninstall and roll back Helm releases"),
     ("manage-velero", "Create backups and restores"),
     ("manage-argo", "Edit and submit Argo workflows, images, resources, schedules"),
+    ("manage-nodes", "Cordon, drain and delete nodes"),
     ("admin", "Manage users, profiles and permissions"),
 ];
 
@@ -49,6 +50,24 @@ fn now_stamp() -> String {
     chrono::Local::now().format("%Y-%m-%d %H:%M:%S:%3f").to_string()
 }
 
+#[derive(Debug, Clone, serde::Serialize)]
+pub struct UserSummary {
+    pub id: String,
+    pub email: String,
+    pub display_name: Option<String>,
+    pub active: bool,
+    pub last_login_at: Option<String>,
+    pub profiles: Vec<String>,
+}
+
+#[derive(Debug, Clone, serde::Serialize)]
+pub struct ProfileSummary {
+    pub id: String,
+    pub name: String,
+    pub description: Option<String>,
+    pub permissions: Vec<String>,
+}
+
 pub struct AuthStore<'a> {
     db: &'a Db,
 }
@@ -59,7 +78,7 @@ impl<'a> AuthStore<'a> {
     /// Seeds are only planted when the profiles table is empty, so renaming
     /// or trimming them later sticks.
     pub fn new(db: &'a Db) -> Result<AuthStore<'a>, String> {
-        let store = AuthStore { db };
+        let store = AuthStore::attach(db);
         let existing = db.query("SELECT name FROM profiles;")?;
         if existing.rows.is_empty() {
             let admin = store.create_profile(
@@ -75,6 +94,11 @@ impl<'a> AuthStore<'a> {
             store.add_permission(&viewer, "view-logs")?;
         }
         Ok(store)
+    }
+
+    /// A view over an already-seeded database — the per-request constructor.
+    pub fn attach(db: &'a Db) -> AuthStore<'a> {
+        AuthStore { db }
     }
 
     /// The login path. Registers an unknown email with zero access, refreshes
@@ -251,6 +275,71 @@ impl<'a> AuthStore<'a> {
             if active { "TRUE" } else { "FALSE" },
             sql_str(user_id)?
         ))
+    }
+
+    // ---- administration listings ----
+
+    pub fn list_users(&self) -> Result<Vec<UserSummary>, String> {
+        let rows = self
+            .db
+            .query("SELECT id, email, display_name, active, last_login_at FROM app_users;")?;
+        let mut users = Vec::new();
+        for row in rows.rows {
+            let id = row[0].clone().unwrap_or_default();
+            let mut profiles = Vec::new();
+            for pid in self.profile_ids_for(&id)? {
+                if let Some(name) = self.profile_name(&pid)? {
+                    profiles.push(name);
+                }
+            }
+            profiles.sort();
+            users.push(UserSummary {
+                id,
+                email: row[1].clone().unwrap_or_default(),
+                display_name: row[2].clone(),
+                active: row[3].as_deref() == Some("true"),
+                last_login_at: row[4].clone(),
+                profiles,
+            });
+        }
+        users.sort_by(|a, b| a.email.cmp(&b.email));
+        Ok(users)
+    }
+
+    pub fn list_profiles(&self) -> Result<Vec<ProfileSummary>, String> {
+        let rows = self.db.query("SELECT id, name, description FROM profiles;")?;
+        let mut profiles = Vec::new();
+        for row in rows.rows {
+            let id = row[0].clone().unwrap_or_default();
+            let mut permissions = self.permissions_of(&id)?;
+            permissions.sort();
+            profiles.push(ProfileSummary {
+                id,
+                name: row[1].clone().unwrap_or_default(),
+                description: row[2].clone(),
+                permissions,
+            });
+        }
+        profiles.sort_by(|a, b| a.name.cmp(&b.name));
+        Ok(profiles)
+    }
+
+    /// Newest first. tmjLite's DATETIME strings sort lexicographically in
+    /// chronological order, so when the engine cannot ORDER BY the rows are
+    /// sorted here instead — same answer either way.
+    pub fn recent_audit(&self, limit: usize) -> Result<crate::db::QueryResult, String> {
+        const COLUMNS: &str = "at, user_email, action, target, namespace, detail, allowed";
+        match self.db.query(&format!(
+            "SELECT {COLUMNS} FROM audit_log ORDER BY at DESC LIMIT {limit};"
+        )) {
+            Ok(result) => Ok(result),
+            Err(_) => {
+                let mut result = self.db.query(&format!("SELECT {COLUMNS} FROM audit_log;"))?;
+                result.rows.sort_by(|a, b| b.first().cmp(&a.first()));
+                result.rows.truncate(limit);
+                Ok(result)
+            }
+        }
     }
 
     // ---- audit ----
