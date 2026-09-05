@@ -15,3 +15,7 @@ docs
 *.md
 src/playwright-report
 src/test-results
+
+# Windows tmjLite bits — the image is Linux amd64.
+tools/tmjlite/tmjlite.exe
+tools/tmjlite/tmjlite_ffi.dll

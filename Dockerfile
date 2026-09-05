@@ -11,13 +11,14 @@ COPY src/ ./
 RUN npm run build
 
 FROM rust:1-bookworm AS backend
-WORKDIR /build
-COPY src-tauri/Cargo.toml src-tauri/Cargo.lock ./
-COPY src-tauri/src ./src
+WORKDIR /src
+COPY src-tauri ./src-tauri
+COPY tools ./tools
+WORKDIR /src/src-tauri
 RUN --mount=type=cache,target=/usr/local/cargo/registry \
-    --mount=type=cache,target=/build/target \
+    --mount=type=cache,target=/src/src-tauri/target \
     cargo build --release --locked \
-    && cp /build/target/release/tmjlens /tmjlens
+    && cp /src/src-tauri/target/release/tmjlens /tmjlens
 
 FROM debian:bookworm-slim
 RUN apt-get update \
@@ -27,7 +28,7 @@ RUN apt-get update \
 
 COPY --from=backend /tmjlens /usr/local/bin/tmjlens
 COPY --from=frontend /ui/dist /app/dist
-COPY tools/tmjlite/libtmjlite_ffi.so /usr/local/lib/libtmjlite_ffi.so
+COPY --from=backend /src/tools/tmjlite/libtmjlite_ffi.so /usr/local/lib/libtmjlite_ffi.so
 
 ENV TMJLENS_ADDR=0.0.0.0:8080 \
     TMJLENS_STATIC_DIR=/app/dist \

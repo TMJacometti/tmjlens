@@ -10,7 +10,7 @@
 //! draw, never what is allowed.
 
 use crate::auth::{AuthStore, UserRecord, PERMISSIONS};
-use crate::db::{sql_str, Db};
+use crate::db::Db;
 use axum::body::Body;
 use axum::extract::{Path as UrlPath, Query, State};
 use axum::http::{header, HeaderMap, StatusCode};
