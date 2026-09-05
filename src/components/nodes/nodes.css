@@ -1,0 +1,170 @@
+/*
+ * Nodes screen. Same viz-* primitives as the rest of the product; the detail
+ * section opens under the table so the fleet stays in view while one machine
+ * is being examined.
+ */
+.nodes-page {
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+  padding-bottom: 40px;
+}
+
+.nodes-page.is-refreshing {
+  opacity: 0.62;
+  transition: opacity 120ms ease-out;
+}
+
+.nodes-kpis {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(190px, 1fr));
+  gap: 12px;
+}
+
+@media (min-width: 1100px) {
+  .nodes-kpis {
+    grid-template-columns: repeat(4, 1fr);
+  }
+}
+
+.nodes-toolbar {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 12px;
+}
+
+.nodes-lead {
+  margin: 0;
+}
+
+.nodes-toolbar-right {
+  display: flex;
+  align-items: center;
+  gap: 9px;
+}
+
+.nodes-row {
+  cursor: pointer;
+}
+
+.nodes-row:hover {
+  background: #171c24;
+}
+
+.nodes-row.is-selected {
+  background: #182030;
+}
+
+.nodes-roles {
+  margin-top: 2px;
+  font-size: 11px;
+}
+
+.nodes-flag {
+  margin-top: 2px;
+  font-size: 11px;
+  color: #e8b45c;
+}
+
+.nodes-full {
+  color: #ffb4b4;
+}
+
+/* ---------- detail ---------- */
+
+.nodes-detail {
+  border: 1px solid #272d37;
+  border-radius: 10px;
+  background: #0f1319;
+  padding: 14px 16px;
+}
+
+.nodes-detail-head {
+  display: flex;
+  justify-content: space-between;
+  align-items: flex-start;
+  gap: 12px;
+  flex-wrap: wrap;
+  margin-bottom: 10px;
+}
+
+.nodes-detail-head h3 {
+  margin: 0 0 2px;
+  font-size: 14px;
+  overflow-wrap: anywhere;
+}
+
+.nodes-detail-head p {
+  margin: 0;
+  font-size: 11.5px;
+}
+
+.nodes-detail-actions {
+  display: flex;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.nodes-detail-grid {
+  display: grid;
+  grid-template-columns: minmax(280px, 1fr) minmax(320px, 1.4fr);
+  gap: 16px 24px;
+}
+
+@media (max-width: 1000px) {
+  .nodes-detail-grid {
+    grid-template-columns: 1fr;
+  }
+}
+
+.nodes-detail h4 {
+  margin: 12px 0 6px;
+  font-size: 12px;
+  letter-spacing: 0.03em;
+  text-transform: uppercase;
+  color: var(--viz-muted);
+}
+
+.nodes-detail h4:first-child {
+  margin-top: 0;
+}
+
+.nodes-taints,
+.nodes-conditions,
+.nodes-capacity {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+  font-size: 12.5px;
+}
+
+.nodes-taints code {
+  background: #10151d;
+  border: 1px solid #272d37;
+  border-radius: 5px;
+  padding: 1px 6px;
+}
+
+.nodes-condition-bad {
+  color: #ffb4b4;
+}
+
+.nodes-pods-wrap {
+  max-height: 380px;
+  overflow: auto;
+  border: 1px solid #272d37;
+  border-radius: 8px;
+}
+
+.nodes-pods {
+  margin: 0;
+}
+
+.nodes-pod-name {
+  max-width: 320px;
+  overflow-wrap: anywhere;
+}

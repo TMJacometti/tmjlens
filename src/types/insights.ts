@@ -24,7 +24,6 @@ export type ReportKind = {
   purpose: string;
   filters_namespaces: boolean;
   needs_window: boolean;
-  needs_second_context: boolean;
 };
 
 export const REPORT_WINDOWS: Array<{ id: string; label: string }> = [

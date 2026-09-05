@@ -20,7 +20,7 @@ mod workload_list;
 mod workloads;
 
 use kube::{
-    api::{DeleteParams, ListParams, LogParams, Patch, PatchParams},
+    api::{DeleteParams, ListParams, LogParams, Patch, PatchParams, PostParams},
     Api, Client,
 };
 use k8s_openapi::api::{
@@ -359,17 +359,9 @@ async fn run_report(
     report: String,
     namespaces: Vec<String>,
     window: String,
-    compare_context: Option<String>,
 ) -> Result<insights::ReportResult, String> {
     let client = client_for_context(&context).await?;
-    let other = match compare_context {
-        Some(name) if name != context => {
-            let other_client = client_for_context(&name).await?;
-            Some((other_client, context.clone(), name))
-        }
-        _ => None,
-    };
-    insights::run(client, other, &report, namespaces, &window).await
+    insights::run(client, &report, namespaces, &window).await
 }
 
 async fn get_namespace_overview(context: String) -> Result<namespaces::NamespaceOverview, String> {
@@ -468,9 +460,9 @@ async fn get_pod_metrics(
     metrics::pod_metrics(client, &namespace).await
 }
 
-async fn get_helm_overview(context: String) -> Result<helm::HelmOverview, String> {
+async fn get_helm_overview(context: String, namespace: Option<String>) -> Result<helm::HelmOverview, String> {
     let client = client_for_context(&context).await?;
-    helm::overview(client).await
+    helm::overview(client, namespace.as_deref()).await
 }
 
 async fn get_helm_release(
@@ -784,21 +776,308 @@ async fn delete_node(context: String, node_name: String) -> Result<(), String> {
     Ok(())
 }
 
-/// `kubectl drain` blocks for minutes, so it must never run on a runtime worker thread.
+/// Drain without kubectl: cordon, then ask the eviction API to move every
+/// evictable pod off the node. Evictions respect PodDisruptionBudgets — a
+/// refusal is reported by name, never forced — and daemonset and mirror pods
+/// are skipped the way `kubectl drain --ignore-daemonsets` does. The call
+/// returns when every eviction is accepted, not when the pods are gone;
+/// the message says exactly that.
 async fn drain_node(context: String, node_name: String) -> Result<String, String> {
-    tokio::task::spawn_blocking(move || {
-        let output = Command::new("kubectl")
-            .args(["--context", &context, "drain", &node_name, "--ignore-daemonsets", "--delete-emptydir-data", "--force", "--grace-period=30", "--timeout=5m"])
-            .output()
-            .map_err(|e| format!("Unable to start kubectl drain: {e}"))?;
-        if output.status.success() {
-            Ok(String::from_utf8_lossy(&output.stdout).to_string())
-        } else {
-            Err(String::from_utf8_lossy(&output.stderr).to_string())
+    let client = client_for_context(&context).await?;
+
+    let nodes: Api<Node> = Api::all(client.clone());
+    let cordon = Patch::Merge(json!({ "spec": { "unschedulable": true } }));
+    nodes
+        .patch(&node_name, &merge_patch_params(), &cordon)
+        .await
+        .map_err(|e| errors::humanize(&e.to_string()))?;
+
+    let pods: Api<Pod> = Api::all(client.clone());
+    let on_node = ListParams::default().fields(&format!("spec.nodeName={node_name}"));
+    let list = pods.list(&on_node).await.map_err(|e| errors::humanize(&e.to_string()))?;
+
+    let (mut evicted, mut skipped) = (0usize, 0usize);
+    let mut refused: Vec<String> = Vec::new();
+    for pod in list.items {
+        let (Some(name), Some(namespace)) = (pod.metadata.name.clone(), pod.metadata.namespace.clone()) else {
+            continue;
+        };
+        let phase = pod.status.as_ref().and_then(|status| status.phase.as_deref()).unwrap_or("");
+        if phase == "Succeeded" || phase == "Failed" {
+            continue;
         }
-    })
-    .await
-    .map_err(|error| format!("kubectl drain task failed: {error}"))?
+        let daemonset_owned = pod
+            .metadata
+            .owner_references
+            .as_ref()
+            .is_some_and(|owners| owners.iter().any(|owner| owner.kind == "DaemonSet"));
+        let mirror = pod
+            .metadata
+            .annotations
+            .as_ref()
+            .is_some_and(|annotations| annotations.contains_key("kubernetes.io/config.mirror"));
+        if daemonset_owned || mirror {
+            skipped += 1;
+            continue;
+        }
+        let api: Api<Pod> = Api::namespaced(client.clone(), &namespace);
+        match api.evict(&name, &Default::default()).await {
+            Ok(_) => evicted += 1,
+            Err(e) => refused.push(format!("{namespace}/{name}: {}", errors::humanize(&e.to_string()))),
+        }
+    }
+
+    let mut summary = format!(
+        "{node_name} cordoned; eviction requested for {evicted} pod(s), {skipped} daemonset/mirror pod(s) stay."
+    );
+    if !refused.is_empty() {
+        summary.push_str(&format!(
+            " {} eviction(s) were refused (PodDisruptionBudgets are respected, never forced): {}",
+            refused.len(),
+            refused.join("; ")
+        ));
+    }
+    Ok(summary)
+}
+
+async fn create_namespace(context: String, name: String) -> Result<(), String> {
+    let name = name.trim().to_lowercase();
+    let valid = !name.is_empty()
+        && name.len() <= 63
+        && name.chars().all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '-')
+        && !name.starts_with('-')
+        && !name.ends_with('-');
+    if !valid {
+        return Err(format!(
+            "'{name}' is not a valid namespace name: lowercase letters, digits and dashes, \
+             up to 63 characters, starting and ending with a letter or digit"
+        ));
+    }
+    let client = client_for_context(&context).await?;
+    let api: Api<Namespace> = Api::all(client);
+    let namespace = Namespace {
+        metadata: kube::api::ObjectMeta { name: Some(name), ..Default::default() },
+        ..Default::default()
+    };
+    api.create(&PostParams::default(), &namespace)
+        .await
+        .map_err(|e| errors::humanize(&e.to_string()))?;
+    Ok(())
+}
+
+async fn delete_namespace(context: String, name: String) -> Result<(), String> {
+    let client = client_for_context(&context).await?;
+    let api: Api<Namespace> = Api::all(client);
+    api.delete(&name, &DeleteParams::default())
+        .await
+        .map_err(|e| errors::humanize(&e.to_string()))?;
+    Ok(())
+}
+
+/// The way out of a namespace stuck in Terminating. Only offered for a
+/// namespace that IS Terminating, and it cures the RIGHT thing:
+///
+/// The common case — the Datadog pattern — is a resource INSIDE the namespace
+/// carrying a finalizer whose operator was uninstalled. The namespace's
+/// deletion conditions name those resource types; this clears the finalizers
+/// on those objects, and the namespace then finishes deleting properly, with
+/// nothing orphaned in etcd. Only when nothing inside is left does it fall
+/// back to clearing the namespace's own finalizers via /finalize. Everything
+/// removed is named in the answer — that is the evidence of what was holding.
+async fn force_finalize_namespace(context: String, name: String) -> Result<String, String> {
+    let client = client_for_context(&context).await?;
+    let api: Api<Namespace> = Api::all(client.clone());
+    let mut namespace = api.get(&name).await.map_err(|e| errors::humanize(&e.to_string()))?;
+
+    let phase = namespace
+        .status
+        .as_ref()
+        .and_then(|status| status.phase.clone())
+        .unwrap_or_default();
+    if phase != "Terminating" {
+        return Err(format!(
+            "{name} is not stuck: its phase is '{phase}', and clearing finalizers on a live \
+             namespace would let its teardown skip cleanup. Delete it first."
+        ));
+    }
+
+    // 1. Resources still inside, per the deletion conditions.
+    let remaining: Vec<String> = namespace
+        .status
+        .as_ref()
+        .and_then(|status| status.conditions.as_ref())
+        .map(|conditions| {
+            conditions
+                .iter()
+                .filter(|c| c.type_ == "NamespaceContentRemaining" && c.status == "True")
+                .flat_map(|c| namespaces::first_words_after_colon(c.message.as_deref().unwrap_or("")))
+                .collect()
+        })
+        .unwrap_or_default();
+
+    let mut cleared: Vec<String> = Vec::new();
+    for token in &remaining {
+        // "datadogagents.datadoghq.com" → plural + API group; a bare word is a core type.
+        let (plural, group) = match token.split_once('.') {
+            Some((plural, group)) => (plural.to_string(), group.to_string()),
+            None => (token.clone(), String::new()),
+        };
+        let base = if group.is_empty() {
+            "/api/v1".to_string()
+        } else {
+            let request = http::Request::get(format!("/apis/{group}"))
+                .body(Vec::new())
+                .map_err(|e| e.to_string())?;
+            let info = match client.request::<serde_json::Value>(request).await {
+                Ok(info) => info,
+                // The whole group may already be gone; nothing of it can be holding.
+                Err(_) => continue,
+            };
+            let Some(gv) = info
+                .pointer("/preferredVersion/groupVersion")
+                .and_then(|value| value.as_str())
+            else {
+                continue;
+            };
+            format!("/apis/{gv}")
+        };
+
+        let request = http::Request::get(format!("{base}/namespaces/{name}/{plural}"))
+            .body(Vec::new())
+            .map_err(|e| e.to_string())?;
+        let Ok(list) = client.request::<serde_json::Value>(request).await else { continue };
+        for item in list["items"].as_array().cloned().unwrap_or_default() {
+            let Some(item_name) = item.pointer("/metadata/name").and_then(|value| value.as_str()) else {
+                continue;
+            };
+            let finalizers: Vec<String> = item
+                .pointer("/metadata/finalizers")
+                .and_then(|value| value.as_array())
+                .map(|entries| entries.iter().filter_map(|v| v.as_str().map(str::to_string)).collect())
+                .unwrap_or_default();
+            if finalizers.is_empty() {
+                continue;
+            }
+            let patch = http::Request::patch(format!("{base}/namespaces/{name}/{plural}/{item_name}"))
+                .header("Content-Type", "application/merge-patch+json")
+                .body(br#"{"metadata":{"finalizers":null}}"#.to_vec())
+                .map_err(|e| e.to_string())?;
+            client
+                .request::<serde_json::Value>(patch)
+                .await
+                .map_err(|e| errors::humanize(&e.to_string()))?;
+            cleared.push(format!("{} from {token}/{item_name}", finalizers.join(", ")));
+        }
+    }
+    if !cleared.is_empty() {
+        return Ok(format!(
+            "Cleared {} — whatever cleanup that operator would have done never ran and now never will. \
+             The namespace can finish deleting on its own.",
+            cleared.join("; ")
+        ));
+    }
+
+    // 2. Nothing inside holds it: the namespace's own finalizers, via /finalize.
+    let mut held_by: Vec<String> = namespace
+        .spec
+        .as_ref()
+        .and_then(|spec| spec.finalizers.clone())
+        .unwrap_or_default();
+    held_by.extend(namespace.metadata.finalizers.clone().unwrap_or_default());
+    held_by.retain(|entry| entry != "kubernetes");
+    if held_by.is_empty() {
+        return Err(format!(
+            "{name} has no finalizers left and nothing inside holds it — it is finishing on its own; give it a moment"
+        ));
+    }
+
+    namespace.spec = Some(k8s_openapi::api::core::v1::NamespaceSpec { finalizers: Some(Vec::new()) });
+    namespace.metadata.finalizers = None;
+    namespace.metadata.managed_fields = None;
+    let body = serde_json::to_vec(&namespace).map_err(|e| e.to_string())?;
+    let request = http::Request::put(format!("/api/v1/namespaces/{name}/finalize"))
+        .header("Content-Type", "application/json")
+        .body(body)
+        .map_err(|e| e.to_string())?;
+    client
+        .request::<serde_json::Value>(request)
+        .await
+        .map_err(|e| errors::humanize(&e.to_string()))?;
+    Ok(format!("Removed the finalizers holding {name}: {}", held_by.join(", ")))
+}
+
+/// Deleting a claim that pods still mount would take them down with it, so a
+/// mounted claim is refused with the pods named — the operator deletes or
+/// moves those first, knowingly.
+async fn delete_pvc(context: String, namespace: String, name: String) -> Result<(), String> {
+    let client = client_for_context(&context).await?;
+    let pods: Api<Pod> = Api::namespaced(client.clone(), &namespace);
+    let list = pods.list(&ListParams::default()).await.map_err(|e| errors::humanize(&e.to_string()))?;
+    let mounted_by: Vec<String> = list
+        .items
+        .iter()
+        .filter(|pod| {
+            pod.spec
+                .as_ref()
+                .and_then(|spec| spec.volumes.as_ref())
+                .is_some_and(|volumes| {
+                    volumes.iter().any(|volume| {
+                        volume
+                            .persistent_volume_claim
+                            .as_ref()
+                            .is_some_and(|claim| claim.claim_name == name)
+                    })
+                })
+        })
+        .filter_map(|pod| pod.metadata.name.clone())
+        .collect();
+    if !mounted_by.is_empty() {
+        return Err(format!(
+            "{name} is mounted by {}: {}. Delete or move those pods first.",
+            if mounted_by.len() == 1 { "a pod" } else { "pods" },
+            mounted_by.join(", ")
+        ));
+    }
+    let api: Api<k8s_openapi::api::core::v1::PersistentVolumeClaim> = Api::namespaced(client, &namespace);
+    api.delete(&name, &DeleteParams::default())
+        .await
+        .map_err(|e| errors::humanize(&e.to_string()))?;
+    Ok(())
+}
+
+/// A Bound volume is somebody's disk; only Released, Failed or Available
+/// volumes — the stranded capacity the storage report complains about — may
+/// be deleted here.
+async fn delete_pv(context: String, name: String) -> Result<(), String> {
+    let client = client_for_context(&context).await?;
+    let api: Api<k8s_openapi::api::core::v1::PersistentVolume> = Api::all(client);
+    let volume = api.get(&name).await.map_err(|e| errors::humanize(&e.to_string()))?;
+    let phase = volume
+        .status
+        .as_ref()
+        .and_then(|status| status.phase.clone())
+        .unwrap_or_default();
+    if phase == "Bound" {
+        let claim = volume
+            .spec
+            .as_ref()
+            .and_then(|spec| spec.claim_ref.as_ref())
+            .map(|claim| {
+                format!(
+                    "{}/{}",
+                    claim.namespace.clone().unwrap_or_default(),
+                    claim.name.clone().unwrap_or_default()
+                )
+            })
+            .unwrap_or_else(|| "a claim".to_string());
+        return Err(format!(
+            "{name} is Bound to {claim} — that is live storage, not leftovers. Delete the claim first."
+        ));
+    }
+    api.delete(&name, &DeleteParams::default())
+        .await
+        .map_err(|e| errors::humanize(&e.to_string()))?;
+    Ok(())
 }
 
 async fn describe_eks_cluster(

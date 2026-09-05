@@ -1,0 +1,47 @@
+# Copy to values.install.yaml (gitignored) and fill in. Never commit the copy.
+#
+#   cp charts/tmjlens/values.example.yaml charts/tmjlens/values.install.yaml
+#   helm upgrade --install tmjlens charts/tmjlens -n tmjlens --create-namespace \
+#     -f charts/tmjlens/values.install.yaml
+
+image:
+  repository: ghcr.io/tmjacometti/tmjlens
+  tag: "0.5.1"
+  pullPolicy: IfNotPresent
+
+environment:
+  cluster: prod-shark
+  # Must be exactly one of: production | staging | development
+  # Settings → Clusters is read-only; this is the only place the label is set.
+  type: production
+
+# Case does not matter — ADMIN@… from the directory still matches.
+bootstrapAdmin: admin@tmjsistemas.com.br
+
+azure:
+  tenantId: "00000000-0000-0000-0000-000000000000"
+  clientId: "00000000-0000-0000-0000-000000000000"
+  clientSecret: "replace-me"
+  # Leave empty to derive https://<ingress.host>/auth/callback
+  redirectUrl: ""
+
+service:
+  type: ClusterIP
+  port: 80
+
+# Point your Ingress at this Service (name: <release>-tmjlens, port: http).
+ingress:
+  enabled: true
+  className: nginx
+  host: tmjlens.example.com
+  annotations:
+    nginx.ingress.kubernetes.io/proxy-read-timeout: "3600"
+    nginx.ingress.kubernetes.io/proxy-send-timeout: "3600"
+  tls:
+    - secretName: tmjlens-tls
+      hosts:
+        - tmjlens.example.com
+
+persistence:
+  enabled: true
+  size: 1Gi

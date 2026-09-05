@@ -24,7 +24,7 @@ test.describe('reports', () => {
   });
 
   test('every report in the catalogue is offered with what it answers', async ({ page }) => {
-    await expect(page.locator('.rep-kind')).toHaveCount(7);
+    await expect(page.locator('.rep-kind')).toHaveCount(6);
     await expect(page.locator('.rep-kind').filter({ hasText: 'Idle cost' }))
       .toContainText('provisioned, billed, and doing nothing');
   });
@@ -49,22 +49,6 @@ test.describe('reports', () => {
 
     await pick(page, 'Idle cost');
     await expect(page.getByRole('tab', { name: 'Today' })).toHaveCount(0);
-  });
-
-  test('comparing contexts asks for the second cluster and refuses without it', async ({ page }) => {
-    await pick(page, 'Context comparison');
-    // This is the one thing a report can genuinely be missing.
-    await expect(page.getByRole('button', { name: 'Run report' })).toBeDisabled();
-
-    await page.getByRole('combobox').selectOption('eks-cluster-hml');
-    await expect(page.getByRole('button', { name: 'Run report' })).toBeEnabled();
-  });
-
-  test('the compared context cannot be the one already open', async ({ page }) => {
-    await pick(page, 'Context comparison');
-    const options = await page.getByRole('combobox').locator('option').allTextContents();
-    expect(options).not.toContain('eks-cluster-prd');
-    expect(options).toContain('eks-cluster-hml');
   });
 
   test('idle cost leads with the volumes that are still billed', async ({ page }) => {
@@ -178,5 +162,35 @@ test.describe('namespaces', () => {
   test('pods that are not running are called out per namespace', async ({ page }) => {
     await expect(page.getByRole('row').filter({ hasText: 'kube-system' })).toContainText('1 not running');
     await expect(page.getByRole('row').filter({ hasText: 'payments' })).toContainText('3 not running');
+  });
+});
+
+test.describe('namespace management', () => {
+  test.beforeEach(async ({ page }) => {
+    await page.setViewportSize({ width: 1500, height: 1000 });
+    await page.goto('/preview.html?view=ns');
+    await page.waitForSelector('.ns-page');
+  });
+
+  test('creating is offered, and active namespaces offer delete', async ({ page }) => {
+    await expect(page.getByLabel('New namespace name')).toBeVisible();
+    const active = page.getByRole('row').filter({ hasText: 'payments' });
+    await expect(active.getByRole('button', { name: 'Delete' })).toBeEnabled();
+  });
+
+  test('a stuck namespace offers force finalize and names what it skips', async ({ page }) => {
+    const stuck = page.getByRole('row').filter({ hasText: 'analytics-old' });
+    const release = stuck.getByRole('button', { name: 'Force finalize' });
+    await expect(release).toBeEnabled();
+    // The risk is stated on the control itself: clearing finalizers skips cleanup.
+    await expect(release).toHaveAttribute('title', /skips whatever cleanup/);
+    // A stuck namespace must never offer plain Delete — it is already deleting.
+    await expect(stuck.getByRole('button', { name: 'Delete', exact: true })).toHaveCount(0);
+  });
+
+  test('deleting demands the namespace name typed back', async ({ page }) => {
+    page.on('dialog', (dialog) => void dialog.accept('wrong-name'));
+    await page.getByRole('row').filter({ hasText: 'ledger' }).getByRole('button', { name: 'Delete' }).click();
+    await expect(page.getByRole('status')).toContainText('Confirmation did not match');
   });
 });

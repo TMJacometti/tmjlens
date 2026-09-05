@@ -4,9 +4,9 @@
 //! the audit log, because the cluster's own audit trail will only ever name
 //! the ServiceAccount.
 //!
-//! First login registers the user with NO permissions (default deny). The one
-//! exception is `TMJLENS_BOOTSTRAP_ADMIN`: the email it names is granted the
-//! admin profile on login, which is how the first admin exists at all.
+//! There are three fixed profiles. First SSO login grants `guest`. The one
+//! exception is `TMJLENS_BOOTSTRAP_ADMIN`: the email it names is granted
+//! `admin` instead, which is how the first admin exists at all.
 
 use crate::db::{sql_opt, sql_str, Db};
 use std::collections::HashSet;
@@ -15,6 +15,7 @@ use std::collections::HashSet;
 /// the descriptions exist for the admin screen. Deny is the absence of a row,
 /// so an unknown string in the database grants nothing.
 pub const PERMISSIONS: &[(&str, &str)] = &[
+    ("overview", "See the Cluster Overview"),
     ("view", "See workloads, namespaces, storage, reports and plugin screens"),
     ("view-secrets", "Reveal Secret values and ConfigMap contents"),
     ("view-logs", "Read pod logs"),
@@ -22,14 +23,23 @@ pub const PERMISSIONS: &[(&str, &str)] = &[
     ("port-forward", "Forward cluster ports to the browser"),
     ("edit-yaml", "Edit any object as YAML"),
     ("edit-config", "Add, change and remove ConfigMap and Secret keys"),
-    ("scale-workloads", "Scale and rollout-restart controllers"),
+    ("restart-workloads", "Rollout-restart controllers, replacing their pods"),
+    ("scale-workloads", "Change replica counts"),
     ("delete-workloads", "Delete deployments, pods and other workloads"),
     ("manage-helm", "Uninstall and roll back Helm releases"),
     ("manage-velero", "Create backups and restores"),
     ("manage-argo", "Edit and submit Argo workflows, images, resources, schedules"),
     ("manage-nodes", "Cordon, drain and delete nodes"),
+    ("manage-namespaces", "Create and delete namespaces, clear stuck finalizers"),
     ("admin", "Manage users, profiles and permissions"),
 ];
+
+const ADMIN_DESC: &str = "Full control, including user management";
+const DEVELOPER_DESC: &str =
+    "Cluster Overview, workloads, logs and rollout restart. Cannot scale, delete a deploy, or port-forward.";
+const GUEST_DESC: &str = "Cluster Overview only. Assigned automatically on first SSO login.";
+const DEVELOPER_PERMS: &[&str] = &["overview", "view", "view-logs", "restart-workloads"];
+const GUEST_PERMS: &[&str] = &["overview"];
 
 pub fn is_known_permission(name: &str) -> bool {
     PERMISSIONS.iter().any(|(p, _)| *p == name)
@@ -73,26 +83,12 @@ pub struct AuthStore<'a> {
 }
 
 impl<'a> AuthStore<'a> {
-    /// Wraps an open database and guarantees the seed profiles exist:
-    /// `admin` holding every permission and `viewer` holding read-only ones.
-    /// Seeds are only planted when the profiles table is empty, so renaming
-    /// or trimming them later sticks.
+    /// Wraps an open database and guarantees the three fixed profiles exist
+    /// with their canonical permissions. Re-run on every boot so a trimmed
+    /// row cannot quietly become a fourth, ad-hoc role.
     pub fn new(db: &'a Db) -> Result<AuthStore<'a>, String> {
         let store = AuthStore::attach(db);
-        let existing = db.query("SELECT name FROM profiles;")?;
-        if existing.rows.is_empty() {
-            let admin = store.create_profile(
-                "admin",
-                Some("Full control, including user management"),
-            )?;
-            for (perm, _) in PERMISSIONS {
-                store.add_permission(&admin, perm)?;
-            }
-            let viewer =
-                store.create_profile("viewer", Some("Read-only: screens and logs"))?;
-            store.add_permission(&viewer, "view")?;
-            store.add_permission(&viewer, "view-logs")?;
-        }
+        store.ensure_fixed_profiles()?;
         Ok(store)
     }
 
@@ -101,16 +97,16 @@ impl<'a> AuthStore<'a> {
         AuthStore { db }
     }
 
-    /// The login path. Registers an unknown email with zero access, refreshes
-    /// the known one, refuses a deactivated one, and applies the bootstrap
-    /// admin grant when the environment names this email.
+    /// The login path. Registers an unknown email as `guest`, refreshes the
+    /// known one, refuses a deactivated one, and applies the bootstrap admin
+    /// grant when the environment names this email.
     pub fn register_login(
         &self,
         email: &str,
         display_name: Option<&str>,
         idp_subject: Option<&str>,
     ) -> Result<UserRecord, String> {
-        let email = email.trim().to_lowercase();
+        let email = fold_email(email);
         if email.is_empty() || !email.contains('@') {
             return Err("login without a usable email address".into());
         }
@@ -142,20 +138,29 @@ impl<'a> AuthStore<'a> {
                     sql_opt(idp_subject)?,
                     sql_str(&now_stamp())?
                 ))?;
-                self.audit(&email, "first-login-registered", None, None,
-                    Some("registered with no permissions (default deny)"), true)?;
-                self.user_id_by_email(&email)?
-                    .ok_or("user vanished right after registration")?
+                let user_id = self.user_id_by_email(&email)?
+                    .ok_or("user vanished right after registration")?;
+                // Bootstrap admin is granted below; everyone else starts as guest
+                // so the overview is visible the moment they sign in.
+                if !is_bootstrap_admin(&email) {
+                    if let Some(guest_id) = self.profile_id_by_name("guest")? {
+                        self.grant_profile(&user_id, &guest_id, "first-login")?;
+                    }
+                    self.audit(&email, "first-login-registered", None, None,
+                        Some("registered as guest"), true)?;
+                } else {
+                    self.audit(&email, "first-login-registered", None, None,
+                        Some("registered; bootstrap admin grant follows"), true)?;
+                }
+                user_id
             }
         };
 
-        if let Ok(bootstrap) = std::env::var("TMJLENS_BOOTSTRAP_ADMIN") {
-            if bootstrap.trim().to_lowercase() == email {
-                if let Some(admin_id) = self.profile_id_by_name("admin")? {
-                    if self.grant_profile(&user_id, &admin_id, "bootstrap")? {
-                        self.audit(&email, "bootstrap-admin-granted", None, None,
-                            Some("email matches TMJLENS_BOOTSTRAP_ADMIN"), true)?;
-                    }
+        if is_bootstrap_admin(&email) {
+            if let Some(admin_id) = self.profile_id_by_name("admin")? {
+                if self.grant_profile(&user_id, &admin_id, "bootstrap")? {
+                    self.audit(&email, "bootstrap-admin-granted", None, None,
+                        Some("email matches TMJLENS_BOOTSTRAP_ADMIN"), true)?;
                 }
             }
         }
@@ -198,11 +203,20 @@ impl<'a> AuthStore<'a> {
     }
 
     /// The one question the request path asks. Admins hold every permission
-    /// implicitly, so a profile does not need all rows to run the shop.
+    /// implicitly, so a profile does not need all rows to run the shop. `view`
+    /// includes the overview — seeing the rest of the cluster includes seeing
+    /// the front page.
     pub fn allows(&self, user: &UserRecord, permission: &str) -> bool {
-        user.active
-            && (user.permissions.iter().any(|p| p == permission)
-                || user.permissions.iter().any(|p| p == "admin"))
+        if !user.active {
+            return false;
+        }
+        if user.permissions.iter().any(|p| p == "admin") {
+            return true;
+        }
+        if user.permissions.iter().any(|p| p == permission) {
+            return true;
+        }
+        permission == "overview" && user.permissions.iter().any(|p| p == "view")
     }
 
     // ---- administration ----
@@ -412,6 +426,63 @@ impl<'a> AuthStore<'a> {
             .collect())
     }
 
+    /// The three profiles the product actually has. Extra rows (a leftover
+    /// `viewer`, a hand-made role) are left alone so existing grants still
+    /// revoke cleanly, but they are not offered as something new to grant.
+    fn ensure_fixed_profiles(&self) -> Result<(), String> {
+        // v1 seeded `viewer`. Promote it so people already granted that row
+        // keep access under the new name instead of silently becoming guests.
+        if self.profile_id_by_name("developer")?.is_none() {
+            if let Some(id) = self.profile_id_by_name("viewer")? {
+                self.db.exec(&format!(
+                    "UPDATE profiles SET name = {}, description = {} WHERE id = {};",
+                    sql_str("developer")?,
+                    sql_opt(Some(DEVELOPER_DESC))?,
+                    sql_str(&id)?
+                ))?;
+            }
+        }
+        self.ensure_profile("admin", ADMIN_DESC, None)?;
+        self.ensure_profile("developer", DEVELOPER_DESC, Some(DEVELOPER_PERMS))?;
+        self.ensure_profile("guest", GUEST_DESC, Some(GUEST_PERMS))?;
+        Ok(())
+    }
+
+    fn ensure_profile(
+        &self,
+        name: &str,
+        description: &str,
+        permissions: Option<&[&str]>,
+    ) -> Result<(), String> {
+        let id = match self.profile_id_by_name(name)? {
+            Some(id) => {
+                self.db.exec(&format!(
+                    "UPDATE profiles SET description = {} WHERE id = {};",
+                    sql_opt(Some(description))?,
+                    sql_str(&id)?
+                ))?;
+                id
+            }
+            None => self.create_profile(name, Some(description))?,
+        };
+        let wanted: Vec<&str> = match permissions {
+            None => PERMISSIONS.iter().map(|(perm, _)| *perm).collect(),
+            Some(list) => list.to_vec(),
+        };
+        self.replace_permissions(&id, &wanted)
+    }
+
+    fn replace_permissions(&self, profile_id: &str, permissions: &[&str]) -> Result<(), String> {
+        self.db.exec(&format!(
+            "DELETE FROM profile_permissions WHERE profile_id = {};",
+            sql_str(profile_id)?
+        ))?;
+        for perm in permissions {
+            self.add_permission(profile_id, perm)?;
+        }
+        Ok(())
+    }
+
     fn permissions_of(&self, profile_id: &str) -> Result<Vec<String>, String> {
         Ok(self
             .db
@@ -424,6 +495,22 @@ impl<'a> AuthStore<'a> {
             .filter_map(|r| r.into_iter().next().flatten())
             .collect())
     }
+}
+
+/// Corporate directories often emit the same mailbox in different casings.
+/// Fold both sides the same way so `ADMIN@EMPRESA.COM` in Helm still matches
+/// the SSO claim, whatever case Azure sent.
+fn fold_email(value: &str) -> String {
+    value.trim().to_lowercase()
+}
+
+fn is_bootstrap_admin(email: &str) -> bool {
+    std::env::var("TMJLENS_BOOTSTRAP_ADMIN")
+        .ok()
+        .map(|value| fold_email(&value))
+        .filter(|value| !value.is_empty())
+        .map(|value| value == fold_email(email))
+        .unwrap_or(false)
 }
 
 #[cfg(test)]
@@ -445,18 +532,17 @@ mod tests {
     }
 
     #[test]
-    fn first_login_registers_with_zero_access() {
+    fn first_login_registers_as_guest() {
         let db = Db::open(&temp_db("register")).expect("open");
         let store = AuthStore::new(&db).expect("store");
         let user = store
-            .register_login("Novo.Colega@MDS.com", Some("Novo Colega"), None)
+            .register_login("Novo.Colega@TMJSistemas.com.br", Some("Novo Colega"), None)
             .expect("login");
-        // Email normalized, no profiles, no permissions: default deny.
-        assert_eq!(user.email, "novo.colega@mds.com");
-        assert!(user.profiles.is_empty());
-        assert!(user.permissions.is_empty());
+        assert_eq!(user.email, "novo.colega@tmjsistemas.com.br");
+        assert_eq!(user.profiles, ["guest"]);
+        assert!(store.allows(&user, "overview"));
         assert!(!store.allows(&user, "view"));
-        // The registration itself was audited.
+        assert!(!store.allows(&user, "view-logs"));
         let log = db
             .query("SELECT action, allowed FROM audit_log;")
             .expect("audit");
@@ -475,44 +561,94 @@ mod tests {
         let db = Db::open(&path).expect("reopen");
         AuthStore::new(&db).expect("second store");
         let profiles = db.query("SELECT name FROM profiles;").expect("profiles");
-        let names: Vec<_> = profiles
+        let mut names: Vec<_> = profiles
             .rows
             .iter()
             .filter_map(|r| r[0].as_deref())
             .collect();
-        assert_eq!(names.len(), 2, "seeds must not duplicate: {names:?}");
-        assert!(names.contains(&"admin"));
-        assert!(names.contains(&"viewer"));
+        names.sort();
+        assert_eq!(names, ["admin", "developer", "guest"], "seeds must not duplicate: {names:?}");
     }
 
     #[test]
-    fn granting_a_profile_grants_its_permissions() {
+    fn a_legacy_viewer_row_is_promoted_to_developer() {
+        let path = temp_db("promote-viewer");
+        {
+            let db = Db::open(&path).expect("open");
+            db.exec("INSERT INTO profiles (name, description) VALUES ('admin', NULL);")
+                .expect("admin");
+            db.exec("INSERT INTO profiles (name, description) VALUES ('viewer', NULL);")
+                .expect("viewer");
+            db.exec("INSERT INTO app_users (email) VALUES ('dev@tmjsistemas.com.br');")
+                .expect("user");
+            let user_id = db
+                .query("SELECT id FROM app_users WHERE email = 'dev@tmjsistemas.com.br';")
+                .expect("user id")
+                .single()
+                .expect("user row")
+                .to_string();
+            let viewer_id = db
+                .query("SELECT id FROM profiles WHERE name = 'viewer';")
+                .expect("viewer id")
+                .single()
+                .expect("viewer row")
+                .to_string();
+            db.exec(&format!(
+                "INSERT INTO user_profiles (user_id, profile_id, granted_by_email) \
+                 VALUES ({}, {}, 'seed');",
+                sql_str(&user_id).unwrap(),
+                sql_str(&viewer_id).unwrap()
+            ))
+            .expect("grant");
+        }
+        let db = Db::open(&path).expect("reopen");
+        let store = AuthStore::new(&db).expect("store");
+        assert!(store.profile_id_by_name("viewer").expect("q").is_none());
+        let user_id = store.user_id_by_email("dev@tmjsistemas.com.br").expect("q").expect("user");
+        let user = store.load_user(&user_id).expect("load");
+        assert_eq!(user.profiles, ["developer"]);
+        assert!(store.allows(&user, "overview"));
+        assert!(store.allows(&user, "view-logs"));
+        assert!(store.allows(&user, "restart-workloads"));
+        assert!(!store.allows(&user, "scale-workloads"));
+        assert!(!store.allows(&user, "delete-workloads"));
+        assert!(!store.allows(&user, "port-forward"));
+    }
+
+    #[test]
+    fn granting_developer_grants_restart_but_not_scale_or_delete() {
         let db = Db::open(&temp_db("grant")).expect("open");
         let store = AuthStore::new(&db).expect("store");
-        let user = store.register_login("dev@mds.com", None, None).expect("login");
-        let viewer = store.profile_id_by_name("viewer").expect("q").expect("viewer");
+        let user = store.register_login("dev@tmjsistemas.com.br", None, None).expect("login");
+        let guest = store.profile_id_by_name("guest").expect("q").expect("guest");
+        store.revoke_profile(&user.id, &guest).expect("revoke guest");
+        let developer = store.profile_id_by_name("developer").expect("q").expect("developer");
 
-        assert!(store.grant_profile(&user.id, &viewer, "tm.jacometti@gmail.com").unwrap());
-        // Granting again reports nothing new instead of failing.
-        assert!(!store.grant_profile(&user.id, &viewer, "tm.jacometti@gmail.com").unwrap());
+        assert!(store.grant_profile(&user.id, &developer, "tm.jacometti@gmail.com").unwrap());
+        assert!(!store.grant_profile(&user.id, &developer, "tm.jacometti@gmail.com").unwrap());
 
         let user = store.load_user(&user.id).expect("reload");
-        assert_eq!(user.profiles, ["viewer"]);
+        assert_eq!(user.profiles, ["developer"]);
+        assert!(store.allows(&user, "overview"));
         assert!(store.allows(&user, "view"));
         assert!(store.allows(&user, "view-logs"));
-        assert!(!store.allows(&user, "view-secrets"));
+        assert!(store.allows(&user, "restart-workloads"));
+        assert!(!store.allows(&user, "scale-workloads"));
         assert!(!store.allows(&user, "delete-workloads"));
+        assert!(!store.allows(&user, "port-forward"));
+        assert!(!store.allows(&user, "view-secrets"));
 
-        store.revoke_profile(&user.id, &viewer).expect("revoke");
+        store.revoke_profile(&user.id, &developer).expect("revoke");
         let user = store.load_user(&user.id).expect("reload2");
         assert!(!store.allows(&user, "view"));
+        assert!(!store.allows(&user, "overview"));
     }
 
     #[test]
     fn admin_holds_everything_implicitly() {
         let db = Db::open(&temp_db("admin")).expect("open");
         let store = AuthStore::new(&db).expect("store");
-        let user = store.register_login("chief@mds.com", None, None).expect("login");
+        let user = store.register_login("chief@tmjsistemas.com.br", None, None).expect("login");
         let admin = store.profile_id_by_name("admin").expect("q").expect("admin");
         store.grant_profile(&user.id, &admin, "seed").expect("grant");
         let user = store.load_user(&user.id).expect("reload");
@@ -525,11 +661,11 @@ mod tests {
     fn deactivated_user_cannot_log_in_and_the_refusal_is_audited() {
         let db = Db::open(&temp_db("inactive")).expect("open");
         let store = AuthStore::new(&db).expect("store");
-        let user = store.register_login("left@mds.com", None, None).expect("login");
+        let user = store.register_login("left@tmjsistemas.com.br", None, None).expect("login");
         store.set_user_active(&user.id, false).expect("deactivate");
 
         let err = store
-            .register_login("left@mds.com", None, None)
+            .register_login("left@tmjsistemas.com.br", None, None)
             .expect_err("must refuse");
         assert!(err.contains("deactivated"), "unexpected: {err}");
 
@@ -545,11 +681,27 @@ mod tests {
     fn unknown_permission_strings_are_rejected_up_front() {
         let db = Db::open(&temp_db("unknown")).expect("open");
         let store = AuthStore::new(&db).expect("store");
-        let viewer = store.profile_id_by_name("viewer").expect("q").expect("viewer");
+        let guest = store.profile_id_by_name("guest").expect("q").expect("guest");
         let err = store
-            .add_permission(&viewer, "launch-missiles")
+            .add_permission(&guest, "launch-missiles")
             .expect_err("must reject");
         assert!(err.contains("launch-missiles"));
+    }
+
+    #[test]
+    fn bootstrap_admin_match_ignores_case_and_surrounding_space() {
+        assert_eq!(
+            fold_email("  ADMIN@EMPRESA.COM.BR "),
+            "admin@empresa.com.br"
+        );
+        assert_eq!(
+            fold_email("Admin@Empresa.com.br"),
+            fold_email("ADMIN@EMPRESA.COM.BR")
+        );
+        assert_ne!(
+            fold_email("admin@empresa.com.br"),
+            fold_email("other@empresa.com.br")
+        );
     }
 
     #[test]
@@ -557,7 +709,7 @@ mod tests {
         // Env vars are process-wide; this is the only test that sets one.
         let db = Db::open(&temp_db("bootstrap")).expect("open");
         let store = AuthStore::new(&db).expect("store");
-        std::env::set_var("TMJLENS_BOOTSTRAP_ADMIN", "TM.Jacometti@Gmail.com");
+        std::env::set_var("TMJLENS_BOOTSTRAP_ADMIN", "  TM.JACOMETTI@GMAIL.COM ");
         let user = store
             .register_login("tm.jacometti@gmail.com", Some("Thiago"), None)
             .expect("login");

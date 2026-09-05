@@ -14,10 +14,35 @@ export function hasBridge(): boolean {
   return typeof window !== 'undefined' && '__TAURI_INTERNALS__' in window;
 }
 
+/**
+ * Desktop features the web server does not carry yet. Naming the gap honestly
+ * beats the server's generic "not a command" — and the cleanup calls succeed
+ * silently, because tearing down what never started is not an error.
+ */
+const WEB_PENDING = 'is not available in the web version yet — it arrives with WebSocket support.';
+const WEB_UNAVAILABLE = new Map<string, { error?: string; result?: unknown }>([
+  ['start_exec_session', { error: `Opening a shell ${WEB_PENDING}` }],
+  ['write_exec_session', { error: `Opening a shell ${WEB_PENDING}` }],
+  ['stop_exec_session', { result: null }],
+  ['start_port_forward', { error: `Port forwarding ${WEB_PENDING}` }],
+  ['stop_port_forward', { result: null }],
+  ['open_forward_in_browser', { error: `Port forwarding ${WEB_PENDING}` }],
+  ['list_port_forwards', { result: [] }],
+  ['list_pod_ports', { error: `Port forwarding ${WEB_PENDING}` }],
+  ['stop_log_stream', { result: null }],
+  ['start_pod_watch', { result: null }],
+  ['stop_pod_watch', { result: null }],
+]);
+
 export async function invoke<T>(command: string, args: Record<string, unknown> = {}): Promise<T> {
   if (hasBridge()) return bridgeInvoke<T>(command, args);
   if (command === 'save_to_downloads' || command === 'save_bytes_to_downloads') {
     return browserDownload(command, args) as T;
+  }
+  const unavailable = WEB_UNAVAILABLE.get(command);
+  if (unavailable) {
+    if (unavailable.error) throw unavailable.error;
+    return unavailable.result as T;
   }
   const response = await fetch(`/api/invoke/${command}`, {
     method: 'POST',

@@ -1,0 +1,17 @@
+.git
+.gitignore
+**/.DS_Store
+**/node_modules
+**/target
+**/dist
+**/.vite
+**/*.tmjp
+**/*.tmjp.pwal
+**/*.tmjp.lock
+src-tauri/data
+charts
+docs
+.github
+*.md
+src/playwright-report
+src/test-results

@@ -1,26 +1,26 @@
 import { useEffect, useState } from 'react';
 import { createPortal } from 'react-dom';
 import { invoke } from '../../lib/transport';
-import { CheckCircle2, FileCog, Info, Layers3, Lock, ShieldAlert, X } from 'lucide-react';
+import { CheckCircle2, Info, Layers3, ShieldAlert, X } from 'lucide-react';
 import { EnvironmentBadge } from './EnvironmentBadge';
 import { ENVIRONMENTS, type AppSettings, type EnvironmentId, type KubeconfigView } from '../../types/settings';
 import './settings.css';
 
-type Tab = 'clusters' | 'kubeconfig' | 'about';
+type Tab = 'clusters' | 'about';
 
 type Props = {
   settings: AppSettings;
+  /** Web instances are configured at install; the cluster tab is a fact sheet. */
+  readOnly?: boolean;
   onSettingsChange: (settings: AppSettings) => void;
-  onKubeconfigChanged: () => void;
   onClose: () => void;
   notify: (text: string, detail: string | undefined, tone: 'good' | 'bad') => void;
 };
 
-export function SettingsPanel({ settings, onSettingsChange, onKubeconfigChanged, onClose, notify }: Props) {
+export function SettingsPanel({ settings, readOnly = false, onSettingsChange, onClose, notify }: Props) {
   const [tab, setTab] = useState<Tab>('clusters');
   const [view, setView] = useState<KubeconfigView | null>(null);
   const [error, setError] = useState('');
-  const [busy, setBusy] = useState('');
 
   const reload = async () => {
     try {
@@ -56,36 +56,6 @@ export function SettingsPanel({ settings, onSettingsChange, onKubeconfigChanged,
     }
   };
 
-  const switchContext = async (name: string) => {
-    setBusy(name);
-    try {
-      await invoke('set_current_context', { name });
-      await reload();
-      onKubeconfigChanged();
-      notify('Current context changed', `kubectl now uses ${name}`, 'good');
-    } catch (cause) {
-      notify('Could not change the current context', String(cause), 'bad');
-    } finally {
-      setBusy('');
-    }
-  };
-
-  const changeNamespace = async (context: string, current?: string) => {
-    const value = window.prompt(`Default namespace for ${context}\n\nLeave empty to clear it.`, current ?? '');
-    if (value === null) return;
-    setBusy(context);
-    try {
-      await invoke('set_context_namespace', { context, namespace: value.trim() || null });
-      await reload();
-      onKubeconfigChanged();
-      notify('Default namespace updated', `${context} → ${value.trim() || 'none'}`, 'good');
-    } catch (cause) {
-      notify('Could not update the namespace', String(cause), 'bad');
-    } finally {
-      setBusy('');
-    }
-  };
-
   return createPortal(
     <div className="settings-scrim" onClick={onClose}>
       <aside
@@ -106,9 +76,6 @@ export function SettingsPanel({ settings, onSettingsChange, onKubeconfigChanged,
           <button type="button" className={tab === 'clusters' ? 'is-active' : ''} onClick={() => setTab('clusters')}>
             <Layers3 size={14} /> Clusters
           </button>
-          <button type="button" className={tab === 'kubeconfig' ? 'is-active' : ''} onClick={() => setTab('kubeconfig')}>
-            <FileCog size={14} /> Kubeconfig
-          </button>
           <button type="button" className={tab === 'about' ? 'is-active' : ''} onClick={() => setTab('about')}>
             <Info size={14} /> About
           </button>
@@ -121,6 +88,7 @@ export function SettingsPanel({ settings, onSettingsChange, onKubeconfigChanged,
             <ClustersTab
               view={view}
               settings={settings}
+              readOnly={readOnly}
               onAssign={assignEnvironment}
               onToggleConfirm={async (value) => {
                 const next = { ...settings, confirm_destructive_in_production: value };
@@ -134,10 +102,6 @@ export function SettingsPanel({ settings, onSettingsChange, onKubeconfigChanged,
             />
           )}
 
-          {tab === 'kubeconfig' && (
-            <KubeconfigTab view={view} busy={busy} onSwitch={switchContext} onNamespace={changeNamespace} />
-          )}
-
           {tab === 'about' && <AboutTab />}
         </div>
       </aside>
@@ -149,11 +113,13 @@ export function SettingsPanel({ settings, onSettingsChange, onKubeconfigChanged,
 function ClustersTab({
   view,
   settings,
+  readOnly,
   onAssign,
   onToggleConfirm,
 }: {
   view: KubeconfigView | null;
   settings: AppSettings;
+  readOnly: boolean;
   onAssign: (context: string, environment: EnvironmentId) => void;
   onToggleConfirm: (value: boolean) => void;
 }) {
@@ -162,8 +128,9 @@ function ClustersTab({
   return (
     <>
       <p className="settings-lead">
-        Classify each context so its blast radius is visible before you act. The label is stored locally in tmjLens
-        and never written to the cluster or the kubeconfig.
+        {readOnly
+          ? 'This instance\'s environment is set at install and cannot be changed here. Destructive actions in Production still ask for the cluster name.'
+          : 'Classify the cluster so its blast radius is visible before you act. The label is stored by tmjLens for this instance and never written to the cluster itself.'}
       </p>
 
       <ul className="settings-contexts">
@@ -174,127 +141,45 @@ function ClustersTab({
               {context.current && <span className="settings-current">current</span>}
               <EnvironmentBadge environment={context.environment} />
             </div>
-            <div className="settings-env-picker" role="group" aria-label={`Environment for ${context.name}`}>
-              {ENVIRONMENTS.map((environment) => (
-                <button
-                  key={environment.id}
-                  type="button"
-                  className={context.environment === environment.id ? 'is-selected' : ''}
-                  title={environment.description}
-                  onClick={() => onAssign(context.name, environment.id)}
-                >
-                  {environment.label}
-                </button>
-              ))}
-            </div>
+            {readOnly ? (
+              <p className="settings-muted">
+                {view.read_only_reason ?? 'Set with TMJLENS_ENVIRONMENT when the instance was installed.'}
+              </p>
+            ) : (
+              <div className="settings-env-picker" role="group" aria-label={`Environment for ${context.name}`}>
+                {ENVIRONMENTS.map((environment) => (
+                  <button
+                    key={environment.id}
+                    type="button"
+                    className={context.environment === environment.id ? 'is-selected' : ''}
+                    title={environment.description}
+                    onClick={() => onAssign(context.name, environment.id)}
+                  >
+                    {environment.label}
+                  </button>
+                ))}
+              </div>
+            )}
           </li>
         ))}
       </ul>
 
-      <label className="settings-toggle">
-        <input
-          type="checkbox"
-          checked={settings.confirm_destructive_in_production}
-          onChange={(event) => onToggleConfirm(event.target.checked)}
-        />
-        <span>
-          <strong>Type the cluster name to confirm destructive actions in production</strong>
-          <small>
-            Deleting a pod or draining a node in a context marked Production asks you to type its name first. Other
-            environments keep the normal confirmation.
-          </small>
-        </span>
-      </label>
-    </>
-  );
-}
-
-function KubeconfigTab({
-  view,
-  busy,
-  onSwitch,
-  onNamespace,
-}: {
-  view: KubeconfigView | null;
-  busy: string;
-  onSwitch: (name: string) => void;
-  onNamespace: (context: string, current?: string) => void;
-}) {
-  if (!view) return <p className="settings-muted">Reading kubeconfig…</p>;
-
-  return (
-    <>
-      <dl className="settings-facts">
-        <div>
-          <dt>File</dt>
-          <dd className="mono">{view.path ?? 'not found'}</dd>
-        </div>
-        <div>
-          <dt>Current context</dt>
-          <dd className="mono">{view.current_context ?? 'none'}</dd>
-        </div>
-      </dl>
-
-      {!view.writable && (
-        <div className="settings-notice">
-          <Lock size={15} aria-hidden />
-          <div>
-            <strong>Read-only</strong>
-            <p>{view.read_only_reason}</p>
-          </div>
-        </div>
+      {!readOnly && (
+        <label className="settings-toggle">
+          <input
+            type="checkbox"
+            checked={settings.confirm_destructive_in_production}
+            onChange={(event) => onToggleConfirm(event.target.checked)}
+          />
+          <span>
+            <strong>Type the cluster name to confirm destructive actions in production</strong>
+            <small>
+              Deleting a pod or draining a node in a context marked Production asks you to type its name first. Other
+              environments keep the normal confirmation.
+            </small>
+          </span>
+        </label>
       )}
-
-      <p className="settings-lead">
-        These edits change the same file <code>kubectl</code> reads. A copy is written to
-        <code> config.tmjlens.bak</code> before every change, and credentials are never touched — only the current
-        context and the default namespace.
-      </p>
-
-      <div className="viz-table-wrap">
-        <table className="viz-table">
-          <thead>
-            <tr>
-              <th>Context</th>
-              <th>Cluster</th>
-              <th>Auth</th>
-              <th>Namespace</th>
-              <th />
-            </tr>
-          </thead>
-          <tbody>
-            {view.contexts.map((context) => (
-              <tr key={context.name}>
-                <td className="mono">
-                  {context.name}
-                  {context.current && <span className="settings-current">current</span>}
-                </td>
-                <td title={context.server}>{context.cluster}</td>
-                <td>{context.auth_method}</td>
-                <td>{context.namespace ?? <span className="viz-dim">default</span>}</td>
-                <td className="settings-row-actions">
-                  <button
-                    type="button"
-                    className="viz-toggle"
-                    disabled={!view.writable || context.current || busy === context.name}
-                    onClick={() => onSwitch(context.name)}
-                  >
-                    {context.current ? 'In use' : 'Use'}
-                  </button>
-                  <button
-                    type="button"
-                    className="viz-toggle"
-                    disabled={!view.writable || busy === context.name}
-                    onClick={() => onNamespace(context.name, context.namespace)}
-                  >
-                    Namespace
-                  </button>
-                </td>
-              </tr>
-            ))}
-          </tbody>
-        </table>
-      </div>
     </>
   );
 }
@@ -330,9 +215,9 @@ function AboutTab() {
         <div>
           <strong>How tmjLens handles your credentials</strong>
           <p>
-            It stores none of them. Cluster access uses your existing kubeconfig and your cloud provider's own
-            credential chain, and Kubernetes RBAC stays the only authority over what you may do. The interface itself
-            holds no filesystem permission.
+            It stores none of them. You sign in with your company's identity provider; what you may do here is
+            decided by the profiles an admin granted you, every sensitive action is recorded under your own name,
+            and the instance's ServiceAccount is capped by Kubernetes RBAC.
           </p>
         </div>
       </div>

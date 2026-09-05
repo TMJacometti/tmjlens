@@ -1,0 +1,182 @@
+/*
+ * Access control screen. Built on the shared viz-* primitives so managing
+ * people reads as the same product as managing workloads.
+ */
+.access-page {
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+  padding-bottom: 40px;
+}
+
+.access-page.is-refreshing {
+  opacity: 0.62;
+  transition: opacity 120ms ease-out;
+}
+
+.access-kpis {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(190px, 1fr));
+  gap: 12px;
+}
+
+@media (min-width: 1100px) {
+  .access-kpis {
+    grid-template-columns: repeat(4, 1fr);
+  }
+}
+
+.access-toolbar {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 9px;
+}
+
+.access-toolbar-right {
+  display: flex;
+  align-items: center;
+  gap: 9px;
+}
+
+.access-inactive {
+  opacity: 0.55;
+}
+
+.access-self {
+  margin-left: 6px;
+  padding: 1px 6px;
+  border-radius: 999px;
+  background: #1d2634;
+  border: 1px solid #2c3a4f;
+  color: #9fb6d8;
+  font-size: 10.5px;
+}
+
+.access-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  margin: 1px 6px 1px 0;
+  padding: 2px 4px 2px 8px;
+  border-radius: 999px;
+  background: #16261c;
+  border: 1px solid #24462f;
+  color: #9fd8ae;
+  font-size: 11.5px;
+}
+
+.access-chip-remove {
+  border: 0;
+  background: transparent;
+  color: #6f9a7c;
+  font-size: 12px;
+  line-height: 1;
+  padding: 1px 4px;
+  cursor: pointer;
+  border-radius: 999px;
+}
+
+.access-chip-remove:hover {
+  color: #ffb4b4;
+  background: #2b1a1a;
+}
+
+.access-chip-remove:disabled {
+  opacity: 0.5;
+  cursor: default;
+}
+
+.access-grant {
+  background: #12161d;
+  border: 1px solid #272d37;
+  color: #e7eaf0;
+  border-radius: 6px;
+  padding: 5px 8px;
+  font-size: 12px;
+}
+
+.access-grant:disabled {
+  opacity: 0.5;
+}
+
+/* ---------- profiles ---------- */
+
+.access-profiles {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.access-profile {
+  border: 1px solid #272d37;
+  border-radius: 10px;
+  background: #0f1319;
+  padding: 14px 16px;
+}
+
+.access-profile header h3 {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  margin: 0 0 2px;
+  font-size: 13.5px;
+}
+
+.access-profile header p {
+  margin: 0;
+  font-size: 12px;
+}
+
+.access-permission-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(190px, 1fr));
+  gap: 6px 16px;
+  margin-top: 8px;
+}
+
+.access-permission {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 12px;
+  cursor: pointer;
+  padding: 3px 4px;
+  border-radius: 5px;
+}
+
+.access-permission:hover {
+  background: #171c24;
+}
+
+.access-new-form {
+  display: flex;
+  gap: 9px;
+  flex-wrap: wrap;
+}
+
+.access-new-form .wl-search {
+  flex: 1 1 220px;
+}
+
+.access-new-hint {
+  margin: 8px 0 0;
+  font-size: 11.5px;
+}
+
+/* ---------- audit ---------- */
+
+.access-audit td {
+  vertical-align: top;
+}
+
+.access-nowrap {
+  white-space: nowrap;
+}
+
+.access-detail {
+  margin-top: 2px;
+  font-size: 11px;
+  max-width: 380px;
+  overflow-wrap: anywhere;
+}

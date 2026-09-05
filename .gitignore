@@ -27,3 +27,6 @@ src/vite.config.d.ts
 *.tmjp.lock
 *.tmjp.shadows/
 data/
+
+# Copied from charts/tmjlens/values.example.yaml — holds the install secrets.
+charts/tmjlens/values.install.yaml

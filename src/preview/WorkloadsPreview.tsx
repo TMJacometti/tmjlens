@@ -2,6 +2,7 @@ import { useEffect, useState } from 'react';
 import { invoke } from '../lib/transport';
 import { WorkloadsPage } from '../components/workloads/WorkloadsPage';
 import { DeploymentDetailPanel } from '../components/workloads/DeploymentDetailPanel';
+import { LogPopup } from '../components/logs/LogPopup';
 import { WorkloadInventoryTable } from '../components/workloads/WorkloadInventoryTable';
 import type { WorkloadInventory } from '../types/workload-list';
 import type { PodUsageRow } from '../types/metrics';
@@ -61,6 +62,7 @@ export function WorkloadsPreview() {
   useEffect(() => { void invoke<WorkloadInventory>('list_workloads').then(setInventory); }, []);
   const [pod, setPod] = useState('');
   const [deployment, setDeployment] = useState('fraud-scoring');
+  const [logPopupPod, setLogPopupPod] = useState('');
 
   return (
     <>
@@ -81,6 +83,7 @@ export function WorkloadsPreview() {
         onSelectPod={setPod}
         onSelectDeployment={setDeployment}
         onDeletePod={() => undefined}
+        onOpenPodLogs={setLogPopupPod}
         onExportPodLogs={() => undefined}
         onDeleteDeployment={() => undefined}
         onExportDeployment={() => undefined}
@@ -90,6 +93,15 @@ export function WorkloadsPreview() {
         usageReason=""
         controllers={<WorkloadInventoryTable inventory={inventory} loading={false} error="" selected="" canDelete onSelect={() => undefined} onEditYaml={() => undefined} onDelete={() => undefined} onExportYaml={() => undefined} canPatch={() => true} onScale={() => undefined} onRestart={() => undefined} />}
       />
+      {logPopupPod && (
+        <LogPopup
+          context="prod-shark"
+          namespace="payments"
+          podName={logPopupPod}
+          onExport={() => undefined}
+          onClose={() => setLogPopupPod('')}
+        />
+      )}
       {deployment && (
         <DeploymentDetailPanel
           context="prod-shark"

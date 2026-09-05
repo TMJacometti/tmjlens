@@ -40,6 +40,9 @@ const NAMESPACE_FIXTURE: NamespaceOverview = {
 };
 
 export function NamespacesPreview() {
+  // The app's toast lives in App; the preview mirrors it with a plain line so
+  // notification behaviour is assertable here too.
+  const [note, setNote] = useState('');
   const [current, setCurrent] = useState('payments');
   return (
     <>
@@ -49,12 +52,13 @@ export function NamespacesPreview() {
           <p>Every namespace in <b>eks-cluster-prd</b>, and what is inside it</p>
         </div>
       </div>
+      {note && <p className="ns-preview-note" role="status">{note}</p>}
       <NamespacesPage
         data={NAMESPACE_FIXTURE}
         loading={false}
         error=""
         current={current}
-        onRefresh={() => undefined}
+        canManage onRefresh={() => undefined} onCreate={async () => undefined} onDelete={async () => undefined} onForceFinalize={async () => 'Removed the finalizers holding datadog: datadoghq.com/agent-cleanup'} notify={(text, detail) => setNote(detail ? `${text} — ${detail}` : text)}
         onSelect={setCurrent}
       />
     </>

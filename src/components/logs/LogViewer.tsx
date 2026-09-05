@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { invoke, listen } from '../../lib/transport';
+import { hasBridge, invoke, listen } from '../../lib/transport';
 import { Download, Pause, Play, Search } from 'lucide-react';
 import './logs.css';
 
@@ -43,9 +43,18 @@ export function LogViewer({
   const streamId = useRef(`log-${Math.random().toString(36).slice(2)}-${Date.now()}`).current;
   const scroller = useRef<HTMLDivElement>(null);
   const stickToBottom = useRef(true);
+  // Web streaming: the SSE connection and the lines it delivered since the
+  // last flush. Appending per event would re-render once per log line; the
+  // buffer is drained on a short interval instead.
+  const source = useRef<EventSource | null>(null);
+  const pending = useRef<string[]>([]);
 
   const stop = useCallback(async () => {
-    await invoke('stop_log_stream', { streamId }).catch(() => undefined);
+    if (source.current) {
+      source.current.close();
+      source.current = null;
+    }
+    if (hasBridge()) await invoke('stop_log_stream', { streamId }).catch(() => undefined);
   }, [streamId]);
 
   // Reading a fixed window, rather than following. Cheap and always available.
@@ -79,6 +88,40 @@ export function LogViewer({
     setLines([]);
     setDropped(0);
     setStatus('connecting…');
+    if (!hasBridge()) {
+      // Web build: the server follows the pod and relays over SSE. No
+      // auto-reconnect — a resumed stream would replay the tail as duplicates.
+      const params = new URLSearchParams({ namespace, pod: podName, tail: String(tail) });
+      if (selectedContainer) params.set('container', selectedContainer);
+      if (timestamps) params.set('timestamps', 'true');
+      if (previous) params.set('previous', 'true');
+      const stream = new EventSource(`/api/logs/stream?${params.toString()}`);
+      source.current = stream;
+      stream.onopen = () => {
+        setFollowing(true);
+        setStatus('following');
+      };
+      stream.onmessage = (event) => {
+        pending.current.push(event.data as string);
+      };
+      stream.addEventListener('closed', (event) => {
+        const reason = (event as MessageEvent).data as string;
+        stream.close();
+        source.current = null;
+        setFollowing(false);
+        setStatus(reason ? '' : 'stream ended');
+        if (reason) setError(reason);
+      });
+      stream.onerror = () => {
+        if (!source.current) return;
+        stream.close();
+        source.current = null;
+        setFollowing(false);
+        setStatus('');
+        setError('The log stream was interrupted.');
+      };
+      return;
+    }
     try {
       await invoke('start_log_stream', {
         context,
@@ -98,6 +141,24 @@ export function LogViewer({
       setStatus('');
     }
   }, [context, namespace, podName, selectedContainer, tail, timestamps, previous, streamId]);
+
+  // Drains the SSE buffer on a heartbeat, enforcing the same line cap as the
+  // desktop stream so a chatty container cannot grow the DOM without bound.
+  useEffect(() => {
+    const timer = window.setInterval(() => {
+      if (pending.current.length === 0) return;
+      const batch = pending.current;
+      pending.current = [];
+      setLines((current) => {
+        const next = [...current, ...batch];
+        if (next.length <= MAX_LINES) return next;
+        const overflow = next.length - MAX_LINES;
+        setDropped((count) => count + overflow);
+        return next.slice(overflow);
+      });
+    }, 150);
+    return () => window.clearInterval(timer);
+  }, []);
 
   useEffect(() => {
     const batch = listen<{ stream_id: string; lines: string[] }>('pod-log', (event) => {

@@ -1,0 +1,18 @@
+{{- if .Values.rbac.create }}
+# The ServiceAccount is what the API server attributes every call to. The app
+# layer (SSO + profiles) is the real gate; Kubernetes RBAC here is the ceiling.
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: {{ include "tmjlens.fullname" . }}
+  labels:
+    {{- include "tmjlens.labels" . | nindent 4 }}
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: cluster-admin
+subjects:
+  - kind: ServiceAccount
+    name: {{ include "tmjlens.serviceAccountName" . }}
+    namespace: {{ .Release.Namespace }}
+{{- end }}

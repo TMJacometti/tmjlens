@@ -92,7 +92,19 @@ pub fn sql_opt(value: Option<&str>) -> Result<String, String> {
 }
 
 const SCHEMA: &str = include_str!("../../tools/tmjlite/schema.sql");
-const SCHEMA_VERSION: i64 = 1;
+const SCHEMA_VERSION: i64 = 2;
+
+/// What upgrades an older database to each version. schema.sql always creates
+/// the CURRENT shape, so migrations only run on files born before the change.
+/// Statements tolerate partial re-runs ("already exists" is not a failure):
+/// a crash between a migration and the version bump must not brick the file.
+const MIGRATIONS: &[(i64, &[&str])] = &[(
+    2,
+    &[
+        "CREATE TABLE app_settings (id PK, name STRING(100) NOT NULL, value TEXT NOT NULL, updated_at DATETIME DEFAULT(TODAY));",
+        "CREATE UNIQUE INDEX idx_app_settings_name ON app_settings (name);",
+    ],
+)];
 
 /// The engine library ships in-repo under tools/tmjlite. Resolution order:
 /// explicit env override, next to the executable, the working directory, then
@@ -233,8 +245,26 @@ impl Db {
                          — it was written by a newer tmjLens; upgrade this deployment"
                     ));
                 }
-                // found == SCHEMA_VERSION: nothing to do. Migrations from
-                // older versions get added here when v2 exists.
+                for (version, statements) in MIGRATIONS {
+                    if *version <= found {
+                        continue;
+                    }
+                    for stmt in *statements {
+                        if let Err(error) = self.exec(stmt) {
+                            let tolerable = error.contains("already")
+                                || error.contains("exists")
+                                || error.contains("reused");
+                            if !tolerable {
+                                return Err(format!(
+                                    "migration to schema v{version} failed on `{stmt}`: {error}"
+                                ));
+                            }
+                        }
+                    }
+                }
+                if found < SCHEMA_VERSION {
+                    self.exec(&format!("UPDATE schema_meta SET version = {SCHEMA_VERSION};"))?;
+                }
                 Ok(())
             }
             Err(_) => {
@@ -351,7 +381,7 @@ mod tests {
         let db = Db::open(&path).expect("open");
         let insert = format!(
             "INSERT INTO app_users (email) VALUES ({});",
-            sql_str("someone@mds.com").unwrap()
+            sql_str("someone@tmjsistemas.com.br").unwrap()
         );
         db.exec(&insert).expect("first insert");
         let err = db.exec(&insert).expect_err("second insert must fail");
@@ -376,6 +406,23 @@ mod tests {
         assert_eq!(got.single(), Some("viewer"));
         let meta = db.query("SELECT version FROM schema_meta;").expect("meta");
         assert_eq!(meta.rows.len(), 1, "version row must not duplicate");
+    }
+
+    #[test]
+    fn an_older_database_is_migrated_forward_on_open() {
+        let path = temp_db("migrate");
+        {
+            let db = Db::open(&path).expect("open");
+            // Rewind the version stamp: to the next open this file looks like
+            // it was written before app_settings existed. The migration must
+            // tolerate the table already being there and re-stamp v2.
+            db.exec("UPDATE schema_meta SET version = 1;").expect("rewind");
+        }
+        let db = Db::open(&path).expect("reopen migrates");
+        let meta = db.query("SELECT version FROM schema_meta;").expect("meta");
+        assert_eq!(meta.single(), Some("2"));
+        db.exec("INSERT INTO app_settings (name, value) VALUES ('probe', '{}');")
+            .expect("app_settings usable after migration");
     }
 
     #[test]

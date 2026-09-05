@@ -6,8 +6,8 @@
 --     tools/tmjlite/tmjlite.exe data/tmjlens.tmjp   (or ./tmjlite-linux in the pod)
 --
 -- Identity comes from SSO; nobody has a password here, so there are no HASH
--- columns. A user's row is created on first login with NO profiles (default
--- deny). The first admin is granted by matching TMJLENS_BOOTSTRAP_ADMIN at
+-- columns. A user's row is created on first login and granted the guest
+-- profile. The first admin is granted by matching TMJLENS_BOOTSTRAP_ADMIN at
 -- login time. PK columns are auto-generated UUIDs and are omitted from INSERTs.
 
 -- Bumped whenever this file changes shape; the server refuses a database
@@ -54,6 +54,16 @@ CREATE TABLE user_profiles (
     granted_at DATETIME DEFAULT(TODAY)
 );
 CREATE UNIQUE INDEX idx_user_profiles ON user_profiles (user_id, profile_id);
+
+-- Instance-wide app settings (environment tags and the like), one JSON blob
+-- per named slot. Added in schema v2.
+CREATE TABLE app_settings (
+    id PK,
+    name STRING(100) NOT NULL,
+    value TEXT NOT NULL,
+    updated_at DATETIME DEFAULT(TODAY)
+);
+CREATE UNIQUE INDEX idx_app_settings_name ON app_settings (name);
 
 -- The cluster audit log will only ever name the ServiceAccount; this table is
 -- the record of WHICH PERSON did each thing. Denied attempts are logged too

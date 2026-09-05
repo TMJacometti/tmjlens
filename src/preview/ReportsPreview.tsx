@@ -8,13 +8,12 @@ const NAMESPACES = [
 ];
 
 const KINDS: ReportKind[] = [
-  { id: 'deployed', title: 'What was deployed', purpose: 'Workloads that did not exist in the cluster before the window began.', filters_namespaces: true, needs_window: true, needs_second_context: false },
-  { id: 'change-trail', title: 'Change trail', purpose: 'What changed version, with the image it replaced. The report to open after an incident.', filters_namespaces: true, needs_window: true, needs_second_context: false },
-  { id: 'idle-cost', title: 'Idle cost', purpose: 'Storage, config and workloads that are provisioned, billed, and doing nothing.', filters_namespaces: true, needs_window: false, needs_second_context: false },
-  { id: 'upgrade-readiness', title: 'Upgrade readiness', purpose: 'What will block or disrupt a rolling node drain, before you start one.', filters_namespaces: true, needs_window: false, needs_second_context: false },
-  { id: 'security-posture', title: 'Security posture', purpose: 'What runs with more privilege than it needs, per container.', filters_namespaces: true, needs_window: false, needs_second_context: false },
-  { id: 'image-hygiene', title: 'Image hygiene', purpose: 'Every distinct image running and where, so a CVE can be traced in one pass.', filters_namespaces: true, needs_window: false, needs_second_context: false },
-  { id: 'context-drift', title: 'Context comparison', purpose: 'The same namespaces in two clusters, and every way they differ.', filters_namespaces: true, needs_window: false, needs_second_context: true },
+  { id: 'deployed', title: 'What was deployed', purpose: 'Workloads that did not exist in the cluster before the window began.', filters_namespaces: true, needs_window: true },
+  { id: 'change-trail', title: 'Change trail', purpose: 'What changed version, with the image it replaced. The report to open after an incident.', filters_namespaces: true, needs_window: true },
+  { id: 'idle-cost', title: 'Idle cost', purpose: 'Storage, config and workloads that are provisioned, billed, and doing nothing.', filters_namespaces: true, needs_window: false },
+  { id: 'upgrade-readiness', title: 'Upgrade readiness', purpose: 'What will block or disrupt a rolling node drain, before you start one.', filters_namespaces: true, needs_window: false },
+  { id: 'security-posture', title: 'Security posture', purpose: 'What runs with more privilege than it needs, per container.', filters_namespaces: true, needs_window: false },
+  { id: 'image-hygiene', title: 'Image hygiene', purpose: 'Every distinct image running and where, so a CVE can be traced in one pass.', filters_namespaces: true, needs_window: false },
 ];
 
 const row = (key: string, severity: ReportRow['severity'], cells: Record<string, string>): ReportRow =>
@@ -135,24 +134,6 @@ const RESULTS: Record<string, ReportResult> = {
     ],
     degraded_collectors: [],
   },
-  'context-drift': {
-    id: 'context-drift', title: 'Context comparison',
-    summary: '3 difference(s) between eks-cluster-prd and eks-cluster-hml, 1 of them a different image.',
-    columns: [
-      { key: 'namespace', header: 'Namespace', mono: true },
-      { key: 'kind', header: 'Kind', mono: false },
-      { key: 'name', header: 'Name', mono: true },
-      { key: 'here', header: 'eks-cluster-prd', mono: true },
-      { key: 'there', header: 'eks-cluster-hml', mono: true },
-      { key: 'difference', header: 'Difference', mono: false },
-    ],
-    rows: [
-      row('a', 'critical', { namespace: 'payments', kind: 'Deployment', name: 'checkout-api', here: 'checkout-api:1.9.0', there: 'checkout-api:1.8.4', difference: 'Different image.' }),
-      row('b', 'serious', { namespace: 'payments', kind: 'CronJob', name: 'settlement-nightly', here: 'present', there: 'absent', difference: 'Missing from eks-cluster-hml.' }),
-      row('c', 'warning', { namespace: 'ledger', kind: 'Deployment', name: 'ledger-api', here: '6 replicas', there: '1 replicas', difference: 'Different replica count.' }),
-    ],
-    degraded_collectors: [],
-  },
 };
 
 export function ReportsPreview() {
@@ -171,8 +152,6 @@ export function ReportsPreview() {
       <ReportsPage
         kinds={KINDS}
         namespaces={NAMESPACES}
-        contexts={['eks-cluster-prd', 'eks-cluster-hml', 'aks-shared-dev']}
-        currentContext="eks-cluster-prd"
         result={result}
         loading={false}
         error=""

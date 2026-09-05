@@ -1,5 +1,8 @@
 # Contributing to tmjLens
 
+This file is for people who **cloned the repository to change it**. Installing
+tmjLens on a cluster does not need a clone — that is the [README](README.md).
+
 Issues and pull requests are welcome. This document covers the development setup and
 the engineering rules the codebase holds to.
 
@@ -190,6 +193,20 @@ The 22 registered commands:
    the `403`.
 5. Never block the async runtime. Shell-outs and file I/O go through
    `tokio::task::spawn_blocking`.
+
+## Publishing the in-cluster build
+
+Operators install from GHCR / the GitHub Release — they never clone. Cutting a
+release is a tag on this branch:
+
+```bash
+git tag web-0.5.1
+git push origin web-0.5.1
+```
+
+The `web-*` tag must be semver after the prefix (`web-0.5.1`, `web-0.5.1-rc.1`).
+GitHub Actions builds the Linux image, packages the Helm chart, pushes both to
+GHCR as public packages, and attaches `tmjlens-<version>.tgz` to the Release.
 
 ## Security reporting
 

@@ -1,0 +1,6 @@
+apiVersion: v2
+name: tmjlens
+description: In-cluster tmjLens web console. Identity from Azure AD; the ServiceAccount is the cluster's authority.
+type: application
+version: 0.5.1
+appVersion: "0.5.1"

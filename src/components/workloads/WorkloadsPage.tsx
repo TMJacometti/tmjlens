@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useState } from 'react';
-import { Download, ListTree, Search, Trash2 } from 'lucide-react';
+import { Download, ListTree, ScrollText, Search, Trash2 } from 'lucide-react';
 import { ActionMenu } from '../ActionMenu';
 import { ageFrom } from '../../lib/format';
 import { formatCpuMilli, formatMemoryBytes, memorySeverity, pctOf, type PodUsageRow } from '../../types/metrics';
@@ -31,6 +31,8 @@ type Props = {
   onSelectPod: (name: string) => void;
   onSelectDeployment: (name: string) => void;
   onDeletePod: (name: string) => void;
+  /** Opens the log viewer in a modal over the list. */
+  onOpenPodLogs: (name: string) => void;
   onExportPodLogs: (name: string) => void;
   onDeleteDeployment: (name: string) => void;
   onExportDeployment: (name: string) => void;
@@ -128,6 +130,7 @@ function PodsTable({
   capabilities,
   onSelectPod,
   onDeletePod,
+  onOpenPodLogs,
   onExportPodLogs,
   filtered,
   now,
@@ -172,6 +175,7 @@ function PodsTable({
                     label="Pod actions"
                     items={[
                       { label: 'Open details', icon: <ListTree size={14} />, onSelect: () => onSelectPod(pod.name) },
+                      { label: 'Open logs', icon: <ScrollText size={14} />, onSelect: () => onOpenPodLogs(pod.name) },
                       { label: 'Download logs', icon: <Download size={14} />, onSelect: () => onExportPodLogs(pod.name) },
                       ...(capabilities.deletePods
                         ? [{ label: 'Delete pod', icon: <Trash2 size={14} />, danger: true, onSelect: () => onDeletePod(pod.name) }]

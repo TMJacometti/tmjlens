@@ -1,8 +1,8 @@
 import { useEffect, useRef, useState } from 'react';
-import { invoke } from './lib/transport';
+import { hasBridge, invoke } from './lib/transport';
 import {
   BarChart3, Box, ChevronDown, CircleAlert, DatabaseBackup, Download, FileCog, Gauge, GitBranch, HardDrive,
-  Layers3, ListTree, Network, Search, Server, Settings, Terminal,
+  Layers3, ListTree, Network, Search, Server, Settings, ShieldCheck, Terminal,
   Trash2, Workflow, X, XCircle
 } from 'lucide-react';
 import { ActionMenu } from './components/ActionMenu';
@@ -12,11 +12,15 @@ import type { WorkloadInventory, WorkloadRow } from './types/workload-list';
 import { NetworkPage } from './components/network/NetworkPage';
 import { YamlEditor } from './components/YamlEditor';
 import { LogViewer } from './components/logs/LogViewer';
+import { LogPopup } from './components/logs/LogPopup';
 import { PortForwardPanel } from './components/portforward/PortForwardPanel';
 import { ExecTerminal } from './components/exec/ExecTerminal';
 import type { NetworkOverview } from './types/network';
 import { ReportsPage, type RunRequest } from './components/reports/ReportsPage';
+import { AccessPage } from './components/access/AccessPage';
+import { canSeePlatform, hasPermission, isAdmin, type AuditTable, type MeUser, type ProfileSummary, type UserSummary } from './types/access';
 import { NamespacesPage } from './components/namespaces/NamespacesPage';
+import { NodesPage } from './components/nodes/NodesPage';
 import type { NamespaceOverview } from './types/reports';
 import { csvColumnsFor, type ReportKind, type ReportResult } from './types/insights';
 import { reportFileName, toCsv, withExcelBom } from './lib/csv';
@@ -48,7 +52,7 @@ type TauriContext = { name: string; current: boolean; namespace?: string };
 type PodRow = { name: string; status: string; ready: string; age: string };
 type DeploymentRow = { name: string; ready: number; desired: number; available: number; age: string };
 type EventInfo = { reason: string; message: string; kind: string; name: string; timestamp?: string };
-type Capabilities = { deletePods: boolean; deleteDeployments: boolean; patchDeployments: boolean; patchPods: boolean; patchServices: boolean; patchIngresses: boolean; patchConfigMaps: boolean; patchSecrets: boolean; patchStatefulSets: boolean; patchDaemonSets: boolean; portForward: boolean; podExec: boolean };
+type Capabilities = { deletePods: boolean; deleteDeployments: boolean; patchDeployments: boolean; patchPods: boolean; patchServices: boolean; patchIngresses: boolean; patchConfigMaps: boolean; patchSecrets: boolean; patchStatefulSets: boolean; patchDaemonSets: boolean; scaleDeployments: boolean; scaleStatefulSets: boolean; portForward: boolean; podExec: boolean };
 
 export function App() {
   const [active, setActive] = useState('Workloads');
@@ -64,9 +68,11 @@ export function App() {
   const [isRunningReport, setIsRunningReport] = useState(false);
   const [lastReportScope, setLastReportScope] = useState<string[]>([]);
   const [namespaceOverview, setNamespaceOverview] = useState<NamespaceOverview | null>(null);
+  const [canManageNamespaces, setCanManageNamespaces] = useState(false);
   const [namespaceError, setNamespaceError] = useState('');
   const [isLoadingNamespaces, setIsLoadingNamespaces] = useState(false);
   const [storage, setStorage] = useState<StorageOverview | null>(null);
+  const [canDeleteStorage, setCanDeleteStorage] = useState(false);
   const [storageError, setStorageError] = useState('');
   const [isLoadingStorage, setIsLoadingStorage] = useState(false);
   const [configuration, setConfiguration] = useState<ConfigurationOverview | null>(null);
@@ -87,6 +93,7 @@ export function App() {
   const [networkError, setNetworkError] = useState('');
   const [isLoadingNetwork, setIsLoadingNetwork] = useState(false);
   const [yamlTarget, setYamlTarget] = useState<{ kind: string; name: string } | null>(null);
+  const [logPopupPod, setLogPopupPod] = useState('');
   const [namespace, setNamespace] = useState('default');
   const [context, setContext] = useState('loading...');
   const [contexts, setContexts] = useState<string[]>([]);
@@ -103,11 +110,17 @@ export function App() {
   const [containers, setContainers] = useState<string[]>([]);
   const [showDetail, setShowDetail] = useState(false);
   const [toast, setToast] = useState<ToastMessage | null>(null);
+  const [me, setMe] = useState<MeUser | null>(null);
+  const [accessUsers, setAccessUsers] = useState<UserSummary[]>([]);
+  const [accessProfiles, setAccessProfiles] = useState<ProfileSummary[]>([]);
+  const [accessAudit, setAccessAudit] = useState<AuditTable | null>(null);
+  const [accessError, setAccessError] = useState('');
+  const [isLoadingAccess, setIsLoadingAccess] = useState(false);
   const [settings, setSettings] = useState<AppSettings>({ context_environments: {}, confirm_destructive_in_production: true });
   const [showSettings, setShowSettings] = useState(false);
   const [showPalette, setShowPalette] = useState(false);
   const [isGeneratingReport, setIsGeneratingReport] = useState(false);
-  const [capabilities, setCapabilities] = useState<Capabilities>({ deletePods: false, deleteDeployments: false, patchDeployments: false, patchPods: false, patchServices: false, patchIngresses: false, patchConfigMaps: false, patchSecrets: false, patchStatefulSets: false, patchDaemonSets: false, portForward: false, podExec: false });
+  const [capabilities, setCapabilities] = useState<Capabilities>({ deletePods: false, deleteDeployments: false, patchDeployments: false, patchPods: false, patchServices: false, patchIngresses: false, patchConfigMaps: false, patchSecrets: false, patchStatefulSets: false, patchDaemonSets: false, scaleDeployments: false, scaleStatefulSets: false, portForward: false, podExec: false });
   const refreshGeneration = useRef(0);
 
   // Pods come from a live watch while the screen is showing them; the snapshot from
@@ -117,6 +130,39 @@ export function App() {
   const podMetrics = usePodMetrics(context, namespace, active === 'Workloads');
 
   const notify = (text: string, detail: string | undefined, tone: 'good' | 'bad') => setToast({ text, detail, tone });
+
+  // Identity exists only on the web; the desktop shell IS the operator. A 401
+  // here means no session at all, and only the IdP can produce one.
+  useEffect(() => {
+    if (hasBridge()) return;
+    void fetch('/api/me', { credentials: 'same-origin' })
+      .then(async (response) => {
+        if (response.status === 401) { window.location.href = '/auth/login'; return; }
+        if (response.ok) {
+          const identity = (await response.json()) as MeUser;
+          setMe(identity);
+          // Guest has nowhere else to land; developers and admins keep Workloads.
+          if (!hasPermission(identity, 'view')) setActive('Cluster Overview');
+        }
+      })
+      .catch(() => undefined);
+  }, []);
+
+  const loadAccess = async () => {
+    setIsLoadingAccess(true); setAccessError('');
+    try {
+      const [users, profiles, audit] = await Promise.all([
+        invoke<UserSummary[]>('admin_list_users', {}),
+        invoke<ProfileSummary[]>('admin_list_profiles', {}),
+        invoke<AuditTable>('admin_audit_log', { limit: 200 }),
+      ]);
+      setAccessUsers(users); setAccessProfiles(profiles); setAccessAudit(audit);
+    } catch (error) {
+      setAccessError(String(error));
+    } finally {
+      setIsLoadingAccess(false);
+    }
+  };
 
   // Ctrl/Cmd+K anywhere, and Escape closes whatever is on top.
   useEffect(() => {
@@ -154,12 +200,13 @@ export function App() {
 
   const refreshCapabilities = async (targetContext: string, targetNamespace: string) => {
     const check = (verb: string, resource: string, subresource?: string) => invoke<boolean>('check_permission', { context: targetContext, namespace: targetNamespace, verb, resource, subresource, group: null }).catch(() => false);
-    const [deletePods, deleteDeployments, patchDeployments, patchPods, patchServices, patchIngresses, portForward, podExec, patchConfigMaps, patchSecrets, patchStatefulSets, patchDaemonSets] = await Promise.all([
+    const [deletePods, deleteDeployments, patchDeployments, patchPods, patchServices, patchIngresses, portForward, podExec, patchConfigMaps, patchSecrets, patchStatefulSets, patchDaemonSets, scaleDeployments, scaleStatefulSets] = await Promise.all([
       check('delete', 'pods'), check('delete', 'deployments'), check('patch', 'deployments'), check('patch', 'pods'),
       check('patch', 'services'), check('patch', 'ingresses'), check('create', 'pods', 'portforward'), check('create', 'pods', 'exec'),
       check('patch', 'configmaps'), check('patch', 'secrets'), check('patch', 'statefulsets'), check('patch', 'daemonsets'),
+      check('patch', 'deployments', 'scale'), check('patch', 'statefulsets', 'scale'),
     ]);
-    setCapabilities({ deletePods, deleteDeployments, patchDeployments, patchPods, patchServices, patchIngresses, portForward, podExec, patchConfigMaps, patchSecrets, patchStatefulSets, patchDaemonSets });
+    setCapabilities({ deletePods, deleteDeployments, patchDeployments, patchPods, patchServices, patchIngresses, portForward, podExec, patchConfigMaps, patchSecrets, patchStatefulSets, patchDaemonSets, scaleDeployments, scaleStatefulSets });
   };
 
   // Nodes are cluster-scoped, so the access review is sent with an empty namespace.
@@ -310,7 +357,6 @@ export function App() {
         report: request.report,
         namespaces: request.namespaces,
         window: request.window,
-        compareContext: request.compareContext,
       }));
       setLastReportScope(request.namespaces);
       setReportError('');
@@ -528,7 +574,7 @@ export function App() {
   const loadHelm = async () => {
     setIsLoadingHelm(true);
     try {
-      setHelmOverview(await invoke<HelmOverview>('get_helm_overview', { context }));
+      setHelmOverview(await invoke<HelmOverview>('get_helm_overview', { context, namespace }));
       setHelmError('');
     } catch (error) {
       setHelmError(String(error));
@@ -721,19 +767,25 @@ export function App() {
     { id: 'go-overview', label: 'Go to Cluster Overview', group: 'Navigate', run: () => setActive('Cluster Overview') },
     { id: 'go-workloads', label: 'Go to Workloads', group: 'Navigate', run: () => setActive('Workloads') },
     { id: 'go-network', label: 'Go to Network', group: 'Navigate', run: () => setActive('Network') },
-    { id: 'go-velero', label: 'Go to Velero backups', group: 'Navigate', run: () => setActive('Velero') },
-    { id: 'go-helm', label: 'Go to Helm releases', group: 'Navigate', run: () => setActive('Helm') },
-    { id: 'go-argo', label: 'Go to Argo Workflows', group: 'Navigate', run: () => setActive('Argo Workflows') },
+    ...(canSeePlatform(me) ? [
+      { id: 'go-velero', label: 'Go to Velero backups', group: 'Navigate', run: () => setActive('Velero') },
+      { id: 'go-helm', label: 'Go to Helm releases', group: 'Navigate', run: () => setActive('Helm') },
+      { id: 'go-argo', label: 'Go to Argo Workflows', group: 'Navigate', run: () => setActive('Argo Workflows') },
+    ] : []),
     { id: 'go-configuration', label: 'Go to Configuration', group: 'Navigate', run: () => setActive('Configuration') },
     { id: 'go-storage', label: 'Go to Storage', group: 'Navigate', run: () => setActive('Storage') },
     { id: 'go-namespaces', label: 'Go to Namespaces', group: 'Navigate', run: () => setActive('Namespaces') },
     { id: 'go-events', label: 'Go to Events', group: 'Navigate', run: () => setActive('Events') },
-    { id: 'go-reports', label: 'Go to Reports', group: 'Navigate', run: () => setActive('Reports') },
+    ...(canSeePlatform(me) ? [
+      { id: 'go-reports', label: 'Go to Reports', group: 'Navigate', run: () => setActive('Reports') },
+    ] : []),
     { id: 'open-settings', label: 'Open Settings', group: 'App', run: () => setShowSettings(true) },
     { id: 'refresh-cluster', label: 'Refresh cluster overview', group: 'Action', run: () => void loadClusterOverview() },
     { id: 'refresh-network', label: 'Refresh network', group: 'Action', run: () => void loadNetwork() },
     { id: 'refresh-workloads', label: 'Refresh controllers', group: 'Action', run: () => void loadInventory() },
-    { id: 'report', label: 'Generate executive report', group: 'Action', hint: 'PDF to Downloads', run: () => void generateReport() },
+    ...(canSeePlatform(me) ? [
+      { id: 'report', label: 'Generate executive report', group: 'Action', hint: 'PDF to Downloads', run: () => void generateReport() },
+    ] : []),
   ];
 
   const nodeAction = async (action: NodeAction, nodeName: string) => {
@@ -741,7 +793,7 @@ export function App() {
     if (!confirmDestructive(messages[action])) return;
     try {
       if (action === 'delete') await invoke('delete_node', { context, nodeName });
-      else if (action === 'drain') await invoke('drain_node', { context, nodeName });
+      else if (action === 'drain') notify('Drain requested', await invoke<string>('drain_node', { context, nodeName }), 'good');
       else await invoke('set_node_schedulable', { context, nodeName, schedulable: action === 'uncordon' });
       await loadClusterOverview();
     } catch (error) {
@@ -823,9 +875,24 @@ export function App() {
     if (active === 'Helm') void loadHelm();
     if (active === 'Argo Workflows') void loadArgo();
     if (active === 'Configuration') void loadConfiguration();
-    if (active === 'Storage') void loadStorage();
-    if (active === 'Namespaces') void loadNamespaceOverview();
+    if (active === 'Storage') {
+      void loadStorage();
+      void invoke<boolean>('check_permission', { context, namespace, verb: 'delete', resource: 'persistentvolumeclaims', subresource: null, group: null })
+        .then(setCanDeleteStorage)
+        .catch(() => setCanDeleteStorage(false));
+    }
+    if (active === 'Namespaces') {
+      void loadNamespaceOverview();
+      void invoke<boolean>('check_permission', { context, namespace: '', verb: 'create', resource: 'namespaces', subresource: null, group: null })
+        .then(setCanManageNamespaces)
+        .catch(() => setCanManageNamespaces(false));
+    }
     if (active === 'Workloads' && workloadView === 'Deployments') void loadInventory();
+    if (active === 'Access') void loadAccess();
+    if (active === 'Nodes') {
+      void loadClusterOverview();
+      void refreshNodeCapabilities(context);
+    }
     if (active === 'Cluster Overview') {
       void loadClusterOverview();
       void refreshNodeCapabilities(context);
@@ -833,38 +900,50 @@ export function App() {
   }, [active, context, namespace, workloadView]);
 
   const showEvents = active === 'Events';
+  const canBrowse = hasPermission(me, 'view');
+  const platform = canSeePlatform(me);
   if (active === 'Reports') {
-    return <div className="app"><EnvironmentStripe environment={currentEnvironment}/><header className="topbar"><div className="brand"><span className="shark">🦈</span> tmjLens</div><span className="muted">{context}</span><div className="spacer"/><button className="selector" onClick={() => setActive('Workloads')}>Back to Workloads</button></header><main className="main report-screen"><div className="breadcrumbs">Cluster / {context} / Reports</div><div className="title-row"><div><h1>Reports</h1><p>Seven questions about <b>{context}</b>, answered on demand</p></div></div><ReportsPage kinds={reportKinds} namespaces={namespaces} contexts={contexts} currentContext={context} result={reportResult} loading={isRunningReport} error={reportError} exporting={isExportingReport} onRun={(request) => void runReport(request)} onExport={(built) => void exportReport(built)}/></main></div>;
+    return <div className="app"><EnvironmentStripe environment={currentEnvironment}/><header className="topbar"><div className="brand"><span className="shark">🦈</span> tmjLens</div><span className="muted">{context}</span><div className="spacer"/><button className="selector" onClick={() => setActive('Workloads')}>Back to Workloads</button></header><main className="main report-screen"><div className="breadcrumbs">Cluster / {context} / Reports</div><div className="title-row"><div><h1>Reports</h1><p>Seven questions about <b>{context}</b>, answered on demand</p></div></div><ReportsPage kinds={reportKinds} namespaces={namespaces} result={reportResult} loading={isRunningReport} error={reportError} exporting={isExportingReport} onRun={(request) => void runReport(request)} onExport={(built) => void exportReport(built)}/></main></div>;
   }
   if (active === 'Cluster Overview') {
-    return <div className="app"><EnvironmentStripe environment={currentEnvironment}/><header className="topbar"><div className="brand"><span className="shark">🦈</span> tmjLens</div><span className="muted">{context}</span><div className="spacer"/><button className="selector" onClick={() => setActive('Workloads')}>Back to Workloads</button></header><main className="main report-screen"><div className="breadcrumbs">Cluster / {context} / Overview</div><div className="title-row"><div><h1>Cluster Overview</h1><p>Cluster health, capacity, and node operations for <b>{context}</b></p></div></div><ClusterOverviewPage data={clusterOverview} loading={isLoadingCluster} error={clusterError} capabilities={nodeCapabilities} onRefresh={() => void loadClusterOverview()} onNodeAction={nodeAction} onGenerateReport={() => void generateReport()} generatingReport={isGeneratingReport}/></main></div>;
+    return <div className="app"><EnvironmentStripe environment={currentEnvironment}/><header className="topbar"><div className="brand"><span className="shark">🦈</span> tmjLens</div><span className="muted">{context}</span><div className="spacer"/>{canBrowse && <button className="selector" onClick={() => setActive('Workloads')}>Back to Workloads</button>}</header><main className="main report-screen"><div className="breadcrumbs">Cluster / {context} / Overview</div><div className="title-row"><div><h1>Cluster Overview</h1><p>Cluster health, capacity, and node operations for <b>{context}</b></p></div></div><ClusterOverviewPage data={clusterOverview} loading={isLoadingCluster} error={clusterError} capabilities={nodeCapabilities} onRefresh={() => void loadClusterOverview()} onNodeAction={nodeAction} onGenerateReport={() => void generateReport()} generatingReport={isGeneratingReport}/></main></div>;
   }
   return <div className="app">
     <EnvironmentStripe environment={currentEnvironment}/>
     <header className="topbar"><div className="brand"><span className="shark">🦈</span> tmjLens</div>
       <label className="selector"><GitBranch size={15}/><select value={context} onChange={(event) => void handleContextChange(event.target.value)}>{contexts.map((entry) => <option key={entry} value={entry}>{entry}</option>)}</select><ChevronDown size={14}/></label><EnvironmentBadge environment={currentEnvironment}/>
       <label className="selector"><Layers3 size={15}/><span>ns:</span><select value={namespace} onChange={(event) => void handleNamespaceChange(event.target.value)}>{namespaces.map((entry) => <option key={entry} value={entry}>{entry}</option>)}</select><ChevronDown size={14}/></label>
-      <div className="spacer"/><button className="icon-btn" title="Search the cluster (Ctrl+K)" onClick={() => setShowPalette(true)}><Search size={17}/></button><button className="icon-btn" title="Settings" onClick={() => setShowSettings(true)}><Settings size={17}/></button>
+      <div className="spacer"/>{canBrowse && <button className="icon-btn" title="Search the cluster (Ctrl+K)" onClick={() => setShowPalette(true)}><Search size={17}/></button>}<button className="icon-btn" title="Settings" onClick={() => setShowSettings(true)}><Settings size={17}/></button>
     </header>
     <div className="body"><aside className="sidebar"><div className="section-title">CLUSTER</div>
-      <Nav icon={<Gauge size={16}/>} label="Cluster Overview" active={active === 'Cluster Overview'} onClick={() => setActive('Cluster Overview')} /><Nav icon={<Workflow size={16}/>} label="Workloads" active={active === 'Workloads'} onClick={() => setActive('Workloads')} /><Nav icon={<Network size={16}/>} label="Network" active={active === 'Network'} onClick={() => setActive('Network')} /><Nav icon={<HardDrive size={16}/>} label="Storage" active={active === 'Storage'} onClick={() => setActive('Storage')} /><Nav icon={<FileCog size={16}/>} label="Configuration" active={active === 'Configuration'} onClick={() => setActive('Configuration')} /><Nav icon={<Server size={16}/>} label="Nodes" active={active === 'Nodes'} onClick={() => setActive('Nodes')} /><Nav icon={<Layers3 size={16}/>} label="Namespaces" active={active === 'Namespaces'} onClick={() => setActive('Namespaces')} /><Nav icon={<CircleAlert size={16}/>} label="Events" active={active === 'Events'} onClick={() => setActive('Events')} /><Nav icon={<BarChart3 size={16}/>} label="Reports" active={active === 'Reports'} onClick={() => setActive('Reports')} />
-      <div className="section-title aws">CLOUD</div><Nav icon={<Network size={16}/>} label="Load Balancers"/><Nav icon={<Box size={16}/>} label="Node Pools"/><div className="section-title plugins">PLUGINS</div><Nav icon={<DatabaseBackup size={16}/>} label="Velero" active={active === 'Velero'} onClick={() => setActive('Velero')} /><Nav icon={<Terminal size={16}/>} label="Helm" active={active === 'Helm'} onClick={() => setActive('Helm')} /><Nav icon={<Workflow size={16}/>} label="Argo Workflows" active={active === 'Argo Workflows'} onClick={() => setActive('Argo Workflows')} /><Nav icon={<Workflow size={16}/>} label="Argo CD"/>
-    </aside><main className="main"><div className="breadcrumbs">Cluster / {namespace} / {active}</div><div className="title-row"><div><h1>{active}</h1><p>Live Kubernetes resources from <b>{context}</b></p></div></div>
-      {showEvents ? <EventsPanel events={events} onRefresh={refreshEvents}/> : active === 'Namespaces' ? <NamespacesPage data={namespaceOverview} loading={isLoadingNamespaces} error={namespaceError} current={namespace} onRefresh={() => void loadNamespaceOverview()} onSelect={(name) => void handleNamespaceChange(name)}/> : active === 'Storage' ? <StoragePage data={storage} loading={isLoadingStorage} error={storageError} onRefresh={() => void loadStorage()}/> : active === 'Configuration' ? <ConfigurationPage data={configuration} loading={isLoadingConfiguration} error={configurationError} canEditConfigMaps={capabilities.patchConfigMaps} canEditSecrets={capabilities.patchSecrets} onRefresh={() => void loadConfiguration()} onRead={readConfigurationKey} onSave={saveConfigurationKey} onDelete={deleteConfigurationKey} notify={notify}/> : active === 'Argo Workflows' ? <ArgoPage data={argoOverview} loading={isLoadingArgo} error={argoError} capabilities={argoCapabilities} onRefresh={() => void loadArgo()} onSetImage={setArgoImage} onSetResources={setArgoResources} onSetSchedule={setArgoSchedule} onSuspendCron={suspendArgoCron} onSubmitTemplate={submitArgoTemplate} onStopWorkflow={stopArgoWorkflow} onDeleteWorkflow={deleteArgoWorkflow}/> : active === 'Helm' ? <HelmPage data={helmOverview} loading={isLoadingHelm} error={helmError} onRefresh={() => void loadHelm()} onOpenDetail={openHelmRelease} onUninstall={uninstallHelmRelease} onRollback={rollbackHelmRelease} notify={notify}/> : active === 'Velero' ? <VeleroPage status={velero} loading={isLoadingVelero} error={veleroError} namespaces={namespaces} canBackup={veleroCapabilities.backup} canRestore={veleroCapabilities.restore} onRefresh={() => void loadVelero()} onCreateBackup={createVeleroBackup} onCreateRestore={createVeleroRestore}/> : active === 'Network' ? <NetworkPage data={network} loading={isLoadingNetwork} error={networkError} onRefresh={() => void loadNetwork()} onEditYaml={(kind, name) => setYamlTarget({ kind, name })}/> : active === 'Workloads' ? <><WorkloadsPage view={workloadView} onViewChange={setWorkloadView} pods={pods} deployments={deployments} selectedPod={selectedPod} selectedDeployment={selectedDeployment} capabilities={{ deletePods: capabilities.deletePods, deleteDeployments: capabilities.deleteDeployments, patchDeployments: capabilities.patchDeployments }} onSelectPod={selectPod} onSelectDeployment={(name) => { setSelectedDeployment(name); setShowDetail(false); }} onDeletePod={(name) => void deletePod(name)} onExportPodLogs={(name) => void exportLogsFor(name)} onDeleteDeployment={(name) => void deleteDeployment(name)} onExportDeployment={(name) => void exportDeployment(name)} podsLive={podWatch.live} usage={podMetrics.byPod} usageAvailable={podMetrics.available} usageReason={podMetrics.reason}
+      {hasPermission(me, 'overview') && <Nav icon={<Gauge size={16}/>} label="Cluster Overview" active={active === 'Cluster Overview'} onClick={() => setActive('Cluster Overview')} />}
+      {canBrowse && <>
+        <Nav icon={<Workflow size={16}/>} label="Workloads" active={active === 'Workloads'} onClick={() => setActive('Workloads')} /><Nav icon={<Network size={16}/>} label="Network" active={active === 'Network'} onClick={() => setActive('Network')} /><Nav icon={<HardDrive size={16}/>} label="Storage" active={active === 'Storage'} onClick={() => setActive('Storage')} /><Nav icon={<FileCog size={16}/>} label="Configuration" active={active === 'Configuration'} onClick={() => setActive('Configuration')} />
+        {platform && <Nav icon={<Server size={16}/>} label="Nodes" active={active === 'Nodes'} onClick={() => setActive('Nodes')} />}
+        <Nav icon={<Layers3 size={16}/>} label="Namespaces" active={active === 'Namespaces'} onClick={() => setActive('Namespaces')} /><Nav icon={<CircleAlert size={16}/>} label="Events" active={active === 'Events'} onClick={() => setActive('Events')} />
+        {platform && <Nav icon={<BarChart3 size={16}/>} label="Reports" active={active === 'Reports'} onClick={() => setActive('Reports')} />}
+        {platform && <><div className="section-title aws">CLOUD</div><Nav icon={<Network size={16}/>} label="Load Balancers"/><Nav icon={<Box size={16}/>} label="Node Pools"/></>}
+        {platform && <><div className="section-title plugins">PLUGINS</div><Nav icon={<DatabaseBackup size={16}/>} label="Velero" active={active === 'Velero'} onClick={() => setActive('Velero')} /><Nav icon={<Terminal size={16}/>} label="Helm" active={active === 'Helm'} onClick={() => setActive('Helm')} /><Nav icon={<Workflow size={16}/>} label="Argo Workflows" active={active === 'Argo Workflows'} onClick={() => setActive('Argo Workflows')} /><Nav icon={<Workflow size={16}/>} label="Argo CD"/></>}
+      </>}
+      {isAdmin(me) && <><div className="section-title">ADMIN</div><Nav icon={<ShieldCheck size={16}/>} label="Access" active={active === 'Access'} onClick={() => setActive('Access')} /></>}
+    </aside><main className="main"><div className="breadcrumbs">Cluster / {active === 'Access' ? 'app' : namespace} / {active}</div><div className="title-row"><div><h1>{active}</h1>{active === 'Access' ? <p>Who can do what, and who did what</p> : <p>Live Kubernetes resources from <b>{context}</b></p>}</div></div>
+      {showEvents ? <EventsPanel events={events} onRefresh={refreshEvents}/> : active === 'Namespaces' ? <NamespacesPage data={namespaceOverview} loading={isLoadingNamespaces} error={namespaceError} current={namespace} canManage={canManageNamespaces} onRefresh={() => void loadNamespaceOverview()} onSelect={(name) => void handleNamespaceChange(name)} onCreate={async (name) => { await invoke('create_namespace', { context, name }); await loadNamespaceOverview(); setNamespaces(await invoke<string[]>('list_namespaces', { context }).catch(() => namespaces)); }} onDelete={async (name) => { await invoke('delete_namespace', { context, name }); await loadNamespaceOverview(); }} onForceFinalize={async (name) => { const cleared = await invoke<string>('force_finalize_namespace', { context, name }); await loadNamespaceOverview(); setNamespaces(await invoke<string[]>('list_namespaces', { context }).catch(() => namespaces)); return cleared; }} notify={notify}/> : active === 'Storage' ? <StoragePage data={storage} loading={isLoadingStorage} error={storageError} canDelete={canDeleteStorage} onRefresh={() => void loadStorage()} onDeleteClaim={async (name) => { await invoke('delete_pvc', { context, namespace, name }); await loadStorage(); }} onDeleteVolume={async (name) => { await invoke('delete_pv', { context, name }); await loadStorage(); }} notify={notify}/> : active === 'Configuration' ? <ConfigurationPage data={configuration} loading={isLoadingConfiguration} error={configurationError} canEditConfigMaps={capabilities.patchConfigMaps} canEditSecrets={capabilities.patchSecrets} onRefresh={() => void loadConfiguration()} onRead={readConfigurationKey} onSave={saveConfigurationKey} onDelete={deleteConfigurationKey} notify={notify}/> : active === 'Argo Workflows' ? <ArgoPage data={argoOverview} loading={isLoadingArgo} error={argoError} capabilities={argoCapabilities} onRefresh={() => void loadArgo()} onSetImage={setArgoImage} onSetResources={setArgoResources} onSetSchedule={setArgoSchedule} onSuspendCron={suspendArgoCron} onSubmitTemplate={submitArgoTemplate} onStopWorkflow={stopArgoWorkflow} onDeleteWorkflow={deleteArgoWorkflow}/> : active === 'Helm' ? <HelmPage data={helmOverview} loading={isLoadingHelm} error={helmError} onRefresh={() => void loadHelm()} onOpenDetail={openHelmRelease} onUninstall={uninstallHelmRelease} onRollback={rollbackHelmRelease} notify={notify}/> : active === 'Velero' ? <VeleroPage status={velero} loading={isLoadingVelero} error={veleroError} namespaces={namespaces} canBackup={veleroCapabilities.backup} canRestore={veleroCapabilities.restore} onRefresh={() => void loadVelero()} onCreateBackup={createVeleroBackup} onCreateRestore={createVeleroRestore}/> : active === 'Nodes' ? <NodesPage data={clusterOverview} loading={isLoadingCluster} error={clusterError} capabilities={nodeCapabilities} onRefresh={() => void loadClusterOverview()} onNodeAction={nodeAction}/> : active === 'Access' ? <AccessPage me={me} users={accessUsers} profiles={accessProfiles} audit={accessAudit} loading={isLoadingAccess} error={accessError} onRefresh={() => void loadAccess()} onGrant={async (user, profile) => { await invoke('admin_grant_profile', { userId: user.id, profileId: profile.id }); await loadAccess(); }} onRevoke={async (user, profileName) => { const profile = accessProfiles.find((entry) => entry.name === profileName); if (!profile) throw String('unknown profile'); await invoke('admin_revoke_profile', { userId: user.id, profileId: profile.id }); await loadAccess(); }} onSetActive={async (user, activeFlag) => { await invoke('admin_set_user_active', { userId: user.id, active: activeFlag }); await loadAccess(); }} notify={notify}/> : active === 'Network' ? <NetworkPage data={network} loading={isLoadingNetwork} error={networkError} onRefresh={() => void loadNetwork()} onEditYaml={(kind, name) => setYamlTarget({ kind, name })}/> :active === 'Workloads' ? <><WorkloadsPage view={workloadView} onViewChange={setWorkloadView} pods={pods} deployments={deployments} selectedPod={selectedPod} selectedDeployment={selectedDeployment} capabilities={{ deletePods: capabilities.deletePods, deleteDeployments: capabilities.deleteDeployments, patchDeployments: capabilities.patchDeployments }} onSelectPod={selectPod} onSelectDeployment={(name) => { setSelectedDeployment(name); setShowDetail(false); }} onDeletePod={(name) => void deletePod(name)} onOpenPodLogs={setLogPopupPod} onExportPodLogs={(name) => void exportLogsFor(name)} onDeleteDeployment={(name) => void deleteDeployment(name)} onExportDeployment={(name) => void exportDeployment(name)} podsLive={podWatch.live} usage={podMetrics.byPod} usageAvailable={podMetrics.available} usageReason={podMetrics.reason}
       controllers={<WorkloadInventoryTable inventory={inventory} loading={isLoadingInventory} error={inventoryError}
         selected={selectedDeployment ? `Deployment/${selectedDeployment}` : ''} canDelete={capabilities.deleteDeployments}
         onSelect={(row) => { if (row.kind === 'Deployment') { setSelectedDeployment(row.name); } else { setYamlTarget({ kind: row.kind, name: row.name }); } }}
         onEditYaml={(row) => setYamlTarget({ kind: row.kind, name: row.name })}
         canPatch={(kind) => kind === 'Deployment' ? capabilities.patchDeployments : kind === 'StatefulSet' ? capabilities.patchStatefulSets : kind === 'DaemonSet' ? capabilities.patchDaemonSets : false}
+        canScale={(kind) => kind === 'Deployment' ? capabilities.scaleDeployments : kind === 'StatefulSet' ? capabilities.scaleStatefulSets : false}
         onScale={(row) => void scaleWorkload(row)} onRestart={(row) => void restartWorkload(row)}
         onDelete={(row) => void deleteWorkload(row)} onExportYaml={(row) => void exportWorkloadYaml(row)}/>}/>{selectedDeployment && <DeploymentDetailPanel context={context} namespace={namespace} deploymentName={selectedDeployment} onClose={() => setSelectedDeployment('')} onExport={() => void exportDeployment(selectedDeployment)} exporting={isExportingDeployment} onOpenLogs={openDeploymentLogs}/>}{showDetail && selectedPod && <PodDetail pod={pods.find((pod) => pod.name === selectedPod)} usage={podMetrics.byPod[selectedPod]} usageAvailable={podMetrics.available} usageReason={podMetrics.reason} context={context} namespace={namespace} containers={containers} events={events} selectedContainer={selectedContainer} setSelectedContainer={setSelectedContainer} onOpenYaml={() => setYamlTarget({ kind: 'Pod', name: selectedPod })} canForward={capabilities.portForward} canExec={capabilities.podExec} environmentWarning={currentEnvironment === 'production' ? `This context is marked Production. Commands run here affect real traffic.` : undefined} notify={notify} onExport={exportLogs} onClose={() => setShowDetail(false)}/>}</> : <div className="empty"><ListTree size={32}/><h2>{active}</h2><p>This screen is scaffolded. The Kubernetes data layer will populate it.</p></div>}
     </main></div>
     <Toast message={toast} onDismiss={() => setToast(null)}/>
+    {logPopupPod && <LogPopup context={context} namespace={namespace} podName={logPopupPod} onExport={(container) => void exportLogsFor(logPopupPod, container)} onClose={() => setLogPopupPod('')}/>}
     {yamlTarget && <YamlEditor context={context} namespace={namespace} kind={yamlTarget.kind} name={yamlTarget.name}
       canEdit={yamlTarget.kind === 'Service' ? capabilities.patchServices : capabilities.patchIngresses}
       onClose={() => setYamlTarget(null)} onSaved={() => void loadNetwork()} notify={notify} confirmSave={confirmDestructive}/>}
     {showPalette && <CommandPalette context={context} commands={paletteCommands} onOpenHit={openSearchHit} onClose={() => setShowPalette(false)}/>}
-    {showSettings && <SettingsPanel settings={settings} onSettingsChange={setSettings} onKubeconfigChanged={() => void reloadContexts()} onClose={() => setShowSettings(false)} notify={notify}/>}
+    {showSettings && <SettingsPanel settings={settings} readOnly={!hasBridge()} onSettingsChange={setSettings} onClose={() => setShowSettings(false)} notify={notify}/>}
   </div>;
 }
 
@@ -876,8 +955,8 @@ function PodDetail({ pod, usage, usageAvailable, usageReason, context, namespace
     <div className="detail-tabs">
       <button className={`tab ${tab === 'Logs' ? 'active' : ''}`} onClick={() => setTab('Logs')}>Logs</button>
       <button className={`tab ${tab === 'Usage' ? 'active' : ''}`} onClick={() => setTab('Usage')}>Usage</button>
-      <button className={`tab ${tab === 'Shell' ? 'active' : ''}`} onClick={() => setTab('Shell')}>Shell</button>
-      <button className={`tab ${tab === 'Forward' ? 'active' : ''}`} onClick={() => setTab('Forward')}>Port forward</button>
+      {canExec && <button className={`tab ${tab === 'Shell' ? 'active' : ''}`} onClick={() => setTab('Shell')}>Shell</button>}
+      {canForward && <button className={`tab ${tab === 'Forward' ? 'active' : ''}`} onClick={() => setTab('Forward')}>Port forward</button>}
       <button className={`tab ${tab === 'Overview' ? 'active' : ''}`} onClick={() => setTab('Overview')}>Overview</button>
       <button className={`tab ${tab === 'Events' ? 'active' : ''}`} onClick={() => setTab('Events')}>Events ({podEvents.length})</button>
       <span className="spacer"/>

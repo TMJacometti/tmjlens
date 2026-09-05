@@ -1,0 +1,73 @@
+# Safe defaults. Copy values.example.yaml to values.install.yaml and fill
+# that in — values.install.yaml is gitignored because it holds secrets.
+#
+# Replicas are fixed at 1 in the Deployment. The tmjLite file and in-memory
+# sessions cannot be shared across pods.
+
+image:
+  repository: ghcr.io/tmjacometti/tmjlens
+  tag: ""
+  pullPolicy: IfNotPresent
+
+imagePullSecrets: []
+nameOverride: ""
+fullnameOverride: ""
+
+# Shown in the context selector. Set both at install; Settings cannot change them.
+environment:
+  cluster: ""
+  # Must be exactly one of: production | staging | development
+  type: production
+
+# First SSO login matching this email is granted admin. Case does not matter.
+bootstrapAdmin: ""
+
+azure:
+  tenantId: ""
+  clientId: ""
+  clientSecret: ""
+  # https://<host>/auth/callback — derived from ingress.host when empty.
+  redirectUrl: ""
+  existingSecret: ""
+  existingSecretKeys:
+    tenantId: tenant-id
+    clientId: client-id
+    clientSecret: client-secret
+
+serviceAccount:
+  create: true
+  name: ""
+  annotations: {}
+
+# The app layer is the security boundary; the SA is what the API server sees.
+rbac:
+  create: true
+
+service:
+  type: ClusterIP
+  port: 80
+
+ingress:
+  enabled: false
+  className: ""
+  host: ""
+  annotations: {}
+  tls: []
+
+persistence:
+  enabled: true
+  size: 1Gi
+  storageClass: ""
+  accessModes:
+    - ReadWriteOnce
+
+resources:
+  requests:
+    cpu: 100m
+    memory: 256Mi
+  limits:
+    memory: 1Gi
+
+nodeSelector: {}
+tolerations: []
+affinity: {}

@@ -10,7 +10,7 @@
 //! draw, never what is allowed.
 
 use crate::auth::{AuthStore, UserRecord, PERMISSIONS};
-use crate::db::Db;
+use crate::db::{sql_str, Db};
 use axum::body::Body;
 use axum::extract::{Path as UrlPath, Query, State};
 use axum::http::{header, HeaderMap, StatusCode};
@@ -45,6 +45,8 @@ struct OidcConfig {
 
 pub struct WebState {
     db: Db,
+    /// What the context selector shows instead of a kubeconfig context name.
+    cluster_name: String,
     sessions: Mutex<HashMap<String, Session>>,
     pending: Mutex<HashMap<String, PendingLogin>>,
     oidc: Option<OidcConfig>,
@@ -65,7 +67,7 @@ pub async fn serve() -> Result<(), String> {
     }
     let db = Db::open(std::path::Path::new(&db_path))?;
     eprintln!("tmjLite engine {} · database {db_path}", db.engine_version());
-    // Seeds the admin/viewer profiles exactly once, at boot.
+    // Seeds the three fixed profiles (admin / developer / guest) on every boot.
     AuthStore::new(&db)?;
 
     let dev_user = std::env::var("TMJLENS_DEV_USER").ok().filter(|v| !v.is_empty());
@@ -83,8 +85,12 @@ pub async fn serve() -> Result<(), String> {
         eprintln!("WARNING: TMJLENS_DEV_USER is set — every request is trusted as that user. Development only.");
     }
 
+    let cluster_name = cluster_display_name();
+    eprintln!("serving cluster '{cluster_name}'");
+
     let state = std::sync::Arc::new(WebState {
         db,
+        cluster_name,
         sessions: Mutex::new(HashMap::new()),
         pending: Mutex::new(HashMap::new()),
         oidc,
@@ -103,12 +109,29 @@ pub async fn serve() -> Result<(), String> {
     let app = Router::new()
         .route("/healthz", get(|| async { "ok" }))
         .route("/auth/login", get(login))
+        .route("/auth/dev-login", get(dev_login))
         .route("/auth/callback", get(callback))
         .route("/auth/logout", post(logout))
         .route("/api/me", get(me))
+        .route("/api/logs/stream", get(log_stream))
         .route("/api/invoke/{command}", post(invoke))
         .fallback_service(files)
         .with_state(state);
+
+    // The desktop shell shipped with no CSP because Tauri serves from its own
+    // origin. On the open web the policy is not optional: everything loads
+    // from this server, nothing may frame the app, and only Monaco's blob:
+    // workers get past 'self'. Inline styles stay allowed — React writes
+    // style attributes.
+    let app = app.layer(tower_http::set_header::SetResponseHeaderLayer::if_not_present(
+        header::CONTENT_SECURITY_POLICY,
+        axum::http::HeaderValue::from_static(
+            "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; \
+             img-src 'self' data:; font-src 'self' data:; connect-src 'self'; \
+             worker-src 'self' blob:; object-src 'none'; frame-ancestors 'none'; \
+             base-uri 'self'",
+        ),
+    ));
 
     let addr = std::env::var("TMJLENS_ADDR").unwrap_or_else(|_| "0.0.0.0:8080".into());
     let listener = tokio::net::TcpListener::bind(&addr)
@@ -116,6 +139,17 @@ pub async fn serve() -> Result<(), String> {
         .map_err(|e| format!("could not bind {addr}: {e}"))?;
     eprintln!("tmjLens web listening on {addr}");
     axum::serve(listener, app).await.map_err(|e| e.to_string())
+}
+
+/// The name shown wherever the desktop showed a kubeconfig context. There is
+/// no kubeconfig in the pod, so the name is install-time configuration:
+/// `TMJLENS_ENVIRONMENT`'s sibling `TMJLENS_CLUSTER_NAME`.
+fn cluster_display_name() -> String {
+    std::env::var("TMJLENS_CLUSTER_NAME")
+        .ok()
+        .map(|name| name.trim().to_string())
+        .filter(|name| !name.is_empty())
+        .unwrap_or_else(|| "in-cluster".to_string())
 }
 
 fn oidc_from_env() -> Result<Option<OidcConfig>, String> {
@@ -238,6 +272,51 @@ async fn login(State(state): State<std::sync::Arc<WebState>>) -> Response {
     Response::builder()
         .status(StatusCode::FOUND)
         .header(header::LOCATION, url)
+        .body(Body::empty())
+        .unwrap()
+}
+
+#[derive(serde::Deserialize)]
+struct DevLoginParams {
+    email: Option<String>,
+}
+
+/// Development only: mint a real session for any email, so a second browser
+/// window can BE another user — the way to watch default-deny and a grant
+/// land live while the first window stays admin. Exists solely when
+/// TMJLENS_DEV_USER is set; a production deployment answers 404-shaped
+/// refusal because that variable must never reach a manifest.
+async fn dev_login(
+    State(state): State<std::sync::Arc<WebState>>,
+    Query(params): Query<DevLoginParams>,
+) -> Response {
+    if state.dev_user.is_none() {
+        return plain(
+            StatusCode::NOT_FOUND,
+            "dev-login only exists in development (TMJLENS_DEV_USER)",
+        );
+    }
+    let Some(email) = params.email.filter(|value| !value.trim().is_empty()) else {
+        return plain(StatusCode::BAD_REQUEST, "pass ?email=someone@example.com");
+    };
+    let store = AuthStore::attach(&state.db);
+    let user = match store.register_login(&email, None, None) {
+        Ok(user) => user,
+        Err(error) => return plain(StatusCode::FORBIDDEN, &error),
+    };
+    let token = random_token();
+    {
+        let mut sessions = state.sessions.lock().unwrap_or_else(|p| p.into_inner());
+        sessions.insert(token.clone(), Session { user_id: user.id, expires_at: Instant::now() + SESSION_TTL });
+    }
+    let secure = if state.secure_cookie { "; Secure" } else { "" };
+    Response::builder()
+        .status(StatusCode::FOUND)
+        .header(
+            header::SET_COOKIE,
+            format!("{SESSION_COOKIE}={token}; HttpOnly; SameSite=Lax; Path=/{secure}"),
+        )
+        .header(header::LOCATION, "/")
         .body(Body::empty())
         .unwrap()
 }
@@ -397,6 +476,75 @@ async fn me(State(state): State<std::sync::Arc<WebState>>, headers: HeaderMap) -
     }
 }
 
+// ---- log streaming ---------------------------------------------------------
+
+#[derive(serde::Deserialize)]
+struct LogStreamParams {
+    namespace: String,
+    pod: String,
+    container: Option<String>,
+    tail: Option<i64>,
+    timestamps: Option<bool>,
+    previous: Option<bool>,
+}
+
+/// Follow a pod's log over Server-Sent Events — the web stand-in for the
+/// desktop's Tauri event stream. Same gate as any other read of logs; the
+/// stream ends with a named `closed` event so the viewer can say "stream
+/// ended" instead of guessing from a dropped connection.
+async fn log_stream(
+    State(state): State<std::sync::Arc<WebState>>,
+    headers: HeaderMap,
+    Query(params): Query<LogStreamParams>,
+) -> Response {
+    let user = match current_user(&state, &headers) {
+        Ok(user) => user,
+        Err(response) => return response,
+    };
+    let store = AuthStore::attach(&state.db);
+    if !store.allows(&user, "view-logs") {
+        return plain(StatusCode::FORBIDDEN, "You do not have 'view-logs' permission. An admin can grant it.");
+    }
+
+    let client = match crate::client_for_context("").await {
+        Ok(client) => client,
+        Err(error) => return plain(StatusCode::BAD_GATEWAY, &error),
+    };
+    let api: kube::Api<k8s_openapi::api::core::v1::Pod> =
+        kube::Api::namespaced(client, &params.namespace);
+    let log_params = kube::api::LogParams {
+        follow: true,
+        container: params.container,
+        tail_lines: params.tail.or(Some(200)),
+        timestamps: params.timestamps.unwrap_or(false),
+        previous: params.previous.unwrap_or(false),
+        ..Default::default()
+    };
+    let reader = match api.log_stream(&params.pod, &log_params).await {
+        Ok(reader) => reader,
+        Err(error) => {
+            return plain(StatusCode::BAD_REQUEST, &crate::errors::humanize(&error.to_string()))
+        }
+    };
+
+    use axum::response::sse::{Event, KeepAlive, Sse};
+    use futures::{AsyncBufReadExt, StreamExt};
+    let lines = reader.lines().map(|line| {
+        Ok::<Event, std::convert::Infallible>(match line {
+            Ok(text) => Event::default().data(text),
+            // An error here is the stream dying (pod gone, connection cut);
+            // the humanized reason travels on the closed event.
+            Err(error) => Event::default()
+                .event("closed")
+                .data(crate::errors::humanize(&error.to_string())),
+        })
+    });
+    let stream = lines.chain(futures::stream::once(async {
+        Ok(Event::default().event("closed").data(""))
+    }));
+    Sse::new(stream).keep_alive(KeepAlive::default()).into_response()
+}
+
 // ---- the command gate ------------------------------------------------------
 
 /// What each command requires. The empty string means signed-in is enough:
@@ -407,13 +555,20 @@ fn required_permission(cmd: &str) -> &'static str {
         return "admin";
     }
     match cmd {
-        "load_settings" | "save_settings" | "current_context" | "list_kube_contexts"
+        "load_settings" | "current_context" | "list_kube_contexts"
         | "read_kubeconfig" | "check_permission" => "",
+        // Environment tags are instance-wide: everybody sees them, so only an
+        // admin writes them.
+        "save_settings" => "admin",
+        "create_namespace" | "delete_namespace" | "force_finalize_namespace" => "manage-namespaces",
+        "delete_pvc" | "delete_pv" => "delete-workloads",
+        "get_cluster_overview" => "overview",
         "get_pod_logs" => "view-logs",
         "reveal_secret_key" | "read_config_map_key" => "view-secrets",
         "apply_resource_yaml" => "edit-yaml",
         "write_secret_key" | "write_config_map_key" | "delete_configuration_key" => "edit-config",
-        "scale_workload" | "restart_workload" => "scale-workloads",
+        "restart_workload" => "restart-workloads",
+        "scale_workload" => "scale-workloads",
         "delete_pod" | "delete_workload" | "delete_deployment" => "delete-workloads",
         "set_argo_image" | "set_argo_resources" | "set_argo_schedule" | "set_argo_cron_suspend"
         | "submit_argo_template" | "stop_argo_workflow" | "delete_argo_workflow" => "manage-argo",
@@ -427,29 +582,42 @@ fn required_permission(cmd: &str) -> &'static str {
 /// Commands the app answers itself instead of asking the cluster: settings and
 /// context bookkeeping that only make sense on a desktop, plus the permission
 /// probe, which on the web must reflect the app layer, never the SA's RBAC.
-fn shell_command(cmd: &str, args: &Value, user: &UserRecord, store: &AuthStore) -> Option<Result<Value, String>> {
+fn shell_command(
+    state: &WebState,
+    cmd: &str,
+    args: &Value,
+    user: &UserRecord,
+    store: &AuthStore,
+) -> Option<Result<Value, String>> {
+    let cluster = state.cluster_name.as_str();
     let result = match cmd {
-        "load_settings" => {
-            let mut settings = crate::settings::AppSettings::default();
-            settings
+        "load_settings" => stored_settings(state).and_then(|s| serde_json::to_value(s).map_err(|e| e.to_string())),
+        "save_settings" => Err(
+            "cluster settings are set at install (TMJLENS_ENVIRONMENT) and cannot be changed here"
+                .into(),
+        ),
+        "current_context" => Ok(json!({ "name": cluster, "namespace": Value::Null })),
+        "list_kube_contexts" => Ok(json!([{ "name": cluster, "current": true, "namespace": Value::Null }])),
+        "read_kubeconfig" => (|| {
+            // The environment tag is the install-time one, never a value
+            // someone clicked in Settings.
+            let environment = stored_settings(state)?
                 .context_environments
-                .insert("in-cluster".to_string(), "production".to_string());
-            serde_json::to_value(settings).map_err(|e| e.to_string())
-        }
-        "save_settings" => Ok(Value::Null),
-        "current_context" => Ok(json!({ "name": "in-cluster", "namespace": Value::Null })),
-        "list_kube_contexts" => Ok(json!([{ "name": "in-cluster", "current": true, "namespace": Value::Null }])),
-        "read_kubeconfig" => Ok(json!({
-            "path": Value::Null,
-            "writable": false,
-            "read_only_reason": "The web version runs as the cluster's ServiceAccount; there is no kubeconfig to edit.",
-            "current_context": "in-cluster",
-            "contexts": [{
-                "name": "in-cluster", "current": true, "cluster": "in-cluster",
-                "user": "service-account", "namespace": Value::Null, "server": Value::Null,
-                "auth_method": "service account", "environment": "production"
-            }]
-        })),
+                .get(cluster)
+                .cloned()
+                .unwrap_or_else(|| "production".to_string());
+            Ok(json!({
+                "path": Value::Null,
+                "writable": false,
+                "read_only_reason": "The web version runs as the cluster's ServiceAccount; there is no kubeconfig to edit.",
+                "current_context": cluster,
+                "contexts": [{
+                    "name": cluster, "current": true, "cluster": cluster,
+                    "user": "service-account", "namespace": Value::Null, "server": Value::Null,
+                    "auth_method": "service account", "environment": environment
+                }]
+            }))
+        })(),
         "check_permission" => {
             let verb: String = arg(args, "verb").unwrap_or_default();
             let resource: String = arg(args, "resource").unwrap_or_default();
@@ -510,6 +678,18 @@ fn shell_command(cmd: &str, args: &Value, user: &UserRecord, store: &AuthStore) 
     Some(result)
 }
 
+/// The instance's environment is install-time configuration, not a user
+/// preference. `TMJLENS_ENVIRONMENT` is the only source; missing means
+/// production, so destructive actions ask first.
+fn stored_settings(state: &WebState) -> Result<crate::settings::AppSettings, String> {
+    let mut settings = crate::settings::AppSettings::default();
+    settings.context_environments.insert(
+        state.cluster_name.clone(),
+        crate::settings::environment_from_env(),
+    );
+    Ok(settings)
+}
+
 /// Maps the Kubernetes access the frontend asks about to the app permission
 /// that actually governs it here.
 fn permission_for_review(
@@ -536,6 +716,9 @@ fn permission_for_review(
     if resource == "nodes" && !reading {
         return "manage-nodes";
     }
+    if resource == "namespaces" && !reading {
+        return "manage-namespaces";
+    }
     match verb {
         "get" | "list" | "watch" => {
             if resource == "secrets" { "view-secrets" } else { "view" }
@@ -543,6 +726,10 @@ fn permission_for_review(
         "delete" | "deletecollection" => "delete-workloads",
         "create" | "update" | "patch" => match resource {
             "configmaps" | "secrets" => "edit-config",
+            // A patch without a subresource is how rollout-restart is asked
+            // about. Scale is the `scale` subresource, above; YAML edits go
+            // through apply_resource_yaml, which is gated separately.
+            "deployments" | "statefulsets" | "daemonsets" | "replicasets" => "restart-workloads",
             _ => "edit-yaml",
         },
         _ => "admin",
@@ -580,14 +767,14 @@ async fn invoke(
         );
     }
 
-    let outcome = match shell_command(&command, &args, &user, &store) {
+    let outcome = match shell_command(&state, &command, &args, &user, &store) {
         Some(result) => result,
         None => dispatch(&command, &args).await,
     };
 
     // Reads gated only by 'view' or 'view-logs' would flood the log from
     // polling; everything else — including revealing a secret — is recorded.
-    if !matches!(needed, "" | "view" | "view-logs") {
+    if !matches!(needed, "" | "view" | "view-logs" | "overview") {
         let detail = outcome.as_ref().err().map(|e| format!("failed: {e}"));
         let _ = store.audit(
             &user.email,
@@ -675,7 +862,7 @@ async fn dispatch(cmd: &str, a: &Value) -> Result<Value, String> {
         "delete_configuration_key" => val(delete_configuration_key(arg(a, "context")?, arg(a, "namespace")?, arg(a, "kind")?, arg(a, "name")?, arg(a, "key")?).await?),
         "get_deploy_report" => val(get_deploy_report(arg(a, "context")?, arg(a, "namespaces")?, arg(a, "window")?).await?),
         "list_report_kinds" => val(list_report_kinds()),
-        "run_report" => val(run_report(arg(a, "context")?, arg(a, "report")?, arg(a, "namespaces")?, arg(a, "window")?, arg(a, "compare_context")?).await?),
+        "run_report" => val(run_report(arg(a, "context")?, arg(a, "report")?, arg(a, "namespaces")?, arg(a, "window")?).await?),
         "get_namespace_overview" => val(get_namespace_overview(arg(a, "context")?).await?),
         "get_storage_overview" => val(get_storage_overview(arg(a, "context")?, arg(a, "namespace")?).await?),
         "get_argo_overview" => val(get_argo_overview(arg(a, "context")?).await?),
@@ -687,7 +874,7 @@ async fn dispatch(cmd: &str, a: &Value) -> Result<Value, String> {
         "stop_argo_workflow" => val(stop_argo_workflow(arg(a, "context")?, arg(a, "namespace")?, arg(a, "name")?).await?),
         "delete_argo_workflow" => val(delete_argo_workflow(arg(a, "context")?, arg(a, "namespace")?, arg(a, "name")?).await?),
         "get_pod_metrics" => val(get_pod_metrics(arg(a, "context")?, arg(a, "namespace")?).await?),
-        "get_helm_overview" => val(get_helm_overview(arg(a, "context")?).await?),
+        "get_helm_overview" => val(get_helm_overview(arg(a, "context")?, arg(a, "namespace")?).await?),
         "get_helm_release" => val(get_helm_release(arg(a, "context")?, arg(a, "namespace")?, arg(a, "name")?).await?),
         "uninstall_helm_release" => val(uninstall_helm_release(arg(a, "context")?, arg(a, "namespace")?, arg(a, "name")?).await?),
         "rollback_helm_release" => val(rollback_helm_release(arg(a, "context")?, arg(a, "namespace")?, arg(a, "name")?, arg(a, "revision")?).await?),
@@ -710,6 +897,11 @@ async fn dispatch(cmd: &str, a: &Value) -> Result<Value, String> {
         "scale_workload" => val(scale_workload(arg(a, "context")?, arg(a, "namespace")?, arg(a, "kind")?, arg(a, "name")?, arg(a, "replicas")?).await?),
         "restart_workload" => val(restart_workload(arg(a, "context")?, arg(a, "namespace")?, arg(a, "kind")?, arg(a, "name")?).await?),
         "list_events" => val(list_events(arg(a, "context")?, arg(a, "namespace")?).await?),
+        "create_namespace" => val(create_namespace(arg(a, "context")?, arg(a, "name")?).await?),
+        "delete_namespace" => val(delete_namespace(arg(a, "context")?, arg(a, "name")?).await?),
+        "force_finalize_namespace" => val(force_finalize_namespace(arg(a, "context")?, arg(a, "name")?).await?),
+        "delete_pvc" => val(delete_pvc(arg(a, "context")?, arg(a, "namespace")?, arg(a, "name")?).await?),
+        "delete_pv" => val(delete_pv(arg(a, "context")?, arg(a, "name")?).await?),
         other => Err(format!("'{other}' is not a command this server knows")),
     }
 }
@@ -750,7 +942,9 @@ mod tests {
             assert_ne!(required_permission(cmd), "view", "{cmd} must not pass as a read");
         }
         assert_eq!(required_permission("list_pods"), "view");
-        assert_eq!(required_permission("get_cluster_overview"), "view");
+        assert_eq!(required_permission("get_cluster_overview"), "overview");
+        assert_eq!(required_permission("restart_workload"), "restart-workloads");
+        assert_eq!(required_permission("scale_workload"), "scale-workloads");
     }
 
     #[test]
@@ -764,6 +958,17 @@ mod tests {
         for cmd in ["load_settings", "current_context", "check_permission", "read_kubeconfig"] {
             assert_eq!(required_permission(cmd), "", "{cmd}");
         }
+        // The handler refuses the write; the gate still names admin so a
+        // developer poking at it is a denial in the audit trail, not a 404.
+        assert_eq!(required_permission("save_settings"), "admin");
+        for cmd in ["create_namespace", "delete_namespace", "force_finalize_namespace"] {
+            assert_eq!(required_permission(cmd), "manage-namespaces", "{cmd}");
+        }
+        assert_eq!(required_permission("delete_pvc"), "delete-workloads");
+        assert_eq!(required_permission("delete_pv"), "delete-workloads");
+        assert_eq!(permission_for_review("create", "namespaces", None, None), "manage-namespaces");
+        assert_eq!(permission_for_review("delete", "namespaces", None, None), "manage-namespaces");
+        assert_eq!(permission_for_review("list", "namespaces", None, None), "view");
     }
 
     #[test]
@@ -772,7 +977,7 @@ mod tests {
         assert_eq!(permission_for_review("list", "pods", None, None), "view");
         assert_eq!(permission_for_review("delete", "deployments", None, None), "delete-workloads");
         assert_eq!(permission_for_review("patch", "configmaps", None, None), "edit-config");
-        assert_eq!(permission_for_review("patch", "deployments", None, None), "edit-yaml");
+        assert_eq!(permission_for_review("patch", "deployments", None, None), "restart-workloads");
         assert_eq!(permission_for_review("create", "pods", Some("exec"), None), "exec-pods");
         assert_eq!(permission_for_review("get", "pods", Some("log"), None), "view-logs");
         assert_eq!(permission_for_review("patch", "deployments", Some("scale"), None), "scale-workloads");
