@@ -120,7 +120,7 @@ on, an ingress controller and a TLS secret named `tmjlens-tls` in the
 A tag `web-0.5.1` publishes the image and the chart. Install that version:
 
 ```bash
-helm upgrade --install tmjlens oci://ghcr.io/tmjacometti/charts/tmjlens \
+helm upgrade --install tmjlens oci://ghcr.io/tmjacometti/tmjlens-chart \
   --version 0.5.1 \
   -n tmjlens --create-namespace \
   -f values.install.yaml
@@ -131,13 +131,13 @@ public, same file):
 
 ```bash
 helm upgrade --install tmjlens \
-  https://github.com/TMJacometti/tmjlens/releases/download/web-0.5.1/tmjlens-0.5.1.tgz \
+  https://github.com/TMJacometti/tmjlens/releases/download/web-0.5.1/tmjlens-chart-0.5.1.tgz \
   -n tmjlens --create-namespace \
   -f values.install.yaml
 ```
 
 ```bash
-helm show values oci://ghcr.io/tmjacometti/charts/tmjlens --version 0.5.1
+helm show values oci://ghcr.io/tmjacometti/tmjlens-chart --version 0.5.1
 ```
 
 ### 4. What you get

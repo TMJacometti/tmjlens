@@ -10,7 +10,7 @@ image:
   pullPolicy: IfNotPresent
 
 imagePullSecrets: []
-nameOverride: ""
+nameOverride: tmjlens
 fullnameOverride: ""
 
 # Shown in the context selector. Set both at install; Settings cannot change them.

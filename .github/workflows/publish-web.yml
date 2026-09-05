@@ -67,9 +67,11 @@ jobs:
         run: |
           set -euo pipefail
           echo "${{ secrets.GITHUB_TOKEN }}" | helm registry login ghcr.io -u "${{ github.actor }}" --password-stdin
-          helm lint charts/tmjlens
+          helm lint charts/tmjlens -f charts/tmjlens/values.example.yaml
           helm package charts/tmjlens --version "$VERSION" --app-version "$VERSION"
-          helm push "tmjlens-${VERSION}.tgz" "oci://ghcr.io/${OWNER}/charts"
+          # Flat package name. oci://…/charts/tmjlens is a nested GHCR package;
+          # GITHUB_TOKEN gets 403 on that path (and it collides with a leftover PAT push).
+          helm push "tmjlens-chart-${VERSION}.tgz" "oci://ghcr.io/${OWNER}"
 
       - name: Make GHCR packages public
         continue-on-error: true
@@ -78,10 +80,8 @@ jobs:
           OWNER: ${{ github.repository_owner }}
         run: |
           set -euo pipefail
-          # GHCR packages start private even when the git repo is public.
-          # Anonymous helm/docker pull only works after this.
           accept="Accept: application/vnd.github.package-deletes-preview+json"
-          for pkg in tmjlens "charts%2Ftmjlens"; do
+          for pkg in tmjlens tmjlens-chart; do
             gh api --method PATCH \
               -H "$accept" \
               "/users/${OWNER}/packages/container/${pkg}" \
@@ -90,13 +90,13 @@ jobs:
 
       - uses: softprops/action-gh-release@v2
         with:
-          files: tmjlens-${{ steps.ver.outputs.version }}.tgz
+          files: tmjlens-chart-${{ steps.ver.outputs.version }}.tgz
           name: tmjLens web ${{ steps.ver.outputs.version }}
           body: |
             In-cluster image and Helm chart.
 
             ```bash
-            helm upgrade --install tmjlens oci://ghcr.io/${{ steps.ver.outputs.owner }}/charts/tmjlens \
+            helm upgrade --install tmjlens oci://ghcr.io/${{ steps.ver.outputs.owner }}/tmjlens-chart \
               --version ${{ steps.ver.outputs.version }} \
               -n tmjlens --create-namespace \
               -f values.install.yaml
@@ -104,4 +104,4 @@ jobs:
 
             Chart tarball (no GHCR login):
 
-            https://github.com/${{ github.repository }}/releases/download/${{ github.ref_name }}/tmjlens-${{ steps.ver.outputs.version }}.tgz
+            https://github.com/${{ github.repository }}/releases/download/${{ github.ref_name }}/tmjlens-chart-${{ steps.ver.outputs.version }}.tgz
