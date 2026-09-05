@@ -106,14 +106,15 @@ ingress:
 persistence:
   enabled: true
   size: 1Gi
+  storageClass: ebs-csi-sc     # kubectl get storageclass — skip only if one is default
 ```
 
 `environment.type` must be one of those three words. `prd`, `hml` and `dev`
 are rejected.
 
-The cluster needs a default StorageClass (for the 1Gi disk) and, if Ingress is
-on, an ingress controller and a TLS secret named `tmjlens-tls` in the
-`tmjlens` namespace — or drop the `tls:` block until you have a certificate.
+If Ingress is on, you need an ingress controller and a TLS secret named
+`tmjlens-tls` in the `tmjlens` namespace — or drop the `tls:` block until you
+have a certificate.
 
 ### 3. Helm
 

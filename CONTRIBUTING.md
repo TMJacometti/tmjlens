@@ -206,7 +206,17 @@ git push origin web-0.5.1
 
 The `web-*` tag must be semver after the prefix (`web-0.5.1`, `web-0.5.1-rc.1`).
 GitHub Actions builds the Linux image, packages the Helm chart, pushes both to
-GHCR as public packages, and attaches `tmjlens-<version>.tgz` to the Release.
+GHCR, and attaches `tmjlens-chart-<version>.tgz` to the Release.
+
+GHCR packages start **private** even though this repo is public. The Actions
+token cannot flip that (the API answers 404). After the first successful
+publish, once, in the GitHub UI:
+
+1. https://github.com/TMJacometti/tmjlens/pkgs/container/tmjlens
+2. https://github.com/TMJacometti/tmjlens/pkgs/container/tmjlens-chart
+
+Package settings → Change visibility → Public. Until then, `helm show values`
+against OCI needs `helm registry login`; the Release `.tgz` is already public.
 
 ## Security reporting
 

@@ -45,3 +45,5 @@ ingress:
 persistence:
   enabled: true
   size: 1Gi
+  # kubectl get storageclass — required if none is marked default.
+  storageClass: ebs-csi-sc
