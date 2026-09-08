@@ -16,8 +16,8 @@ The rules in CONTRIBUTING are not suggestions to weigh against convenience. In
 particular, do not:
 
 - introduce a client-side permission model, or hide a `403` instead of surfacing it;
-- add a filesystem, shell, or network permission to `capabilities/default.json` when a
-  narrow Rust command would do;
+- add a route or command that skips the session or the permission gate in `web.rs`,
+  or widen a `required_permission` mapping for convenience;
 - render a zero, an empty list, or a neutral state where the real answer is "this
   could not be collected";
 - add telemetry, analytics, or crash reporting.
