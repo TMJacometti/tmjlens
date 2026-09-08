@@ -80,7 +80,7 @@ describe('timestamps', () => {
 
 describe('audit table plumbing', () => {
   it('finds columns by name so reordering cannot mislabel cells', () => {
-    const table: AuditTable = { columns: ['at', 'user_email', 'allowed'], rows: [] };
+    const table: AuditTable = { columns: ['at', 'user_email', 'allowed'], rows: [], enabled: true };
     expect(auditColumn(table, 'user_email')).toBe(1);
     expect(auditColumn(table, 'missing')).toBe(-1);
   });

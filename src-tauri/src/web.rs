@@ -569,7 +569,10 @@ fn required_permission(cmd: &str) -> &'static str {
         "write_secret_key" | "write_config_map_key" | "delete_configuration_key" => "edit-config",
         "restart_workload" => "restart-workloads",
         "scale_workload" => "scale-workloads",
-        "delete_pod" | "delete_workload" | "delete_deployment" => "delete-workloads",
+        // Deleting a pod IS the pod-level restart — the controller recreates
+        // it. Deleting the controller itself is the destructive act.
+        "delete_pod" => "restart-workloads",
+        "delete_workload" | "delete_deployment" => "delete-workloads",
         "set_argo_image" | "set_argo_resources" | "set_argo_schedule" | "set_argo_cron_suspend"
         | "submit_argo_template" | "stop_argo_workflow" | "delete_argo_workflow" => "manage-argo",
         "uninstall_helm_release" | "rollback_helm_release" => "manage-helm",
@@ -624,7 +627,9 @@ fn shell_command(
             let subresource: Option<String> = arg(args, "subresource").unwrap_or(None);
             let group: Option<String> = arg(args, "group").unwrap_or(None);
             let needed = permission_for_review(&verb, &resource, subresource.as_deref(), group.as_deref());
-            Ok(Value::Bool(store.allows(user, needed)))
+            Ok(Value::Bool(
+                decide(store, user, needed, &crate::settings::environment_from_env()) == Decision::Allow,
+            ))
         }
 
         // -- administration: gated by 'admin' in required_permission --
@@ -671,7 +676,12 @@ fn shell_command(
         })(),
         "admin_audit_log" => (|| {
             let limit: Option<usize> = arg(args, "limit")?;
-            store.recent_audit(limit.unwrap_or(200).min(2000)).and_then(val)
+            let table = store.recent_audit(limit.unwrap_or(200).min(2000))?;
+            Ok(json!({
+                "columns": table.columns,
+                "rows": table.rows,
+                "enabled": crate::auth::audit_enabled(),
+            }))
         })(),
         _ => return None,
     };
@@ -723,7 +733,9 @@ fn permission_for_review(
         "get" | "list" | "watch" => {
             if resource == "secrets" { "view-secrets" } else { "view" }
         }
-        "delete" | "deletecollection" => "delete-workloads",
+        "delete" | "deletecollection" => {
+            if resource == "pods" { "restart-workloads" } else { "delete-workloads" }
+        }
         "create" | "update" | "patch" => match resource {
             "configmaps" | "secrets" => "edit-config",
             // A patch without a subresource is how rollout-restart is asked
@@ -734,6 +746,38 @@ fn permission_for_review(
         },
         _ => "admin",
     }
+}
+
+/// What a permission check decided, and why — the why is user-visible.
+#[derive(PartialEq, Debug)]
+enum Decision {
+    Allow,
+    /// The profiles do not grant it; an admin could.
+    DeniedMissing,
+    /// The profiles grant it, but not on this install: the developer profile
+    /// follows the environment. No admin toggle changes this — the
+    /// environment is install-time configuration.
+    DeniedEnvironment,
+}
+
+/// The developer profile's reach follows the install's environment:
+/// production is look-but-don't-touch (no pod deletes, no rollout restarts),
+/// staging restores restarts, and development additionally opens Secret and
+/// ConfigMap values. Admins are exempt, other profiles are untouched, and an
+/// inactive user stays out regardless.
+fn decide(store: &AuthStore, user: &UserRecord, permission: &str, environment: &str) -> Decision {
+    let developer = user.profiles.iter().any(|p| p == "developer")
+        && !user.permissions.iter().any(|p| p == "admin");
+    if store.allows(user, permission) {
+        if developer && permission == "restart-workloads" && environment == "production" {
+            return Decision::DeniedEnvironment;
+        }
+        return Decision::Allow;
+    }
+    if developer && user.active && permission == "view-secrets" && environment == "development" {
+        return Decision::Allow;
+    }
+    Decision::DeniedMissing
 }
 
 async fn invoke(
@@ -752,19 +796,30 @@ async fn invoke(
     // The gate comes before ANY execution path — the admin commands answered
     // by shell_command must clear it exactly like a cluster command does.
     let needed = required_permission(&command);
-    if !needed.is_empty() && !store.allows(&user, needed) {
+    let environment = crate::settings::environment_from_env();
+    let decision = if needed.is_empty() {
+        Decision::Allow
+    } else {
+        decide(&store, &user, needed, &environment)
+    };
+    if decision != Decision::Allow {
+        let reason = match decision {
+            Decision::DeniedEnvironment => format!("denied: '{needed}' is off on a {environment} install"),
+            _ => format!("denied: requires '{needed}'"),
+        };
         let _ = store.audit(
             &user.email,
             &command,
             audit_target(&args).as_deref(),
             audit_namespace(&args).as_deref(),
-            Some(&format!("denied: requires '{needed}'")),
+            Some(&reason),
             false,
         );
-        return plain(
-            StatusCode::FORBIDDEN,
-            &format!("You do not have '{needed}' permission. An admin can grant it."),
-        );
+        let message = match decision {
+            Decision::DeniedEnvironment => format!("This is a {environment} install: the developer profile can look here, but restarts and deletes belong to staging and development."),
+            _ => format!("You do not have '{needed}' permission. An admin can grant it."),
+        };
+        return plain(StatusCode::FORBIDDEN, &message);
     }
 
     let outcome = match shell_command(&state, &command, &args, &user, &store) {
@@ -910,6 +965,80 @@ async fn dispatch(cmd: &str, a: &Value) -> Result<Value, String> {
 mod tests {
     use super::*;
 
+    fn user(profiles: &[&str], permissions: &[&str], active: bool) -> UserRecord {
+        UserRecord {
+            id: "u1".into(),
+            email: "dev@example.com".into(),
+            display_name: None,
+            active,
+            profiles: profiles.iter().map(|p| p.to_string()).collect(),
+            permissions: permissions.iter().map(|p| p.to_string()).collect(),
+        }
+    }
+
+    fn with_store(check: impl FnOnce(&AuthStore)) {
+        let dir = std::env::temp_dir().join("tmjlens-db-tests");
+        std::fs::create_dir_all(&dir).expect("temp dir");
+        let path = dir.join(format!(
+            "web-decide-{}-{}.tmjp",
+            std::process::id(),
+            std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos()
+        ));
+        let db = crate::db::Db::open(&path).expect("open db");
+        let store = AuthStore::new(&db).expect("seed");
+        check(&store);
+    }
+
+    const DEV_PERMS: &[&str] = &["overview", "view", "view-logs", "restart-workloads"];
+
+    #[test]
+    fn production_is_look_but_do_not_touch_for_developers() {
+        with_store(|store| {
+            let dev = user(&["developer"], DEV_PERMS, true);
+            assert_eq!(decide(store, &dev, "view", "production"), Decision::Allow);
+            assert_eq!(decide(store, &dev, "view-logs", "production"), Decision::Allow);
+            assert_eq!(decide(store, &dev, "restart-workloads", "production"), Decision::DeniedEnvironment);
+            assert_eq!(decide(store, &dev, "view-secrets", "production"), Decision::DeniedMissing);
+        });
+    }
+
+    #[test]
+    fn staging_restores_restarts_but_keeps_values_hidden() {
+        with_store(|store| {
+            let dev = user(&["developer"], DEV_PERMS, true);
+            assert_eq!(decide(store, &dev, "restart-workloads", "staging"), Decision::Allow);
+            assert_eq!(decide(store, &dev, "view-secrets", "staging"), Decision::DeniedMissing);
+        });
+    }
+
+    #[test]
+    fn development_opens_secret_and_configmap_values_to_developers() {
+        with_store(|store| {
+            let dev = user(&["developer"], DEV_PERMS, true);
+            assert_eq!(decide(store, &dev, "restart-workloads", "development"), Decision::Allow);
+            assert_eq!(decide(store, &dev, "view-secrets", "development"), Decision::Allow);
+        });
+    }
+
+    #[test]
+    fn the_environment_never_touches_admins_guests_or_the_deactivated() {
+        with_store(|store| {
+            let admin = user(&["admin"], &["admin"], true);
+            assert_eq!(decide(store, &admin, "restart-workloads", "production"), Decision::Allow);
+            assert_eq!(decide(store, &admin, "view-secrets", "production"), Decision::Allow);
+
+            // The development grant is scoped to the developer profile —
+            // a guest gains nothing from the environment.
+            let guest = user(&["guest"], &["overview"], true);
+            assert_eq!(decide(store, &guest, "view-secrets", "development"), Decision::DeniedMissing);
+
+            // Deactivation wins over every environment kindness.
+            let gone = user(&["developer"], DEV_PERMS, false);
+            assert_eq!(decide(store, &gone, "view-secrets", "development"), Decision::DeniedMissing);
+            assert_eq!(decide(store, &gone, "view", "development"), Decision::DeniedMissing);
+        });
+    }
+
     #[test]
     fn snake_names_gain_their_camel_spelling() {
         assert_eq!(snake_to_camel("pod_name"), "podName");
@@ -965,6 +1094,10 @@ mod tests {
             assert_eq!(required_permission(cmd), "manage-namespaces", "{cmd}");
         }
         assert_eq!(required_permission("delete_pvc"), "delete-workloads");
+        // A pod delete is a restart; the controller delete is the destructive one.
+        assert_eq!(required_permission("delete_pod"), "restart-workloads");
+        assert_eq!(required_permission("delete_workload"), "delete-workloads");
+        assert_eq!(permission_for_review("delete", "pods", None, None), "restart-workloads");
         assert_eq!(required_permission("delete_pv"), "delete-workloads");
         assert_eq!(permission_for_review("create", "namespaces", None, None), "manage-namespaces");
         assert_eq!(permission_for_review("delete", "namespaces", None, None), "manage-namespaces");

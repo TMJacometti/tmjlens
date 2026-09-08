@@ -227,6 +227,18 @@ export function AccessPage({
         </div>
       )}
 
+      {view === 'Audit' && audit && !audit.enabled && (
+        <div className="viz-callout viz-callout-warning">
+          <ShieldAlert size={16} aria-hidden />
+          <div>
+            <strong>Audit recording is OFF on this install.</strong>
+            <p>
+              Nothing done here is being written to the trail — the rows below predate the
+              switch. Re-enable it with <code>environment.logAudit: true</code> in the chart values.
+            </p>
+          </div>
+        </div>
+      )}
       {view === 'Audit' && audit && (
         <table className="viz-table access-audit">
           <thead>

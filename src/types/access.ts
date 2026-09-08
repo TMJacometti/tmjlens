@@ -33,6 +33,8 @@ export type PermissionInfo = {
 export type AuditTable = {
   columns: string[];
   rows: (string | null)[][];
+  /** False when this install runs with auditing switched off (environment.logAudit). */
+  enabled: boolean;
 };
 
 /** The only three profiles the product grants. Anything else is leftover. */

@@ -326,3 +326,13 @@
     width: 100%;
   }
 }
+
+.settings-changes ul {
+  margin: 7px 0 0;
+  padding-left: 16px;
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+  font-size: 12.5px;
+  color: var(--viz-muted, #9aa4b2);
+}

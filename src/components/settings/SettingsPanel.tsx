@@ -1,7 +1,9 @@
 import { useEffect, useState } from 'react';
 import { createPortal } from 'react-dom';
 import { invoke } from '../../lib/transport';
-import { CheckCircle2, Info, Layers3, ShieldAlert, X } from 'lucide-react';
+import { CheckCircle2, Info, Layers3, ShieldAlert, Sparkles, X } from 'lucide-react';
+import { version as APP_VERSION } from '../../package.json';
+import { WHATS_NEW } from './whats-new';
 import { EnvironmentBadge } from './EnvironmentBadge';
 import { ENVIRONMENTS, type AppSettings, type EnvironmentId, type KubeconfigView } from '../../types/settings';
 import './settings.css';
@@ -198,7 +200,7 @@ function AboutTab() {
       <dl className="settings-facts">
         <div>
           <dt>Version</dt>
-          <dd>0.1.0</dd>
+          <dd>{APP_VERSION}</dd>
         </div>
         <div>
           <dt>Licence</dt>
@@ -230,6 +232,18 @@ function AboutTab() {
             tmjLens is licensed under the GNU Affero General Public License v3.0. You may use, study, modify and share
             it; derivative work — including work offered to others over a network — must remain under the same licence.
           </p>
+        </div>
+      </div>
+
+      <div className="settings-notice settings-changes">
+        <Sparkles size={15} aria-hidden />
+        <div>
+          <strong>What's new in {APP_VERSION}</strong>
+          <ul>
+            {WHATS_NEW.map((change) => (
+              <li key={change}>{change}</li>
+            ))}
+          </ul>
         </div>
       </div>
     </>
