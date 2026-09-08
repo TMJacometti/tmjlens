@@ -1,0 +1,22 @@
+1. Copy the example values and fill in Azure AD + the admin email:
+
+     cp charts/tmjlens/values.example.yaml charts/tmjlens/values.install.yaml
+
+2. Install (when you are ready — this chart is not applied by CI):
+
+     helm upgrade --install {{ .Release.Name }} . -n {{ .Release.Namespace }} -f values.install.yaml
+
+3. The Service to point an Ingress at:
+
+     {{ include "tmjlens.fullname" . }}.{{ .Release.Namespace }}.svc.cluster.local:{{ .Values.service.port }}
+     port name: http
+
+{{- if .Values.ingress.enabled }}
+   Ingress host: https://{{ .Values.ingress.host }}
+   OIDC redirect: {{ include "tmjlens.redirectUrl" . }}
+{{- else }}
+   Ingress is off. Create one against the Service above, or set ingress.enabled.
+{{- end }}
+
+The first SSO login matching bootstrapAdmin is granted admin. Everyone else starts as guest.
+Settings → Clusters is read-only: cluster {{ .Values.environment.cluster }} / {{ .Values.environment.type }}.

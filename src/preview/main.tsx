@@ -16,6 +16,7 @@ import { ConfigurationPreview } from './ConfigurationPreview';
 import { StoragePreview } from './StoragePreview';
 import { NamespacesPreview } from './NamespacesPreview';
 import { ReportsPreview } from './ReportsPreview';
+import { AccessPreview } from './AccessPreview';
 import { installTauriStub } from './tauri-stub';
 import { awsFixture, azureFixture } from './fixture';
 import '../styles.css';
@@ -59,6 +60,8 @@ if (view === 'settings') {
           <PodUsagePreview />
         ) : view === 'helm' || view === 'helm-nocli' ? (
           <HelmPreview cli={view === 'helm'} />
+        ) : view === 'access' ? (
+          <AccessPreview />
         ) : view === 'reports' ? (
           <ReportsPreview />
         ) : view === 'ns' ? (

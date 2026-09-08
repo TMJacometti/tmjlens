@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react';
-import { invoke } from '@tauri-apps/api/core';
+import { invoke } from '../../lib/transport';
 import { Download, X } from 'lucide-react';
 import { DataTable, SeverityBadge } from '../cluster/charts';
 import { RelationGraph, type RelationGraphData } from '../graph/RelationGraph';

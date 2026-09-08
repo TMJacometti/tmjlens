@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
-import { invoke } from '@tauri-apps/api/core';
+import { invoke } from './transport';
 import type { PodMetricsSnapshot, PodUsageRow } from '../types/metrics';
 
 export type PodMetricsState = {

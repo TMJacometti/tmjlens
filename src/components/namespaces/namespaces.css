@@ -90,3 +90,12 @@
   margin: 2px 5px 2px 0;
   font-size: 10.5px;
 }
+
+.ns-create {
+  display: inline-flex;
+  gap: 7px;
+}
+
+.ns-actions {
+  white-space: nowrap;
+}

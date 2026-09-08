@@ -1,6 +1,5 @@
 import { useEffect, useRef, useState } from 'react';
-import { invoke } from '@tauri-apps/api/core';
-import { listen } from '@tauri-apps/api/event';
+import { invoke, listen } from '../../lib/transport';
 import { ShieldAlert, Square, TerminalSquare } from 'lucide-react';
 import { stripAnsi } from '../../lib/ansi';
 import './exec.css';

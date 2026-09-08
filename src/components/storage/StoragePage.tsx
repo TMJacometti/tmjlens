@@ -1,5 +1,5 @@
 import { useMemo, useState } from 'react';
-import { HardDrive, RefreshCw, ShieldAlert } from 'lucide-react';
+import { HardDrive, RefreshCw, ShieldAlert, Trash2 } from 'lucide-react';
 import { SeverityBadge, StatTile } from '../cluster/charts';
 import {
   STORAGE_VIEWS, describeMounts, formatStorage, shortHandle, storageViewCount, summariseCapacity,
@@ -12,12 +12,36 @@ type Props = {
   data: StorageOverview | null;
   loading: boolean;
   error: string;
+  /** Whether this identity may delete claims and volumes. */
+  canDelete: boolean;
   onRefresh: () => void;
+  onDeleteClaim: (name: string) => Promise<void>;
+  onDeleteVolume: (name: string) => Promise<void>;
+  notify: (text: string, detail: string | undefined, tone: 'good' | 'bad') => void;
 };
 
-export function StoragePage({ data, loading, error, onRefresh }: Props) {
+export function StoragePage({ data, loading, error, canDelete, onRefresh, onDeleteClaim, onDeleteVolume, notify }: Props) {
   const [view, setView] = useState<StorageView>('Volume Claims');
   const [filter, setFilter] = useState('');
+  const [busy, setBusy] = useState('');
+
+  const remove = async (kind: 'claim' | 'volume', name: string, action: () => Promise<void>) => {
+    setBusy(name);
+    try {
+      await action();
+      notify(
+        kind === 'claim' ? 'Claim deleted' : 'Volume deleted',
+        `${name} — what the provider reclaims now depends on the reclaim policy.`,
+        'good',
+      );
+    } catch (cause) {
+      // A mounted claim or a Bound volume is refused by the server with the
+      // holder named; that message is the useful part.
+      notify('Not deleted', String(cause), 'bad');
+    } finally {
+      setBusy('');
+    }
+  };
 
   const needle = filter.trim().toLowerCase();
   const matches = <T extends { name: string }>(items: T[]): T[] =>
@@ -153,7 +177,7 @@ export function StoragePage({ data, loading, error, onRefresh }: Props) {
       {view === 'Volume Claims' && (
         <table className="viz-table">
           <thead>
-            <tr><th>Claim</th><th>State</th><th>Size</th><th>Class</th><th>Access</th><th>Mounted by</th><th>Volume</th><th>Age</th></tr>
+            <tr><th>Claim</th><th>State</th><th>Size</th><th>Class</th><th>Access</th><th>Mounted by</th><th>Volume</th><th>Age</th>{canDelete && <th aria-label="Actions" />}</tr>
           </thead>
           <tbody>
             {matches(data.claims).map((claim) => (
@@ -174,10 +198,27 @@ export function StoragePage({ data, loading, error, onRefresh }: Props) {
                 </td>
                 <td className="mono viz-dim stg-volume">{claim.volume ?? '—'}</td>
                 <td>{claim.age}</td>
+                {canDelete && (
+                  <td>
+                    <button
+                      type="button"
+                      className="viz-toggle viz-danger"
+                      disabled={busy !== ''}
+                      title={
+                        claim.used_by_total > 0
+                          ? `Mounted by ${claim.used_by_total} pod(s) — the server will refuse and name them.`
+                          : `Delete ${claim.name}; the volume follows its reclaim policy.`
+                      }
+                      onClick={() => void remove('claim', claim.name, () => onDeleteClaim(claim.name))}
+                    >
+                      <Trash2 size={13} aria-hidden /> Delete
+                    </button>
+                  </td>
+                )}
               </tr>
             ))}
             {matches(data.claims).length === 0 && (
-              <tr><td colSpan={8} className="viz-empty">No claim in this namespace.</td></tr>
+              <tr><td colSpan={canDelete ? 9 : 8} className="viz-empty">No claim in this namespace.</td></tr>
             )}
           </tbody>
         </table>
@@ -194,7 +235,7 @@ export function StoragePage({ data, loading, error, onRefresh }: Props) {
           </p>
           <table className="viz-table">
             <thead>
-              <tr><th>Volume</th><th>State</th><th>Size</th><th>Reclaim</th><th>Claim</th><th>Disk</th><th>Zone</th><th>Age</th></tr>
+              <tr><th>Volume</th><th>State</th><th>Size</th><th>Reclaim</th><th>Claim</th><th>Disk</th><th>Zone</th><th>Age</th>{canDelete && <th aria-label="Actions" />}</tr>
             </thead>
             <tbody>
               {matches(data.volumes).map((volume) => (
@@ -218,10 +259,27 @@ export function StoragePage({ data, loading, error, onRefresh }: Props) {
                   </td>
                   <td className="viz-dim">{volume.zones.join(', ') || '—'}</td>
                   <td>{volume.age}</td>
+                  {canDelete && (
+                    <td>
+                      <button
+                        type="button"
+                        className="viz-toggle viz-danger"
+                        disabled={busy !== '' || volume.phase === 'Bound'}
+                        title={
+                          volume.phase === 'Bound'
+                            ? `Bound to ${volume.claim ?? 'a claim'} — live storage. Delete the claim instead.`
+                            : `Delete ${volume.name}. With reclaim policy ${volume.reclaim_policy}, ${volume.reclaim_policy === 'Retain' ? 'the provider disk stays behind — check the Disk column first' : 'the provider disk is deleted too'}.`
+                        }
+                        onClick={() => void remove('volume', volume.name, () => onDeleteVolume(volume.name))}
+                      >
+                        <Trash2 size={13} aria-hidden /> Delete
+                      </button>
+                    </td>
+                  )}
                 </tr>
               ))}
               {matches(data.volumes).length === 0 && (
-                <tr><td colSpan={8} className="viz-empty">No persistent volume exists, or this identity may not read them.</td></tr>
+                <tr><td colSpan={canDelete ? 9 : 8} className="viz-empty">No persistent volume exists, or this identity may not read them.</td></tr>
               )}
             </tbody>
           </table>

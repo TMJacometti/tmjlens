@@ -6,8 +6,8 @@
 //! set of sorting rules, instead of six of each drifting apart.
 
 use k8s_openapi::api::{
-    apps::v1::{DaemonSet, Deployment, ReplicaSet, StatefulSet},
-    batch::v1::{CronJob, Job},
+    apps::v1::{Deployment, ReplicaSet, StatefulSet},
+    batch::v1::Job,
     core::v1::{ConfigMap, Node, PersistentVolume, PersistentVolumeClaim, Pod, Secret},
     networking::v1::NetworkPolicy,
     policy::v1::PodDisruptionBudget,
@@ -1114,239 +1114,6 @@ fn tail_of(image: &str) -> String {
     }
 }
 
-// ---------------------------------------------------------------- 6. context drift
-
-#[derive(Clone, PartialEq, Eq, PartialOrd, Ord)]
-struct WorkloadKey {
-    namespace: String,
-    kind: String,
-    name: String,
-}
-
-#[derive(Clone)]
-struct WorkloadState {
-    replicas: i32,
-    images: Vec<String>,
-}
-
-async fn workload_states(
-    client: Client,
-    namespaces: &[String],
-    degraded: &mut Vec<String>,
-    label: &str,
-) -> BTreeMap<WorkloadKey, WorkloadState> {
-    let params = ListParams::default();
-    let mut states = BTreeMap::new();
-
-    for namespace in namespaces {
-        let deployments: Api<Deployment> = Api::namespaced(client.clone(), namespace);
-        let stateful: Api<StatefulSet> = Api::namespaced(client.clone(), namespace);
-        let daemons: Api<DaemonSet> = Api::namespaced(client.clone(), namespace);
-        let crons: Api<CronJob> = Api::namespaced(client.clone(), namespace);
-
-        let (deployment_list, stateful_list, daemon_list, cron_list) = tokio::join!(
-            deployments.list(&params),
-            stateful.list(&params),
-            daemons.list(&params),
-            crons.list(&params),
-        );
-
-        match deployment_list {
-            Ok(list) => {
-                for item in list.items {
-                    states.insert(
-                        WorkloadKey {
-                            namespace: namespace.clone(),
-                            kind: "Deployment".into(),
-                            name: item.metadata.name.clone().unwrap_or_default(),
-                        },
-                        WorkloadState {
-                            replicas: item.spec.as_ref().and_then(|spec| spec.replicas).unwrap_or(1),
-                            images: template_images(item.spec.as_ref().and_then(|spec| spec.template.spec.as_ref())),
-                        },
-                    );
-                }
-            }
-            Err(error) => degraded.push(format!("Deployments in {namespace} ({label}) could not be listed ({error}).")),
-        }
-
-        if let Ok(list) = stateful_list {
-            for item in list.items {
-                states.insert(
-                    WorkloadKey {
-                        namespace: namespace.clone(),
-                        kind: "StatefulSet".into(),
-                        name: item.metadata.name.clone().unwrap_or_default(),
-                    },
-                    WorkloadState {
-                        replicas: item.spec.as_ref().and_then(|spec| spec.replicas).unwrap_or(1),
-                        images: template_images(item.spec.as_ref().and_then(|spec| spec.template.spec.as_ref())),
-                    },
-                );
-            }
-        }
-        if let Ok(list) = daemon_list {
-            for item in list.items {
-                states.insert(
-                    WorkloadKey {
-                        namespace: namespace.clone(),
-                        kind: "DaemonSet".into(),
-                        name: item.metadata.name.clone().unwrap_or_default(),
-                    },
-                    WorkloadState {
-                        replicas: -1,
-                        images: template_images(item.spec.as_ref().and_then(|spec| spec.template.spec.as_ref())),
-                    },
-                );
-            }
-        }
-        if let Ok(list) = cron_list {
-            for item in list.items {
-                states.insert(
-                    WorkloadKey {
-                        namespace: namespace.clone(),
-                        kind: "CronJob".into(),
-                        name: item.metadata.name.clone().unwrap_or_default(),
-                    },
-                    WorkloadState {
-                        replicas: -1,
-                        images: template_images(
-                            item.spec
-                                .as_ref()
-                                .and_then(|spec| spec.job_template.spec.as_ref())
-                                .and_then(|job| job.template.spec.as_ref()),
-                        ),
-                    },
-                );
-            }
-        }
-    }
-
-    states
-}
-
-fn template_images(spec: Option<&k8s_openapi::api::core::v1::PodSpec>) -> Vec<String> {
-    spec.map(|spec| {
-        spec.containers
-            .iter()
-            .filter_map(|container| container.image.as_ref().map(|image| format!("{}={image}", container.name)))
-            .collect()
-    })
-    .unwrap_or_default()
-}
-
-/// Compares the same namespaces across two contexts.
-///
-/// The question is always "why does it work over there", and the answer is almost
-/// always one of three things: it is missing here, it is a different version, or it is
-/// running a different number of replicas.
-async fn context_drift(
-    here: Client,
-    there: Client,
-    namespaces: Vec<String>,
-    here_name: &str,
-    there_name: &str,
-) -> ReportResult {
-    let mut degraded = Vec::new();
-    let mine = workload_states(here, &namespaces, &mut degraded, here_name).await;
-    let theirs = workload_states(there, &namespaces, &mut degraded, there_name).await;
-
-    let mut rows = Vec::new();
-    let keys: BTreeSet<&WorkloadKey> = mine.keys().chain(theirs.keys()).collect();
-
-    for key in keys {
-        let identity = format!("{}/{}/{}", key.namespace, key.kind, key.name);
-        let cells = |severity: &str, difference: String, left: String, right: String| {
-            row(
-                identity.clone(),
-                severity,
-                &[
-                    ("namespace", key.namespace.clone()),
-                    ("kind", key.kind.clone()),
-                    ("name", key.name.clone()),
-                    ("here", left),
-                    ("there", right),
-                    ("difference", difference),
-                ],
-            )
-        };
-
-        match (mine.get(key), theirs.get(key)) {
-            (Some(_), None) => rows.push(cells(
-                "serious",
-                format!("Missing from {there_name}."),
-                "present".into(),
-                "absent".into(),
-            )),
-            (None, Some(_)) => rows.push(cells(
-                "serious",
-                format!("Only in {there_name}, not here."),
-                "absent".into(),
-                "present".into(),
-            )),
-            (Some(left), Some(right)) => {
-                let left_images = summarise_images(&left.images);
-                let right_images = summarise_images(&right.images);
-                if left_images != right_images {
-                    rows.push(cells(
-                        "critical",
-                        "Different image.".into(),
-                        left_images,
-                        right_images,
-                    ));
-                } else if left.replicas != right.replicas && left.replicas >= 0 && right.replicas >= 0 {
-                    rows.push(cells(
-                        "warning",
-                        "Different replica count.".into(),
-                        format!("{} replicas", left.replicas),
-                        format!("{} replicas", right.replicas),
-                    ));
-                }
-            }
-            (None, None) => {}
-        }
-    }
-
-    sort_rows(&mut rows);
-    let summary = if rows.is_empty() {
-        format!("{here_name} and {there_name} match across the selected namespaces.")
-    } else {
-        let versions = rows.iter().filter(|entry| entry.severity == "critical").count();
-        format!(
-            "{} difference(s) between {here_name} and {there_name}{}.",
-            rows.len(),
-            if versions > 0 { format!(", {versions} of them a different image") } else { String::new() }
-        )
-    };
-
-    ReportResult {
-        id: "context-drift".into(),
-        title: "Context comparison".into(),
-        summary,
-        columns: vec![
-            column("namespace", "Namespace", true),
-            column("kind", "Kind", false),
-            column("name", "Name", true),
-            column("here", here_name, true),
-            column("there", there_name, true),
-            column("difference", "Difference", false),
-        ],
-        rows,
-        degraded_collectors: degraded,
-    }
-}
-
-fn summarise_images(images: &[String]) -> String {
-    let mut tails: Vec<String> = images
-        .iter()
-        .filter_map(|entry| entry.split_once('=').map(|(_, image)| tail_of(image)))
-        .collect();
-    tails.sort();
-    if tails.is_empty() { "—".to_string() } else { tails.join(", ") }
-}
-
-// ---------------------------------------------------------------- dispatch
-
 /// Which reports exist, what each needs, and what each is for. Returned to the UI so the
 /// catalogue is defined once rather than in two places that drift.
 #[derive(Serialize, Clone)]
@@ -1358,7 +1125,6 @@ pub struct ReportKind {
     /// covers the whole cluster, which is how most of these questions are actually asked.
     pub filters_namespaces: bool,
     pub needs_window: bool,
-    pub needs_second_context: bool,
 }
 
 pub fn catalogue() -> Vec<ReportKind> {
@@ -1369,7 +1135,6 @@ pub fn catalogue() -> Vec<ReportKind> {
             purpose: "Workloads that did not exist in the cluster before the window began.".into(),
             filters_namespaces: true,
             needs_window: true,
-            needs_second_context: false,
         },
         ReportKind {
             id: "change-trail".into(),
@@ -1377,7 +1142,6 @@ pub fn catalogue() -> Vec<ReportKind> {
             purpose: "What changed version, with the image it replaced. The report to open after an incident.".into(),
             filters_namespaces: true,
             needs_window: true,
-            needs_second_context: false,
         },
         ReportKind {
             id: "idle-cost".into(),
@@ -1385,7 +1149,6 @@ pub fn catalogue() -> Vec<ReportKind> {
             purpose: "Storage, config and workloads that are provisioned, billed, and doing nothing.".into(),
             filters_namespaces: true,
             needs_window: false,
-            needs_second_context: false,
         },
         ReportKind {
             id: "upgrade-readiness".into(),
@@ -1393,7 +1156,6 @@ pub fn catalogue() -> Vec<ReportKind> {
             purpose: "What will block or disrupt a rolling node drain, before you start one.".into(),
             filters_namespaces: true,
             needs_window: false,
-            needs_second_context: false,
         },
         ReportKind {
             id: "security-posture".into(),
@@ -1401,7 +1163,6 @@ pub fn catalogue() -> Vec<ReportKind> {
             purpose: "What runs with more privilege than it needs, per container.".into(),
             filters_namespaces: true,
             needs_window: false,
-            needs_second_context: false,
         },
         ReportKind {
             id: "image-hygiene".into(),
@@ -1409,15 +1170,6 @@ pub fn catalogue() -> Vec<ReportKind> {
             purpose: "Every distinct image running and where, so a CVE can be traced in one pass.".into(),
             filters_namespaces: true,
             needs_window: false,
-            needs_second_context: false,
-        },
-        ReportKind {
-            id: "context-drift".into(),
-            title: "Context comparison".into(),
-            purpose: "The same namespaces in two clusters, and every way they differ.".into(),
-            filters_namespaces: true,
-            needs_window: false,
-            needs_second_context: true,
         },
     ]
 }
@@ -1501,7 +1253,6 @@ async fn resolve_namespaces(client: &Client, chosen: Vec<String>) -> Result<Vec<
 
 pub async fn run(
     client: Client,
-    other: Option<(Client, String, String)>,
     report: &str,
     namespaces: Vec<String>,
     window: &str,
@@ -1514,11 +1265,6 @@ pub async fn run(
         "security-posture" => Ok(security_posture(client, namespaces).await),
         "image-hygiene" => Ok(image_hygiene(client, namespaces).await),
         "change-trail" => Ok(change_trail(client, namespaces, window).await),
-        "context-drift" => {
-            let (there, here_name, there_name) = other
-                .ok_or_else(|| "Comparing contexts needs a second context to compare against.".to_string())?;
-            Ok(context_drift(client, there, namespaces, &here_name, &there_name).await)
-        }
         other => Err(format!("{other} is not a report this app knows how to build.")),
     }
 }
@@ -1622,21 +1368,10 @@ mod tests {
         assert_eq!(format_bytes(0.0), "0B");
     }
 
-    #[test]
-    fn images_compare_by_their_tails_regardless_of_order() {
-        // Two clusters can list containers in a different order and still match.
-        let left = summarise_images(&["a=reg.io/acme/x:1".into(), "b=reg.io/acme/y:2".into()]);
-        let right = summarise_images(&["b=other.io/acme/y:2".into(), "a=other.io/acme/x:1".into()]);
-        assert_eq!(left, right);
-    }
-
-    #[test]
+        #[test]
     fn every_catalogue_entry_declares_what_it_needs() {
         let entries = catalogue();
-        assert!(entries.iter().any(|entry| entry.id == "context-drift" && entry.needs_second_context));
         assert!(entries.iter().any(|entry| entry.id == "change-trail" && entry.needs_window));
-        // Only the comparison needs a second cluster.
-        assert_eq!(entries.iter().filter(|entry| entry.needs_second_context).count(), 1);
         // No report requires a namespace: an empty filter means the whole cluster.
         assert!(entries.iter().all(|entry| entry.filters_namespaces));
     }

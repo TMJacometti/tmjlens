@@ -58,3 +58,21 @@ test('a job and a cron job offer neither', async ({ page }) => {
   await expect(cron).not.toContainText('Scale…');
   await expect(cron).not.toContainText('Rollout restart');
 });
+
+test('a pod row opens its log in a popup over the list', async ({ page }) => {
+  await page.getByRole('button', { name: /^Pods/ }).click();
+  const menu = await openMenu(page, 'checkout-api-7d9f8b6c4d-5kx2m');
+  await expect(menu).toContainText('Open logs');
+  await menu.getByText('Open logs').click();
+
+  const dialog = page.getByRole('dialog', { name: /Logs of/ });
+  await expect(dialog).toContainText('checkout-api-7d9f8b6c4d-5kx2m');
+  // The full viewer, not a excerpt: follow and export are both present.
+  await expect(dialog.getByRole('button', { name: 'Follow' })).toBeVisible();
+  await expect(dialog.getByRole('button', { name: 'Export' })).toBeVisible();
+
+  // Escape closes without touching the list behind it.
+  await page.keyboard.press('Escape');
+  await expect(dialog).toBeHidden();
+  await expect(page.getByText('checkout-api-7d9f8b6c4d-5kx2m').first()).toBeVisible();
+});

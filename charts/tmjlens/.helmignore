@@ -1,0 +1,7 @@
+.DS_Store
+.git/
+.gitignore
+*.md
+values.install.yaml
+*.tgz
+charts/

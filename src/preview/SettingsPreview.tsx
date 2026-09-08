@@ -59,7 +59,7 @@ export function SettingsPreview() {
         <SettingsPanel
           settings={settings}
           onSettingsChange={setSettings}
-          onKubeconfigChanged={() => undefined}
+         
           onClose={() => setOpen(false)}
           notify={(text, detail) => console.log('[toast]', text, detail)}
         />

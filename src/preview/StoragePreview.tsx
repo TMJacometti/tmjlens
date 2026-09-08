@@ -163,7 +163,7 @@ export function StoragePreview() {
           <p>Volume claims, volumes and storage classes for <b>payments</b></p>
         </div>
       </div>
-      <StoragePage data={data} loading={false} error="" onRefresh={() => undefined} />
+      <StoragePage data={data} loading={false} error="" canDelete onRefresh={() => undefined} onDeleteClaim={async () => undefined} onDeleteVolume={async () => undefined} notify={() => undefined} />
     </>
   );
 }

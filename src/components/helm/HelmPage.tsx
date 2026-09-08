@@ -68,7 +68,7 @@ export function HelmPage({ data, loading, error, onRefresh, onOpenDetail, onUnin
   return (
     <div className={`helm-page ${loading ? 'is-refreshing' : ''}`}>
       <p className="wl-lead">
-        Read from Helm's own release records in the cluster — the same source as <code>helm list</code>, no
+        Read from Helm's own release records in the selected namespace — the same source as <code>helm list -n</code>, no
         helm binary needed. Uninstall and rollback are helm's operations, so those run through your CLI.
       </p>
 

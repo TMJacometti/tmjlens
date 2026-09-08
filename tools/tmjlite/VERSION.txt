@@ -1,0 +1,4 @@
+TMJLite 0.2.8
+platform=windows-x64
+rust_target=x86_64-pc-windows-gnu
+built=2026-09-04T00:10:32Z

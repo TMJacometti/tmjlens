@@ -1,0 +1,103 @@
+{{- if and (hasKey .Values "replicaCount") (ne (int .Values.replicaCount) 1) }}
+{{- fail "replicas are fixed at 1: tmjLite and in-memory sessions cannot be shared across pods" }}
+{{- end }}
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ include "tmjlens.fullname" . }}
+  labels:
+    {{- include "tmjlens.labels" . | nindent 4 }}
+spec:
+  # tmjLite is a file on the PVC and sessions live in process memory.
+  replicas: 1
+  strategy:
+    type: Recreate
+  selector:
+    matchLabels:
+      {{- include "tmjlens.selectorLabels" . | nindent 6 }}
+  template:
+    metadata:
+      labels:
+        {{- include "tmjlens.selectorLabels" . | nindent 8 }}
+    spec:
+      serviceAccountName: {{ include "tmjlens.serviceAccountName" . }}
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 65532
+        runAsGroup: 65532
+        fsGroup: 65532
+      {{- with .Values.imagePullSecrets }}
+      imagePullSecrets:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.nodeSelector }}
+      nodeSelector:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.affinity }}
+      affinity:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.tolerations }}
+      tolerations:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      containers:
+        - name: tmjlens
+          image: "{{ .Values.image.repository }}:{{ .Values.image.tag | default .Chart.AppVersion }}"
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          ports:
+            - name: http
+              containerPort: 8080
+              protocol: TCP
+          env:
+            - name: TMJLENS_ADDR
+              value: "0.0.0.0:8080"
+            - name: TMJLENS_STATIC_DIR
+              value: /app/dist
+            - name: TMJLENS_DB_PATH
+              value: /var/lib/tmjlens/tmjlens.tmjp
+            - name: TMJLENS_ENVIRONMENT
+              value: {{ include "tmjlens.environmentType" . | quote }}
+            - name: TMJLENS_CLUSTER_NAME
+              value: {{ required "environment.cluster is required" .Values.environment.cluster | quote }}
+            - name: TMJLENS_BOOTSTRAP_ADMIN
+              value: {{ required "bootstrapAdmin is required" .Values.bootstrapAdmin | trim | lower | quote }}
+            - name: TMJLENS_REDIRECT_URL
+              value: {{ include "tmjlens.redirectUrl" . | quote }}
+            - name: TMJLENS_AZURE_TENANT_ID
+              valueFrom:
+                secretKeyRef:
+                  name: {{ .Values.azure.existingSecret | default (include "tmjlens.fullname" .) }}
+                  key: {{ .Values.azure.existingSecretKeys.tenantId }}
+            - name: TMJLENS_AZURE_CLIENT_ID
+              valueFrom:
+                secretKeyRef:
+                  name: {{ .Values.azure.existingSecret | default (include "tmjlens.fullname" .) }}
+                  key: {{ .Values.azure.existingSecretKeys.clientId }}
+            - name: TMJLENS_AZURE_CLIENT_SECRET
+              valueFrom:
+                secretKeyRef:
+                  name: {{ .Values.azure.existingSecret | default (include "tmjlens.fullname" .) }}
+                  key: {{ .Values.azure.existingSecretKeys.clientSecret }}
+          livenessProbe:
+            httpGet:
+              path: /healthz
+              port: http
+          readinessProbe:
+            httpGet:
+              path: /healthz
+              port: http
+          resources:
+            {{- toYaml .Values.resources | nindent 12 }}
+          volumeMounts:
+            - name: data
+              mountPath: /var/lib/tmjlens
+      volumes:
+        - name: data
+          {{- if .Values.persistence.enabled }}
+          persistentVolumeClaim:
+            claimName: {{ include "tmjlens.fullname" . }}
+          {{- else }}
+          emptyDir: {}
+          {{- end }}

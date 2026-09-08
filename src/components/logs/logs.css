@@ -120,3 +120,41 @@
   white-space: pre-wrap;
   overflow-wrap: anywhere;
 }
+
+/* ---------- popup ---------- */
+
+.log-popup {
+  width: min(1240px, 96vw);
+  height: min(86vh, 920px);
+  display: flex;
+  flex-direction: column;
+  background: #0f1319;
+  border: 1px solid #272d37;
+  border-radius: 10px;
+  box-shadow: 0 22px 60px #000a;
+  overflow: hidden;
+}
+
+.log-popup h2 {
+  margin: 0 0 4px;
+  font-size: 15px;
+  overflow-wrap: anywhere;
+}
+
+.log-popup-body {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  padding: 0 6px 6px;
+}
+
+.log-popup-body .log-viewer {
+  flex: 1;
+  min-width: 0;
+}
+
+/* Inside the popup the viewer owns the whole height; the 560px cap only
+ * exists so the inline detail tab does not push the page. */
+.log-popup-body .log-body {
+  max-height: none;
+}

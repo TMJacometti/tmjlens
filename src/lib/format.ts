@@ -1,13 +1,17 @@
 /** Millicores in, an operator-readable CPU string out: 250m, 1.5, 12 cores. */
-export function formatCpu(milli: number | undefined): string {
-  if (milli === undefined || Number.isNaN(milli)) return '—';
+// The == null guards catch BOTH null and undefined: Rust's Option<f64> arrives
+// over the wire as JSON null, which `=== undefined` lets straight through to
+// .toFixed — a node the metrics server has not measured yet must render as
+// '—', not take the whole overview down.
+export function formatCpu(milli: number | null | undefined): string {
+  if (milli == null || Number.isNaN(milli)) return '—';
   if (milli < 1000) return `${Math.round(milli)}m`;
   const cores = milli / 1000;
   return cores < 10 ? `${cores.toFixed(1)} cores` : `${Math.round(cores)} cores`;
 }
 
-export function formatBytes(bytes: number | undefined): string {
-  if (bytes === undefined || Number.isNaN(bytes)) return '—';
+export function formatBytes(bytes: number | null | undefined): string {
+  if (bytes == null || Number.isNaN(bytes)) return '—';
   const units = ['B', 'KiB', 'MiB', 'GiB', 'TiB', 'PiB'];
   let value = bytes;
   let unit = 0;
@@ -30,8 +34,8 @@ export function percent(part: number, whole: number): number {
   return (part / whole) * 100;
 }
 
-export function formatPercent(value: number | undefined): string {
-  if (value === undefined || Number.isNaN(value)) return '—';
+export function formatPercent(value: number | null | undefined): string {
+  if (value == null || Number.isNaN(value)) return '—';
   return `${Math.round(value)}%`;
 }
 

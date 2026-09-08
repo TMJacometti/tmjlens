@@ -11,14 +11,11 @@ export type RunRequest = {
   report: string;
   namespaces: string[];
   window: string;
-  compareContext: string | null;
 };
 
 type Props = {
   kinds: ReportKind[];
   namespaces: string[];
-  contexts: string[];
-  currentContext: string;
   result: ReportResult | null;
   loading: boolean;
   error: string;
@@ -29,12 +26,11 @@ type Props = {
 };
 
 export function ReportsPage({
-  kinds, namespaces, contexts, currentContext, result, loading, error, exporting, onRun, onExport,
+  kinds, namespaces, result, loading, error, exporting, onRun, onExport,
 }: Props) {
   const [reportId, setReportId] = useState(kinds[0]?.id ?? 'deployed');
   const [selected, setSelected] = useState<string[]>([]);
   const [window, setWindow] = useState('today');
-  const [compareContext, setCompareContext] = useState('');
   const [search, setSearch] = useState('');
   const [rowFilter, setRowFilter] = useState('');
 
@@ -45,16 +41,12 @@ export function ReportsPage({
 
   const needle = search.trim().toLowerCase();
   const shown = needle ? namespaces.filter((entry) => entry.toLowerCase().includes(needle)) : namespaces;
-  const others = contexts.filter((entry) => entry !== currentContext);
 
   const toggle = (entry: string) =>
     setSelected((current) =>
       current.includes(entry) ? current.filter((item) => item !== entry) : [...current, entry],
     );
 
-  // The only thing a report can be missing is the cluster to compare against. An empty
-  // namespace filter is a valid choice: it means the whole cluster.
-  const missingContext = Boolean(kind?.needs_second_context && !compareContext);
 
   const rows = useMemo(() => (result ? filterRows(result.rows, rowFilter) : []), [result, rowFilter]);
   const counts = useMemo(() => (result ? severityCounts(result.rows) : null), [result]);
@@ -98,23 +90,6 @@ export function ReportsPage({
                   </button>
                 ))}
               </div>
-            </div>
-          )}
-
-          {kind?.needs_second_context && (
-            <div className="rep-field">
-              <span className="rep-label">Compare against</span>
-              <select
-                className="rep-select"
-                value={compareContext}
-                onChange={(event) => setCompareContext(event.target.value)}
-              >
-                <option value="">Choose a context…</option>
-                {others.map((entry) => <option key={entry} value={entry}>{entry}</option>)}
-              </select>
-              {others.length === 0 && (
-                <small className="viz-dim">Your kubeconfig holds only this context.</small>
-              )}
             </div>
           )}
 
@@ -176,16 +151,14 @@ export function ReportsPage({
           <button
             type="button"
             className="viz-primary"
-            disabled={missingContext || loading}
+            disabled={loading}
             onClick={() =>
               onRun({
                 report: reportId,
                 namespaces: selected,
                 window,
-                compareContext: compareContext || null,
               })
             }
-            title={missingContext ? 'Choose the context to compare against.' : undefined}
           >
             <Search size={14} aria-hidden />
             {loading ? 'Reading…' : 'Run report'}

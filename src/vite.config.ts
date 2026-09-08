@@ -15,6 +15,12 @@ export default defineConfig({
   server: {
     host: '0.0.0.0',
     port: 5173,
+    // Web dev: the axum server owns /api and /auth; Vite owns hot reload.
+    proxy: {
+      '/api': 'http://127.0.0.1:8080',
+      '/auth': 'http://127.0.0.1:8080',
+      '/healthz': 'http://127.0.0.1:8080',
+    },
   },
   test: {
     // Two runners share this tree, so the suffix decides which owns a file:

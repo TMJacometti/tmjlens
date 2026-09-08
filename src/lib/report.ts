@@ -46,7 +46,7 @@ export function buildClusterReport(data: ClusterOverview, environment: Environme
   return pdf;
 }
 
-/** `arn:aws:eks:…:cluster/mds-eks-prd` and `mds-eks-prd` both become `mds-eks-prd`. */
+/** `arn:aws:eks:…:cluster/prod-shark` and `prod-shark` both become `prod-shark`. */
 export function clusterDisplayName(data: ClusterOverview): string {
   const explicit = data.control_plane.cluster_name?.trim();
   if (explicit) return explicit;

@@ -1,5 +1,5 @@
 import { useState } from 'react';
-import { RefreshCw, ShieldAlert } from 'lucide-react';
+import { Plus, RefreshCw, ShieldAlert, Trash2, Unlock } from 'lucide-react';
 import { SeverityBadge, StatTile } from '../cluster/charts';
 import type { NamespaceOverview } from '../../types/reports';
 import './namespaces.css';
@@ -9,13 +9,74 @@ type Props = {
   loading: boolean;
   error: string;
   current: string;
+  /** Whether this identity may create and delete namespaces. */
+  canManage: boolean;
   onRefresh: () => void;
   /** Switching namespace here changes it for every other screen. */
   onSelect: (name: string) => void;
+  onCreate: (name: string) => Promise<void>;
+  onDelete: (name: string) => Promise<void>;
+  /** Clears the finalizers of a namespace stuck Terminating; resolves to what was removed. */
+  onForceFinalize: (name: string) => Promise<string>;
+  notify: (text: string, detail: string | undefined, tone: 'good' | 'bad') => void;
 };
 
-export function NamespacesPage({ data, loading, error, current, onRefresh, onSelect }: Props) {
+export function NamespacesPage({
+  data, loading, error, current, canManage, onRefresh, onSelect, onCreate, onDelete, onForceFinalize, notify,
+}: Props) {
   const [filter, setFilter] = useState('');
+  const [newName, setNewName] = useState('');
+  const [busy, setBusy] = useState('');
+
+  const create = async () => {
+    const name = newName.trim();
+    if (!name) return;
+    setBusy('create');
+    try {
+      await onCreate(name);
+      setNewName('');
+      notify('Namespace created', name, 'good');
+    } catch (cause) {
+      notify('The namespace was not created', String(cause), 'bad');
+    } finally {
+      setBusy('');
+    }
+  };
+
+  const remove = async (name: string) => {
+    // Deleting a namespace deletes everything inside it; typing the name is
+    // the same bar the app sets for destructive production actions.
+    const typed = window.prompt(
+      `Deleting ${name} deletes every workload, config and claim inside it.
+
+Type the namespace name to confirm:`,
+    );
+    if (typed === null) return;
+    if (typed.trim() !== name) {
+      notify('Confirmation did not match', 'The namespace name was not typed exactly, so nothing was deleted.', 'bad');
+      return;
+    }
+    setBusy(name);
+    try {
+      await onDelete(name);
+      notify('Deletion requested', `${name} is now Terminating; its resources are being torn down.`, 'good');
+    } catch (cause) {
+      notify('The namespace was not deleted', String(cause), 'bad');
+    } finally {
+      setBusy('');
+    }
+  };
+
+  const release = async (name: string) => {
+    setBusy(name);
+    try {
+      notify('Finalizers cleared', await onForceFinalize(name), 'good');
+    } catch (cause) {
+      notify('The namespace is still held', String(cause), 'bad');
+    } finally {
+      setBusy('');
+    }
+  };
 
   if (error && !data) {
     return (
@@ -80,6 +141,21 @@ export function NamespacesPage({ data, loading, error, current, onRefresh, onSel
           Selecting a namespace here changes it for every other screen, the same as the picker in the toolbar.
         </p>
         <div className="ns-toolbar-right">
+          {canManage && (
+            <span className="ns-create">
+              <input
+                className="wl-search"
+                value={newName}
+                onChange={(event) => setNewName(event.target.value)}
+                onKeyDown={(event) => { if (event.key === 'Enter') void create(); }}
+                placeholder="new-namespace-name"
+                aria-label="New namespace name"
+              />
+              <button type="button" className="viz-toggle" disabled={busy !== '' || newName.trim() === ''} onClick={() => void create()}>
+                <Plus size={13} aria-hidden /> Create
+              </button>
+            </span>
+          )}
           <input
             className="wl-search"
             value={filter}
@@ -95,7 +171,7 @@ export function NamespacesPage({ data, loading, error, current, onRefresh, onSel
 
       <table className="viz-table">
         <thead>
-          <tr><th>Namespace</th><th>State</th><th>Pods</th><th>Quota</th><th>Labels</th><th>Age</th></tr>
+          <tr><th>Namespace</th><th>State</th><th>Pods</th><th>Quota</th><th>Labels</th><th>Age</th>{canManage && <th aria-label="Actions" />}</tr>
         </thead>
         <tbody>
           {items.map((entry) => (
@@ -125,9 +201,36 @@ export function NamespacesPage({ data, loading, error, current, onRefresh, onSel
                 ))}
               </td>
               <td>{entry.age}</td>
+              {canManage && (
+                <td className="ns-actions" onClick={(event) => event.stopPropagation()}>
+                  {entry.phase === 'Active' ? (
+                    <button
+                      type="button"
+                      className="viz-toggle viz-danger"
+                      disabled={busy !== ''}
+                      title={`Delete ${entry.name} and everything inside it`}
+                      onClick={() => void remove(entry.name)}
+                    >
+                      <Trash2 size={13} aria-hidden /> Delete
+                    </button>
+                  ) : entry.finalizers.length > 0 ? (
+                    <button
+                      type="button"
+                      className="viz-toggle viz-danger"
+                      disabled={busy !== ''}
+                      title={`Stuck on: ${entry.finalizers.join(', ')}. Clearing finalizers skips whatever cleanup their owner never ran.`}
+                      onClick={() => void release(entry.name)}
+                    >
+                      <Unlock size={13} aria-hidden /> Force finalize
+                    </button>
+                  ) : (
+                    <span className="viz-dim">terminating…</span>
+                  )}
+                </td>
+              )}
             </tr>
           ))}
-          {items.length === 0 && <tr><td colSpan={6} className="viz-empty">No namespace matches.</td></tr>}
+          {items.length === 0 && <tr><td colSpan={canManage ? 7 : 6} className="viz-empty">No namespace matches.</td></tr>}
         </tbody>
       </table>
     </div>

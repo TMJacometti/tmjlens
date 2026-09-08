@@ -48,6 +48,57 @@ fn interesting_labels(namespace: &Namespace) -> Vec<String> {
         .collect()
 }
 
+/// The namespace controller's condition messages list their subjects after a
+/// colon: "Some resources are remaining: datadogagents.datadoghq.com has 1
+/// resource instances, ...". The first word of each comma part is the token —
+/// a resource type or a finalizer name — and the counts are noise.
+pub fn first_words_after_colon(message: &str) -> Vec<String> {
+    message
+        .split_once(':')
+        .map(|(_, rest)| rest)
+        .unwrap_or("")
+        .split(',')
+        .filter_map(|part| part.split_whitespace().next())
+        .map(str::to_string)
+        .collect()
+}
+
+/// What a Terminating namespace is actually waiting on, read from its
+/// deletion conditions. The namespace's own finalizer list misses the common
+/// case: a resource INSIDE it carrying a finalizer whose operator is gone —
+/// the Datadog pattern — which only the conditions report.
+pub fn blockers_from_conditions(
+    conditions: &[k8s_openapi::api::core::v1::NamespaceCondition],
+) -> Vec<String> {
+    let mut blockers = Vec::new();
+    for condition in conditions {
+        if condition.status != "True" {
+            continue;
+        }
+        let message = condition.message.as_deref().unwrap_or("");
+        match condition.type_.as_str() {
+            "NamespaceFinalizersRemaining" => blockers.extend(
+                first_words_after_colon(message)
+                    .into_iter()
+                    .map(|finalizer| format!("{finalizer} (on a resource inside)")),
+            ),
+            "NamespaceContentRemaining" => blockers.extend(
+                first_words_after_colon(message)
+                    .into_iter()
+                    .map(|resource| format!("{resource} still inside")),
+            ),
+            "NamespaceDeletionDiscoveryFailure"
+            | "NamespaceDeletionContentFailure"
+            | "NamespaceDeletionGroupVersionParsingFailure" => {
+                blockers.push(if message.is_empty() { condition.type_.clone() } else { message.to_string() });
+            }
+            _ => {}
+        }
+    }
+    blockers.dedup();
+    blockers
+}
+
 /// A namespace stuck Terminating is the one namespace problem people actually hit, and
 /// the reason is always a finalizer that nothing is clearing. Naming it turns a hung
 /// delete into something actionable.
@@ -142,6 +193,11 @@ pub async fn overview(client: Client) -> Result<NamespaceOverview, String> {
             finalizers.extend(namespace.metadata.finalizers.clone().unwrap_or_default());
             // "kubernetes" is on every namespace and means nothing is wrong.
             finalizers.retain(|entry| entry != "kubernetes");
+            // The real blockers usually live INSIDE the namespace and only
+            // the deletion conditions name them.
+            if let Some(conditions) = namespace.status.as_ref().and_then(|status| status.conditions.as_ref()) {
+                finalizers.extend(blockers_from_conditions(conditions));
+            }
 
             let (health, reason) = health_of(&phase, &finalizers, &age);
             let (pods, pods_not_running) = pod_counts.get(&name).copied().unwrap_or((0, 0));
@@ -173,6 +229,53 @@ pub async fn overview(client: Client) -> Result<NamespaceOverview, String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn condition(kind: &str, status: &str, message: &str) -> k8s_openapi::api::core::v1::NamespaceCondition {
+        k8s_openapi::api::core::v1::NamespaceCondition {
+            type_: kind.to_string(),
+            status: status.to_string(),
+            message: Some(message.to_string()),
+            reason: None,
+            last_transition_time: None,
+        }
+    }
+
+    #[test]
+    fn the_datadog_pattern_is_read_from_the_deletion_conditions() {
+        // Verbatim from a real cluster: a DatadogAgent CR inside the namespace
+        // carries a finalizer whose operator was uninstalled 233 days ago.
+        let conditions = vec![
+            condition("NamespaceDeletionDiscoveryFailure", "False", "All resources successfully discovered"),
+            condition("NamespaceContentRemaining", "True", "Some resources are remaining: datadogagents.datadoghq.com has 1 resource instances"),
+            condition("NamespaceFinalizersRemaining", "True", "Some content in the namespace has finalizers remaining: finalizer.agent.datadoghq.com in 1 resource instances"),
+        ];
+        let blockers = blockers_from_conditions(&conditions);
+        assert!(blockers.iter().any(|entry| entry.contains("finalizer.agent.datadoghq.com")), "{blockers:?}");
+        assert!(blockers.iter().any(|entry| entry.contains("datadogagents.datadoghq.com")), "{blockers:?}");
+        // False conditions must contribute nothing.
+        assert!(!blockers.iter().any(|entry| entry.contains("discovered")), "{blockers:?}");
+    }
+
+    #[test]
+    fn a_broken_api_service_is_reported_in_the_controllers_own_words() {
+        let conditions = vec![condition(
+            "NamespaceDeletionDiscoveryFailure",
+            "True",
+            "Discovery failed for some groups, 1 failing: unable to retrieve the complete list of server APIs: external.metrics.k8s.io/v1beta1: the server is currently unable to handle the request",
+        )];
+        let blockers = blockers_from_conditions(&conditions);
+        assert_eq!(blockers.len(), 1);
+        assert!(blockers[0].contains("external.metrics.k8s.io"));
+    }
+
+    #[test]
+    fn condition_messages_lose_their_counts_but_keep_their_subjects() {
+        let tokens = first_words_after_colon(
+            "Some resources are remaining: datadogagents.datadoghq.com has 1 resource instances, pods has 2 resource instances",
+        );
+        assert_eq!(tokens, ["datadogagents.datadoghq.com", "pods"]);
+        assert!(first_words_after_colon("no colon here").is_empty());
+    }
 
     #[test]
     fn an_active_namespace_needs_no_explanation() {

@@ -12,6 +12,8 @@ type Props = {
   canDelete: boolean;
   /** Whether this identity may patch the given kind, checked per resource. */
   canPatch: (kind: string) => boolean;
+  /** Scale is a separate grant from rollout-restart. Defaults to canPatch. */
+  canScale?: (kind: string) => boolean;
   onSelect: (row: WorkloadRow) => void;
   onEditYaml: (row: WorkloadRow) => void;
   onDelete: (row: WorkloadRow) => void;
@@ -27,6 +29,7 @@ export function WorkloadInventoryTable({
   selected,
   canDelete,
   canPatch,
+  canScale = canPatch,
   onSelect,
   onEditYaml,
   onDelete,
@@ -193,7 +196,7 @@ export function WorkloadInventoryTable({
                           label={`${row.kind} actions`}
                           items={[
                             { label: 'Open details', icon: <ListTree size={14} />, onSelect: () => onSelect(row) },
-                            ...(canScaleKind(row.kind) && canPatch(row.kind)
+                            ...(canScaleKind(row.kind) && canScale(row.kind)
                               ? [{ label: 'Scale…', icon: <ChevronsUpDown size={14} />, onSelect: () => onScale(row) }]
                               : []),
                             ...(canRestartKind(row.kind) && canPatch(row.kind)

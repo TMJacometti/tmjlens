@@ -184,9 +184,14 @@ fn text(value: &serde_json::Value, pointer: &str) -> String {
     value.pointer(pointer).and_then(serde_json::Value::as_str).unwrap_or_default().to_string()
 }
 
-/// Reads every release in the cluster, one API call.
-pub async fn overview(client: Client) -> Result<HelmOverview, String> {
-    let api: Api<Secret> = Api::all(client);
+/// Reads releases in one API call — scoped to a namespace when one is given,
+/// because listing every release Secret cluster-wide is what made the screen
+/// slow on large clusters.
+pub async fn overview(client: Client, namespace: Option<&str>) -> Result<HelmOverview, String> {
+    let api: Api<Secret> = match namespace {
+        Some(namespace) => Api::namespaced(client, namespace),
+        None => Api::all(client),
+    };
     // The owner label is how Helm itself finds its releases.
     let params = ListParams::default().labels("owner=helm");
     let list = api

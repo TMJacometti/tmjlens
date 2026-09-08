@@ -1,37 +1,31 @@
-#![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
-
 mod argo;
+mod auth;
 mod cluster;
 mod configuration;
-mod exec;
+mod db;
 mod graph;
 mod helm;
 mod insights;
-mod logs;
 mod metrics;
 mod namespaces;
 mod network;
-mod portforward;
 mod search;
 mod reports;
 mod settings;
 mod storage;
-mod streams;
 mod errors;
 mod velero;
-mod watch;
+mod web;
 mod workload_list;
 mod workloads;
 
 use kube::{
-    api::{DeleteParams, ListParams, LogParams, Patch, PatchParams},
-    config::{Config, KubeConfigOptions},
+    api::{DeleteParams, ListParams, LogParams, Patch, PatchParams, PostParams},
     Api, Client,
 };
 use k8s_openapi::api::{
     apps::v1::{DaemonSet, Deployment, ReplicaSet, StatefulSet},
     batch::v1::{CronJob, Job},
-    authorization::v1::{ResourceAttributes, SelfSubjectAccessReview, SelfSubjectAccessReviewSpec},
     core::v1::{Event, Namespace, Node, Pod, Service},
     networking::v1::Ingress,
 };
@@ -40,19 +34,6 @@ use serde_json::json;
 use std::{collections::HashMap, process::Command, sync::{Mutex, OnceLock}};
 
 static CLIENT_CACHE: OnceLock<Mutex<HashMap<String, Client>>> = OnceLock::new();
-
-#[derive(Serialize, Clone)]
-struct ContextInfo {
-    name: String,
-    namespace: Option<String>,
-}
-
-#[derive(Serialize, Clone)]
-struct KubeContext {
-    name: String,
-    current: bool,
-    namespace: Option<String>,
-}
 
 #[derive(Serialize, Clone)]
 struct EventInfo {
@@ -142,15 +123,6 @@ pub(crate) fn format_age(created_at: chrono::DateTime<chrono::Utc>) -> String {
     }
 }
 
-fn namespace_for_context(config: &kube::config::Kubeconfig, name: &str) -> Option<String> {
-    config
-        .contexts
-        .iter()
-        .find(|ctx| ctx.name == name)
-        .and_then(|ctx| ctx.context.clone())
-        .and_then(|context| context.namespace)
-}
-
 /// `force` is only valid on server-side apply. The API server rejects it on a merge
 /// patch with HTTP 400, so merge patches carry the field manager and nothing else.
 fn merge_patch_params() -> PatchParams {
@@ -160,60 +132,25 @@ fn merge_patch_params() -> PatchParams {
     }
 }
 
-async fn client_for_context(context: &str) -> Result<Client, String> {
+/// The desktop build resolves a kubeconfig context by name. The web build runs
+/// inside the cluster it serves, so every caller gets the same client — the
+/// pod's ServiceAccount (or, on a dev machine, kube's fallback to the local
+/// kubeconfig's current context). The context name the frontend still sends is
+/// deliberately ignored.
+async fn client_for_context(_context: &str) -> Result<Client, String> {
     let cache = CLIENT_CACHE.get_or_init(|| Mutex::new(HashMap::new()));
-    if let Some(client) = cache.lock().map_err(|e| errors::humanize(&e.to_string()))?.get(context).cloned() {
+    if let Some(client) = cache.lock().ok().and_then(|c| c.get("in-cluster").cloned()) {
         return Ok(client);
     }
-
-    let options = KubeConfigOptions {
-        context: Some(context.to_string()),
-        ..Default::default()
-    };
-    let config = Config::from_kubeconfig(&options)
+    let client = Client::try_default()
         .await
-        .map_err(|error| format!("Unable to load kubeconfig context '{context}': {error}"))?;
-
-    let client = Client::try_from(config).map_err(|error| errors::humanize(&error.to_string()))?;
-    cache.lock().map_err(|e| errors::humanize(&e.to_string()))?.insert(context.to_string(), client.clone());
+        .map_err(|e| errors::humanize(&e.to_string()))?;
+    if let Ok(mut cache) = cache.lock() {
+        cache.insert("in-cluster".to_string(), client.clone());
+    }
     Ok(client)
 }
 
-#[tauri::command]
-async fn current_context() -> Result<ContextInfo, String> {
-    let kubeconfig = kube::config::Kubeconfig::read().map_err(|e| errors::humanize(&e.to_string()))?;
-    let current = kubeconfig
-        .current_context
-        .clone()
-        .unwrap_or_else(|| "default".to_string());
-
-    Ok(ContextInfo {
-        name: current.clone(),
-        namespace: namespace_for_context(&kubeconfig, &current),
-    })
-}
-
-#[tauri::command]
-async fn list_kube_contexts() -> Result<Vec<KubeContext>, String> {
-    let kubeconfig = kube::config::Kubeconfig::read().map_err(|e| errors::humanize(&e.to_string()))?;
-    let current = kubeconfig.current_context.clone();
-
-    Ok(kubeconfig
-        .contexts
-        .into_iter()
-        .map(|ctx| {
-            let ctx_name = ctx.name.clone();
-            let namespace = ctx.context.clone().and_then(|context| context.namespace);
-            KubeContext {
-                name: ctx_name.clone(),
-                current: current.as_deref() == Some(ctx_name.as_str()),
-                namespace,
-            }
-        })
-        .collect())
-}
-
-#[tauri::command]
 async fn list_namespaces(context: String) -> Result<Vec<String>, String> {
     let client = client_for_context(&context).await?;
     let api: Api<Namespace> = Api::all(client);
@@ -226,7 +163,6 @@ async fn list_namespaces(context: String) -> Result<Vec<String>, String> {
         .collect())
 }
 
-#[tauri::command]
 async fn list_pods(context: String, namespace: String) -> Result<Vec<PodInfo>, String> {
     let client = client_for_context(&context).await?;
     let api: Api<Pod> = Api::namespaced(client, &namespace);
@@ -234,7 +170,6 @@ async fn list_pods(context: String, namespace: String) -> Result<Vec<PodInfo>, S
     Ok(pods.items.into_iter().filter_map(pod_row).collect())
 }
 
-#[tauri::command]
 async fn list_pod_containers(
     context: String,
     namespace: String,
@@ -258,7 +193,6 @@ async fn list_pod_containers(
     Ok(containers)
 }
 
-#[tauri::command]
 async fn get_pod_logs(
     context: String,
     namespace: String,
@@ -286,147 +220,6 @@ async fn get_pod_logs(
     }
 }
 
-fn config_dir(app: &tauri::AppHandle) -> Result<std::path::PathBuf, String> {
-    use tauri::Manager;
-    app.path()
-        .app_config_dir()
-        .map_err(|error| format!("Unable to locate the configuration folder: {error}"))
-}
-
-#[tauri::command]
-async fn load_settings(app: tauri::AppHandle) -> Result<settings::AppSettings, String> {
-    let directory = config_dir(&app)?;
-    tokio::task::spawn_blocking(move || settings::load(&directory))
-        .await
-        .map_err(|error| format!("Settings task failed: {error}"))
-}
-
-#[tauri::command]
-async fn save_settings(app: tauri::AppHandle, settings: settings::AppSettings) -> Result<(), String> {
-    let directory = config_dir(&app)?;
-    tokio::task::spawn_blocking(move || settings::save(&directory, &settings))
-        .await
-        .map_err(|error| format!("Settings task failed: {error}"))?
-}
-
-#[tauri::command]
-async fn read_kubeconfig(app: tauri::AppHandle) -> Result<settings::KubeconfigView, String> {
-    let directory = config_dir(&app)?;
-    tokio::task::spawn_blocking(move || settings::read_view(&settings::load(&directory)))
-        .await
-        .map_err(|error| format!("Kubeconfig task failed: {error}"))?
-}
-
-/// Changing the current context rewrites the file kubectl also reads, so the client
-/// cache is dropped afterwards to avoid serving connections built from the old state.
-#[tauri::command]
-async fn set_current_context(name: String) -> Result<(), String> {
-    tokio::task::spawn_blocking(move || settings::set_current_context(&name))
-        .await
-        .map_err(|error| format!("Kubeconfig task failed: {error}"))??;
-    clear_client_cache();
-    Ok(())
-}
-
-#[tauri::command]
-async fn set_context_namespace(context: String, namespace: Option<String>) -> Result<(), String> {
-    tokio::task::spawn_blocking(move || settings::set_context_namespace(&context, namespace))
-        .await
-        .map_err(|error| format!("Kubeconfig task failed: {error}"))??;
-    clear_client_cache();
-    Ok(())
-}
-
-fn clear_client_cache() {
-    if let Some(cache) = CLIENT_CACHE.get() {
-        if let Ok(mut cache) = cache.lock() {
-            cache.clear();
-        }
-    }
-}
-
-/// Strips any directory component, so a caller can never escape the target folder.
-fn safe_file_stem(name: &str) -> String {
-    let stem = std::path::Path::new(name)
-        .file_name()
-        .and_then(|name| name.to_str())
-        .unwrap_or("")
-        .trim()
-        .trim_matches('.');
-    if stem.is_empty() { "logs".to_string() } else { stem.to_string() }
-}
-
-/// Writes a text file into the user's Downloads folder and returns the full path.
-///
-/// The frontend has no filesystem permission at all: it passes a file name, never a
-/// path, and this command decides where that lands. The timestamp means exporting
-/// the same pod twice never silently overwrites the earlier capture.
-#[tauri::command]
-async fn save_to_downloads(
-    app: tauri::AppHandle,
-    file_name: String,
-    contents: String,
-    // Without a dot. Constrained to a short alphanumeric word so the caller cannot
-    // steer the write to an arbitrary path or an executable suffix.
-    extension: Option<String>,
-) -> Result<String, String> {
-    use tauri::Manager;
-
-    let directory = app
-        .path()
-        .download_dir()
-        .map_err(|error| format!("Unable to locate the Downloads folder: {error}"))?;
-    let stamp = chrono::Local::now().format("%Y%m%d-%H%M%S");
-    let suffix = extension
-        .filter(|value| !value.is_empty() && value.len() <= 5 && value.chars().all(|c| c.is_ascii_alphanumeric()))
-        .unwrap_or_else(|| "log".to_string());
-    let target = directory.join(format!("{}-{stamp}.{suffix}", safe_file_stem(&file_name)));
-
-    tokio::task::spawn_blocking(move || {
-        if let Some(parent) = target.parent() {
-            std::fs::create_dir_all(parent).map_err(|error| format!("Unable to create {}: {error}", parent.display()))?;
-        }
-        std::fs::write(&target, contents).map_err(|error| format!("Unable to write {}: {error}", target.display()))?;
-        Ok(target.to_string_lossy().to_string())
-    })
-    .await
-    .map_err(|error| format!("Write task failed: {error}"))?
-}
-
-/// Writes a binary file into Downloads. The payload arrives base64-encoded because
-/// a raw byte array crosses the IPC boundary as JSON numbers, roughly quadrupling a
-/// document that is already hundreds of kilobytes.
-#[tauri::command]
-async fn save_bytes_to_downloads(
-    app: tauri::AppHandle,
-    file_name: String,
-    extension: String,
-    base64_contents: String,
-) -> Result<String, String> {
-    use base64::Engine;
-    use tauri::Manager;
-
-    let bytes = base64::engine::general_purpose::STANDARD
-        .decode(base64_contents.as_bytes())
-        .map_err(|error| format!("The document could not be decoded: {error}"))?;
-    let directory = app
-        .path()
-        .download_dir()
-        .map_err(|error| format!("Unable to locate the Downloads folder: {error}"))?;
-    let extension = safe_file_stem(&extension);
-    let target = directory.join(format!("{}.{extension}", safe_file_stem(&file_name)));
-
-    tokio::task::spawn_blocking(move || {
-        std::fs::create_dir_all(&directory)
-            .map_err(|error| format!("Unable to create {}: {error}", directory.display()))?;
-        std::fs::write(&target, bytes).map_err(|error| format!("Unable to write {}: {error}", target.display()))?;
-        Ok(target.to_string_lossy().to_string())
-    })
-    .await
-    .map_err(|error| format!("Write task failed: {error}"))?
-}
-
-#[tauri::command]
 async fn get_deployment_detail(
     context: String,
     namespace: String,
@@ -437,7 +230,6 @@ async fn get_deployment_detail(
 }
 
 /// Returns the Deployment exactly as the API server holds it, for export.
-#[tauri::command]
 async fn export_deployment_yaml(
     context: String,
     namespace: String,
@@ -449,7 +241,6 @@ async fn export_deployment_yaml(
 
 /// Deleting a controller through one command rather than one per kind. Foreground
 /// propagation is the default so the pods go with it, which is what the operator means.
-#[tauri::command]
 async fn delete_workload(
     context: String,
     namespace: String,
@@ -478,90 +269,6 @@ async fn delete_workload(
     Ok(())
 }
 
-/// Opens a shell. The command is chosen here rather than typed by the operator: a free
-/// command box would be a generic remote-execution field, which the spec lists as a
-/// non-goal. Interactive shells only, and only where `pods/exec` is granted.
-#[tauri::command]
-async fn start_exec_session(
-    app: tauri::AppHandle,
-    context: String,
-    namespace: String,
-    pod_name: String,
-    container: Option<String>,
-    shell: Option<String>,
-    session_id: String,
-) -> Result<(), String> {
-    let client = client_for_context(&context).await?;
-    let chosen = shell.unwrap_or_else(|| exec::SHELL_CANDIDATES[1].to_string());
-    if !exec::SHELL_CANDIDATES.contains(&chosen.as_str()) {
-        return Err(format!("{chosen} is not one of the shells this app will start."));
-    }
-    exec::start(app, client, namespace, pod_name, container, vec![chosen], session_id).await
-}
-
-#[tauri::command]
-async fn write_exec_session(session_id: String, data: String) -> Result<(), String> {
-    exec::write(&session_id, &data)
-}
-
-#[tauri::command]
-async fn stop_exec_session(session_id: String) -> Result<(), String> {
-    exec::stop(&session_id);
-    Ok(())
-}
-
-#[tauri::command]
-async fn list_pod_ports(
-    context: String,
-    namespace: String,
-    pod_name: String,
-) -> Result<Vec<portforward::PodPort>, String> {
-    let client = client_for_context(&context).await?;
-    portforward::pod_ports(client, &namespace, &pod_name).await
-}
-
-#[tauri::command]
-#[allow(clippy::too_many_arguments)]
-async fn start_port_forward(
-    app: tauri::AppHandle,
-    context: String,
-    namespace: String,
-    pod_name: String,
-    remote_port: u16,
-    local_port: Option<u16>,
-    forward_id: String,
-) -> Result<portforward::ActiveForward, String> {
-    let client = client_for_context(&context).await?;
-    portforward::start(
-        app,
-        client,
-        namespace,
-        pod_name,
-        remote_port,
-        local_port.unwrap_or(0),
-        forward_id,
-    )
-    .await
-}
-
-#[tauri::command]
-async fn stop_port_forward(forward_id: String) -> Result<(), String> {
-    portforward::stop(&forward_id);
-    Ok(())
-}
-
-/// Opens a forward this app owns in the system browser, by id. Never takes a URL.
-#[tauri::command]
-async fn open_forward_in_browser(forward_id: String) -> Result<String, String> {
-    portforward::open_in_browser(&forward_id).await
-}
-
-#[tauri::command]
-async fn list_port_forwards() -> Result<Vec<portforward::ActiveForward>, String> {
-    Ok(portforward::list())
-}
-
-#[tauri::command]
 async fn get_relation_graph(
     context: String,
     namespace: String,
@@ -571,7 +278,6 @@ async fn get_relation_graph(
     graph::for_deployment(client, &namespace, &deployment_name).await
 }
 
-#[tauri::command]
 async fn get_configuration(
     context: String,
     namespace: String,
@@ -581,7 +287,6 @@ async fn get_configuration(
 }
 
 /// One key, asked for explicitly. The list never carries values.
-#[tauri::command]
 async fn reveal_secret_key(
     context: String,
     namespace: String,
@@ -592,7 +297,6 @@ async fn reveal_secret_key(
     configuration::reveal_secret_key(client, &namespace, &name, &key).await
 }
 
-#[tauri::command]
 async fn read_config_map_key(
     context: String,
     namespace: String,
@@ -603,7 +307,6 @@ async fn read_config_map_key(
     configuration::read_config_map_key(client, &namespace, &name, &key).await
 }
 
-#[tauri::command]
 async fn write_secret_key(
     context: String,
     namespace: String,
@@ -615,7 +318,6 @@ async fn write_secret_key(
     configuration::write_secret_key(client, &namespace, &name, &key, &value).await
 }
 
-#[tauri::command]
 async fn write_config_map_key(
     context: String,
     namespace: String,
@@ -627,7 +329,6 @@ async fn write_config_map_key(
     configuration::write_config_map_key(client, &namespace, &name, &key, &value).await
 }
 
-#[tauri::command]
 async fn delete_configuration_key(
     context: String,
     namespace: String,
@@ -640,7 +341,6 @@ async fn delete_configuration_key(
 }
 
 /// Nothing is read until the caller names the namespaces it wants.
-#[tauri::command]
 async fn get_deploy_report(
     context: String,
     namespaces: Vec<String>,
@@ -650,37 +350,25 @@ async fn get_deploy_report(
     reports::deployed(client, namespaces, &window).await
 }
 
-#[tauri::command]
 fn list_report_kinds() -> Vec<insights::ReportKind> {
     insights::catalogue()
 }
 
-#[tauri::command]
 async fn run_report(
     context: String,
     report: String,
     namespaces: Vec<String>,
     window: String,
-    compare_context: Option<String>,
 ) -> Result<insights::ReportResult, String> {
     let client = client_for_context(&context).await?;
-    let other = match compare_context {
-        Some(name) if name != context => {
-            let other_client = client_for_context(&name).await?;
-            Some((other_client, context.clone(), name))
-        }
-        _ => None,
-    };
-    insights::run(client, other, &report, namespaces, &window).await
+    insights::run(client, &report, namespaces, &window).await
 }
 
-#[tauri::command]
 async fn get_namespace_overview(context: String) -> Result<namespaces::NamespaceOverview, String> {
     let client = client_for_context(&context).await?;
     namespaces::overview(client).await
 }
 
-#[tauri::command]
 async fn get_storage_overview(
     context: String,
     namespace: String,
@@ -689,13 +377,11 @@ async fn get_storage_overview(
     storage::overview(client, &namespace).await
 }
 
-#[tauri::command]
 async fn get_argo_overview(context: String) -> Result<argo::ArgoOverview, String> {
     let client = client_for_context(&context).await?;
     argo::overview(client).await
 }
 
-#[tauri::command]
 #[allow(clippy::too_many_arguments)]
 async fn set_argo_image(
     context: String,
@@ -711,7 +397,6 @@ async fn set_argo_image(
     argo::set_image(client, &kind, &namespace, &name, &template, &container, &expected, &image).await
 }
 
-#[tauri::command]
 #[allow(clippy::too_many_arguments)]
 async fn set_argo_resources(
     context: String,
@@ -727,7 +412,6 @@ async fn set_argo_resources(
     argo::set_resources(client, &kind, &namespace, &name, &template, &container, &expected, &resources).await
 }
 
-#[tauri::command]
 async fn set_argo_schedule(
     context: String,
     namespace: String,
@@ -739,7 +423,6 @@ async fn set_argo_schedule(
     argo::set_schedule(client, &namespace, &name, &expected, &schedule).await
 }
 
-#[tauri::command]
 async fn set_argo_cron_suspend(
     context: String,
     namespace: String,
@@ -750,7 +433,6 @@ async fn set_argo_cron_suspend(
     argo::set_cron_suspend(client, &namespace, &name, suspend).await
 }
 
-#[tauri::command]
 async fn submit_argo_template(
     context: String,
     namespace: String,
@@ -760,19 +442,16 @@ async fn submit_argo_template(
     argo::submit_from_template(client, &namespace, &name).await
 }
 
-#[tauri::command]
 async fn stop_argo_workflow(context: String, namespace: String, name: String) -> Result<(), String> {
     let client = client_for_context(&context).await?;
     argo::stop_workflow(client, &namespace, &name).await
 }
 
-#[tauri::command]
 async fn delete_argo_workflow(context: String, namespace: String, name: String) -> Result<(), String> {
     let client = client_for_context(&context).await?;
     argo::delete_workflow(client, &namespace, &name).await
 }
 
-#[tauri::command]
 async fn get_pod_metrics(
     context: String,
     namespace: String,
@@ -781,13 +460,11 @@ async fn get_pod_metrics(
     metrics::pod_metrics(client, &namespace).await
 }
 
-#[tauri::command]
-async fn get_helm_overview(context: String) -> Result<helm::HelmOverview, String> {
+async fn get_helm_overview(context: String, namespace: Option<String>) -> Result<helm::HelmOverview, String> {
     let client = client_for_context(&context).await?;
-    helm::overview(client).await
+    helm::overview(client, namespace.as_deref()).await
 }
 
-#[tauri::command]
 async fn get_helm_release(
     context: String,
     namespace: String,
@@ -797,7 +474,6 @@ async fn get_helm_release(
     helm::detail(client, &namespace, &name).await
 }
 
-#[tauri::command]
 async fn uninstall_helm_release(
     context: String,
     namespace: String,
@@ -806,7 +482,6 @@ async fn uninstall_helm_release(
     helm::uninstall(&context, &namespace, &name).await
 }
 
-#[tauri::command]
 async fn rollback_helm_release(
     context: String,
     namespace: String,
@@ -816,7 +491,6 @@ async fn rollback_helm_release(
     helm::rollback(&context, &namespace, &name, revision).await
 }
 
-#[tauri::command]
 async fn get_velero_status(
     context: String,
     velero_namespace: Option<String>,
@@ -825,7 +499,6 @@ async fn get_velero_status(
     velero::status(client, velero_namespace).await
 }
 
-#[tauri::command]
 #[allow(clippy::too_many_arguments)]
 async fn create_velero_backup(
     context: String,
@@ -849,7 +522,6 @@ async fn create_velero_backup(
     .await
 }
 
-#[tauri::command]
 async fn create_velero_restore(
     context: String,
     velero_namespace: String,
@@ -861,76 +533,21 @@ async fn create_velero_restore(
     velero::create_restore(client, &velero_namespace, &name, &backup_name, included_namespaces).await
 }
 
-#[tauri::command]
 async fn search_cluster(context: String, query: String) -> Result<search::SearchResults, String> {
     let client = client_for_context(&context).await?;
     search::search(client, &query).await
 }
 
-#[tauri::command]
 async fn list_workloads(context: String, namespace: String) -> Result<workload_list::WorkloadInventory, String> {
     let client = client_for_context(&context).await?;
     workload_list::collect(client, &namespace).await
 }
 
-#[tauri::command]
 async fn get_network_overview(context: String, namespace: String) -> Result<network::NetworkOverview, String> {
     let client = client_for_context(&context).await?;
     network::collect(client, &namespace).await
 }
 
-#[tauri::command]
-#[allow(clippy::too_many_arguments)]
-async fn start_log_stream(
-    app: tauri::AppHandle,
-    context: String,
-    namespace: String,
-    pod_name: String,
-    container: Option<String>,
-    tail_lines: Option<i64>,
-    timestamps: Option<bool>,
-    previous: Option<bool>,
-    stream_id: String,
-) -> Result<(), String> {
-    let client = client_for_context(&context).await?;
-    logs::start(
-        app,
-        client,
-        namespace,
-        pod_name,
-        container,
-        tail_lines,
-        timestamps.unwrap_or(false),
-        previous.unwrap_or(false),
-        stream_id,
-    )
-    .await
-}
-
-#[tauri::command]
-async fn start_pod_watch(
-    app: tauri::AppHandle,
-    context: String,
-    namespace: String,
-    watch_id: String,
-) -> Result<(), String> {
-    let client = client_for_context(&context).await?;
-    watch::start_pods(app, client, namespace, watch_id).await
-}
-
-#[tauri::command]
-async fn stop_pod_watch(watch_id: String) -> Result<(), String> {
-    watch::stop(&watch_id);
-    Ok(())
-}
-
-#[tauri::command]
-async fn stop_log_stream(stream_id: String) -> Result<(), String> {
-    logs::stop(&stream_id);
-    Ok(())
-}
-
-#[tauri::command]
 async fn delete_pod(context: String, namespace: String, pod_name: String) -> Result<(), String> {
     let client = client_for_context(&context).await?;
     let api: Api<Pod> = Api::namespaced(client, &namespace);
@@ -938,7 +555,6 @@ async fn delete_pod(context: String, namespace: String, pod_name: String) -> Res
     Ok(())
 }
 
-#[tauri::command]
 async fn get_resource_yaml(
     context: String,
     namespace: String,
@@ -989,7 +605,6 @@ async fn get_resource_yaml(
     yaml.map_err(|e| errors::humanize(&e.to_string()))
 }
 
-#[tauri::command]
 /// Saves an edited document back with `replace`, not server-side apply.
 ///
 /// Server-side apply would make tmjLens the field manager of every field in the
@@ -1026,7 +641,6 @@ where
     serde_yaml::to_string(&updated).map_err(|error| errors::humanize(&error.to_string()))
 }
 
-#[tauri::command]
 async fn apply_resource_yaml(
     context: String,
     namespace: String,
@@ -1062,39 +676,6 @@ async fn apply_resource_yaml(
     }
 }
 
-#[tauri::command]
-async fn check_permission(
-    context: String,
-    namespace: String,
-    verb: String,
-    resource: String,
-    subresource: Option<String>,
-    // Empty means the core API group, which is what every built-in resource the app
-    // checks lives in. Custom resources such as Velero's must name their group.
-    group: Option<String>,
-) -> Result<bool, String> {
-    let client = client_for_context(&context).await?;
-    let api: Api<SelfSubjectAccessReview> = Api::all(client);
-    let review = SelfSubjectAccessReview {
-        spec: SelfSubjectAccessReviewSpec {
-            resource_attributes: Some(ResourceAttributes {
-                namespace: Some(namespace),
-                resource: Some(resource),
-                subresource,
-                verb: Some(verb),
-                group,
-                version: Some("v1".to_string()),
-                ..Default::default()
-            }),
-            ..Default::default()
-        },
-        ..Default::default()
-    };
-    let result = api.create(&kube::api::PostParams::default(), &review).await.map_err(|e| errors::humanize(&e.to_string()))?;
-    Ok(result.status.map(|status| status.allowed).unwrap_or(false))
-}
-
-#[tauri::command]
 async fn list_deployments(context: String, namespace: String) -> Result<Vec<DeploymentInfo>, String> {
     let client = client_for_context(&context).await?;
     let api: Api<Deployment> = Api::namespaced(client, &namespace);
@@ -1114,7 +695,6 @@ async fn list_deployments(context: String, namespace: String) -> Result<Vec<Depl
     }).collect())
 }
 
-#[tauri::command]
 async fn list_namespace_snapshot(context: String, namespace: String) -> Result<NamespaceSnapshot, String> {
     let client = client_for_context(&context).await?;
     let pods_api: Api<Pod> = Api::namespaced(client.clone(), &namespace);
@@ -1157,10 +737,11 @@ async fn list_namespace_snapshot(context: String, namespace: String) -> Result<N
 }
 
 
-#[tauri::command]
 async fn get_cluster_overview(context: String) -> Result<cluster::ClusterOverview, String> {
-    let options = KubeConfigOptions { context: Some(context.clone()), ..Default::default() };
-    let config = Config::from_kubeconfig(&options).await.map_err(|e| errors::humanize(&e.to_string()))?;
+    // infer() reads the same environment the client itself was built from —
+    // the ServiceAccount config in the pod, the kubeconfig on a dev machine —
+    // so the endpoint always describes the cluster actually being served.
+    let config = kube::Config::infer().await.map_err(|e| errors::humanize(&e.to_string()))?;
     let endpoint = config.cluster_url.to_string();
     let client = client_for_context(&context).await?;
     let mut overview = cluster::collect(&context, endpoint, client).await?;
@@ -1180,7 +761,6 @@ async fn get_cluster_overview(context: String) -> Result<cluster::ClusterOvervie
     Ok(overview)
 }
 
-#[tauri::command]
 async fn set_node_schedulable(context: String, node_name: String, schedulable: bool) -> Result<(), String> {
     let client = client_for_context(&context).await?;
     let api: Api<Node> = Api::all(client);
@@ -1189,7 +769,6 @@ async fn set_node_schedulable(context: String, node_name: String, schedulable: b
     Ok(())
 }
 
-#[tauri::command]
 async fn delete_node(context: String, node_name: String) -> Result<(), String> {
     let client = client_for_context(&context).await?;
     let api: Api<Node> = Api::all(client);
@@ -1197,22 +776,308 @@ async fn delete_node(context: String, node_name: String) -> Result<(), String> {
     Ok(())
 }
 
-/// `kubectl drain` blocks for minutes, so it must never run on a runtime worker thread.
-#[tauri::command]
+/// Drain without kubectl: cordon, then ask the eviction API to move every
+/// evictable pod off the node. Evictions respect PodDisruptionBudgets — a
+/// refusal is reported by name, never forced — and daemonset and mirror pods
+/// are skipped the way `kubectl drain --ignore-daemonsets` does. The call
+/// returns when every eviction is accepted, not when the pods are gone;
+/// the message says exactly that.
 async fn drain_node(context: String, node_name: String) -> Result<String, String> {
-    tokio::task::spawn_blocking(move || {
-        let output = Command::new("kubectl")
-            .args(["--context", &context, "drain", &node_name, "--ignore-daemonsets", "--delete-emptydir-data", "--force", "--grace-period=30", "--timeout=5m"])
-            .output()
-            .map_err(|e| format!("Unable to start kubectl drain: {e}"))?;
-        if output.status.success() {
-            Ok(String::from_utf8_lossy(&output.stdout).to_string())
-        } else {
-            Err(String::from_utf8_lossy(&output.stderr).to_string())
+    let client = client_for_context(&context).await?;
+
+    let nodes: Api<Node> = Api::all(client.clone());
+    let cordon = Patch::Merge(json!({ "spec": { "unschedulable": true } }));
+    nodes
+        .patch(&node_name, &merge_patch_params(), &cordon)
+        .await
+        .map_err(|e| errors::humanize(&e.to_string()))?;
+
+    let pods: Api<Pod> = Api::all(client.clone());
+    let on_node = ListParams::default().fields(&format!("spec.nodeName={node_name}"));
+    let list = pods.list(&on_node).await.map_err(|e| errors::humanize(&e.to_string()))?;
+
+    let (mut evicted, mut skipped) = (0usize, 0usize);
+    let mut refused: Vec<String> = Vec::new();
+    for pod in list.items {
+        let (Some(name), Some(namespace)) = (pod.metadata.name.clone(), pod.metadata.namespace.clone()) else {
+            continue;
+        };
+        let phase = pod.status.as_ref().and_then(|status| status.phase.as_deref()).unwrap_or("");
+        if phase == "Succeeded" || phase == "Failed" {
+            continue;
         }
-    })
-    .await
-    .map_err(|error| format!("kubectl drain task failed: {error}"))?
+        let daemonset_owned = pod
+            .metadata
+            .owner_references
+            .as_ref()
+            .is_some_and(|owners| owners.iter().any(|owner| owner.kind == "DaemonSet"));
+        let mirror = pod
+            .metadata
+            .annotations
+            .as_ref()
+            .is_some_and(|annotations| annotations.contains_key("kubernetes.io/config.mirror"));
+        if daemonset_owned || mirror {
+            skipped += 1;
+            continue;
+        }
+        let api: Api<Pod> = Api::namespaced(client.clone(), &namespace);
+        match api.evict(&name, &Default::default()).await {
+            Ok(_) => evicted += 1,
+            Err(e) => refused.push(format!("{namespace}/{name}: {}", errors::humanize(&e.to_string()))),
+        }
+    }
+
+    let mut summary = format!(
+        "{node_name} cordoned; eviction requested for {evicted} pod(s), {skipped} daemonset/mirror pod(s) stay."
+    );
+    if !refused.is_empty() {
+        summary.push_str(&format!(
+            " {} eviction(s) were refused (PodDisruptionBudgets are respected, never forced): {}",
+            refused.len(),
+            refused.join("; ")
+        ));
+    }
+    Ok(summary)
+}
+
+async fn create_namespace(context: String, name: String) -> Result<(), String> {
+    let name = name.trim().to_lowercase();
+    let valid = !name.is_empty()
+        && name.len() <= 63
+        && name.chars().all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '-')
+        && !name.starts_with('-')
+        && !name.ends_with('-');
+    if !valid {
+        return Err(format!(
+            "'{name}' is not a valid namespace name: lowercase letters, digits and dashes, \
+             up to 63 characters, starting and ending with a letter or digit"
+        ));
+    }
+    let client = client_for_context(&context).await?;
+    let api: Api<Namespace> = Api::all(client);
+    let namespace = Namespace {
+        metadata: kube::api::ObjectMeta { name: Some(name), ..Default::default() },
+        ..Default::default()
+    };
+    api.create(&PostParams::default(), &namespace)
+        .await
+        .map_err(|e| errors::humanize(&e.to_string()))?;
+    Ok(())
+}
+
+async fn delete_namespace(context: String, name: String) -> Result<(), String> {
+    let client = client_for_context(&context).await?;
+    let api: Api<Namespace> = Api::all(client);
+    api.delete(&name, &DeleteParams::default())
+        .await
+        .map_err(|e| errors::humanize(&e.to_string()))?;
+    Ok(())
+}
+
+/// The way out of a namespace stuck in Terminating. Only offered for a
+/// namespace that IS Terminating, and it cures the RIGHT thing:
+///
+/// The common case — the Datadog pattern — is a resource INSIDE the namespace
+/// carrying a finalizer whose operator was uninstalled. The namespace's
+/// deletion conditions name those resource types; this clears the finalizers
+/// on those objects, and the namespace then finishes deleting properly, with
+/// nothing orphaned in etcd. Only when nothing inside is left does it fall
+/// back to clearing the namespace's own finalizers via /finalize. Everything
+/// removed is named in the answer — that is the evidence of what was holding.
+async fn force_finalize_namespace(context: String, name: String) -> Result<String, String> {
+    let client = client_for_context(&context).await?;
+    let api: Api<Namespace> = Api::all(client.clone());
+    let mut namespace = api.get(&name).await.map_err(|e| errors::humanize(&e.to_string()))?;
+
+    let phase = namespace
+        .status
+        .as_ref()
+        .and_then(|status| status.phase.clone())
+        .unwrap_or_default();
+    if phase != "Terminating" {
+        return Err(format!(
+            "{name} is not stuck: its phase is '{phase}', and clearing finalizers on a live \
+             namespace would let its teardown skip cleanup. Delete it first."
+        ));
+    }
+
+    // 1. Resources still inside, per the deletion conditions.
+    let remaining: Vec<String> = namespace
+        .status
+        .as_ref()
+        .and_then(|status| status.conditions.as_ref())
+        .map(|conditions| {
+            conditions
+                .iter()
+                .filter(|c| c.type_ == "NamespaceContentRemaining" && c.status == "True")
+                .flat_map(|c| namespaces::first_words_after_colon(c.message.as_deref().unwrap_or("")))
+                .collect()
+        })
+        .unwrap_or_default();
+
+    let mut cleared: Vec<String> = Vec::new();
+    for token in &remaining {
+        // "datadogagents.datadoghq.com" → plural + API group; a bare word is a core type.
+        let (plural, group) = match token.split_once('.') {
+            Some((plural, group)) => (plural.to_string(), group.to_string()),
+            None => (token.clone(), String::new()),
+        };
+        let base = if group.is_empty() {
+            "/api/v1".to_string()
+        } else {
+            let request = http::Request::get(format!("/apis/{group}"))
+                .body(Vec::new())
+                .map_err(|e| e.to_string())?;
+            let info = match client.request::<serde_json::Value>(request).await {
+                Ok(info) => info,
+                // The whole group may already be gone; nothing of it can be holding.
+                Err(_) => continue,
+            };
+            let Some(gv) = info
+                .pointer("/preferredVersion/groupVersion")
+                .and_then(|value| value.as_str())
+            else {
+                continue;
+            };
+            format!("/apis/{gv}")
+        };
+
+        let request = http::Request::get(format!("{base}/namespaces/{name}/{plural}"))
+            .body(Vec::new())
+            .map_err(|e| e.to_string())?;
+        let Ok(list) = client.request::<serde_json::Value>(request).await else { continue };
+        for item in list["items"].as_array().cloned().unwrap_or_default() {
+            let Some(item_name) = item.pointer("/metadata/name").and_then(|value| value.as_str()) else {
+                continue;
+            };
+            let finalizers: Vec<String> = item
+                .pointer("/metadata/finalizers")
+                .and_then(|value| value.as_array())
+                .map(|entries| entries.iter().filter_map(|v| v.as_str().map(str::to_string)).collect())
+                .unwrap_or_default();
+            if finalizers.is_empty() {
+                continue;
+            }
+            let patch = http::Request::patch(format!("{base}/namespaces/{name}/{plural}/{item_name}"))
+                .header("Content-Type", "application/merge-patch+json")
+                .body(br#"{"metadata":{"finalizers":null}}"#.to_vec())
+                .map_err(|e| e.to_string())?;
+            client
+                .request::<serde_json::Value>(patch)
+                .await
+                .map_err(|e| errors::humanize(&e.to_string()))?;
+            cleared.push(format!("{} from {token}/{item_name}", finalizers.join(", ")));
+        }
+    }
+    if !cleared.is_empty() {
+        return Ok(format!(
+            "Cleared {} — whatever cleanup that operator would have done never ran and now never will. \
+             The namespace can finish deleting on its own.",
+            cleared.join("; ")
+        ));
+    }
+
+    // 2. Nothing inside holds it: the namespace's own finalizers, via /finalize.
+    let mut held_by: Vec<String> = namespace
+        .spec
+        .as_ref()
+        .and_then(|spec| spec.finalizers.clone())
+        .unwrap_or_default();
+    held_by.extend(namespace.metadata.finalizers.clone().unwrap_or_default());
+    held_by.retain(|entry| entry != "kubernetes");
+    if held_by.is_empty() {
+        return Err(format!(
+            "{name} has no finalizers left and nothing inside holds it — it is finishing on its own; give it a moment"
+        ));
+    }
+
+    namespace.spec = Some(k8s_openapi::api::core::v1::NamespaceSpec { finalizers: Some(Vec::new()) });
+    namespace.metadata.finalizers = None;
+    namespace.metadata.managed_fields = None;
+    let body = serde_json::to_vec(&namespace).map_err(|e| e.to_string())?;
+    let request = http::Request::put(format!("/api/v1/namespaces/{name}/finalize"))
+        .header("Content-Type", "application/json")
+        .body(body)
+        .map_err(|e| e.to_string())?;
+    client
+        .request::<serde_json::Value>(request)
+        .await
+        .map_err(|e| errors::humanize(&e.to_string()))?;
+    Ok(format!("Removed the finalizers holding {name}: {}", held_by.join(", ")))
+}
+
+/// Deleting a claim that pods still mount would take them down with it, so a
+/// mounted claim is refused with the pods named — the operator deletes or
+/// moves those first, knowingly.
+async fn delete_pvc(context: String, namespace: String, name: String) -> Result<(), String> {
+    let client = client_for_context(&context).await?;
+    let pods: Api<Pod> = Api::namespaced(client.clone(), &namespace);
+    let list = pods.list(&ListParams::default()).await.map_err(|e| errors::humanize(&e.to_string()))?;
+    let mounted_by: Vec<String> = list
+        .items
+        .iter()
+        .filter(|pod| {
+            pod.spec
+                .as_ref()
+                .and_then(|spec| spec.volumes.as_ref())
+                .is_some_and(|volumes| {
+                    volumes.iter().any(|volume| {
+                        volume
+                            .persistent_volume_claim
+                            .as_ref()
+                            .is_some_and(|claim| claim.claim_name == name)
+                    })
+                })
+        })
+        .filter_map(|pod| pod.metadata.name.clone())
+        .collect();
+    if !mounted_by.is_empty() {
+        return Err(format!(
+            "{name} is mounted by {}: {}. Delete or move those pods first.",
+            if mounted_by.len() == 1 { "a pod" } else { "pods" },
+            mounted_by.join(", ")
+        ));
+    }
+    let api: Api<k8s_openapi::api::core::v1::PersistentVolumeClaim> = Api::namespaced(client, &namespace);
+    api.delete(&name, &DeleteParams::default())
+        .await
+        .map_err(|e| errors::humanize(&e.to_string()))?;
+    Ok(())
+}
+
+/// A Bound volume is somebody's disk; only Released, Failed or Available
+/// volumes — the stranded capacity the storage report complains about — may
+/// be deleted here.
+async fn delete_pv(context: String, name: String) -> Result<(), String> {
+    let client = client_for_context(&context).await?;
+    let api: Api<k8s_openapi::api::core::v1::PersistentVolume> = Api::all(client);
+    let volume = api.get(&name).await.map_err(|e| errors::humanize(&e.to_string()))?;
+    let phase = volume
+        .status
+        .as_ref()
+        .and_then(|status| status.phase.clone())
+        .unwrap_or_default();
+    if phase == "Bound" {
+        let claim = volume
+            .spec
+            .as_ref()
+            .and_then(|spec| spec.claim_ref.as_ref())
+            .map(|claim| {
+                format!(
+                    "{}/{}",
+                    claim.namespace.clone().unwrap_or_default(),
+                    claim.name.clone().unwrap_or_default()
+                )
+            })
+            .unwrap_or_else(|| "a claim".to_string());
+        return Err(format!(
+            "{name} is Bound to {claim} — that is live storage, not leftovers. Delete the claim first."
+        ));
+    }
+    api.delete(&name, &DeleteParams::default())
+        .await
+        .map_err(|e| errors::humanize(&e.to_string()))?;
+    Ok(())
 }
 
 async fn describe_eks_cluster(
@@ -1237,7 +1102,6 @@ async fn describe_eks_cluster(
     .flatten()
 }
 
-#[tauri::command]
 async fn delete_deployment(
     context: String,
     namespace: String,
@@ -1249,7 +1113,6 @@ async fn delete_deployment(
     Ok(())
 }
 
-#[tauri::command]
 async fn scale_workload(
     context: String,
     namespace: String,
@@ -1284,7 +1147,6 @@ async fn scale_workload(
 
 /// The same annotation `kubectl rollout restart` writes, so the rollout obeys the
 /// workload's own update strategy instead of deleting pods behind its back.
-#[tauri::command]
 async fn restart_workload(
     context: String,
     namespace: String,
@@ -1321,7 +1183,6 @@ async fn restart_workload(
     Ok(())
 }
 
-#[tauri::command]
 async fn list_events(context: String, namespace: String) -> Result<Vec<EventInfo>, String> {
     let client = client_for_context(&context).await?;
     let api: Api<Event> = Api::namespaced(client, &namespace);
@@ -1349,141 +1210,18 @@ async fn list_events(context: String, namespace: String) -> Result<Vec<EventInfo
         .collect())
 }
 
-fn main() {
-    tauri::Builder::default()
-        .invoke_handler(tauri::generate_handler![
-            save_to_downloads,
-            save_bytes_to_downloads,
-            load_settings,
-            save_settings,
-            read_kubeconfig,
-            set_current_context,
-            set_context_namespace,
-            current_context,
-            list_kube_contexts,
-            list_namespaces,
-            list_pods,
-            list_pod_containers,
-            get_pod_logs,
-            start_log_stream,
-            stop_log_stream,
-            start_pod_watch,
-            stop_pod_watch,
-            delete_pod,
-            get_resource_yaml,
-            apply_resource_yaml,
-            check_permission,
-            list_deployments,
-            get_deployment_detail,
-            get_network_overview,
-            list_workloads,
-            search_cluster,
-            get_configuration,
-            get_storage_overview,
-            get_deploy_report,
-            get_namespace_overview,
-            list_report_kinds,
-            run_report,
-            reveal_secret_key,
-            read_config_map_key,
-            write_secret_key,
-            write_config_map_key,
-            delete_configuration_key,
-            get_argo_overview,
-            set_argo_image,
-            set_argo_resources,
-            set_argo_schedule,
-            set_argo_cron_suspend,
-            submit_argo_template,
-            stop_argo_workflow,
-            delete_argo_workflow,
-            get_pod_metrics,
-            get_helm_overview,
-            get_helm_release,
-            uninstall_helm_release,
-            rollback_helm_release,
-            get_velero_status,
-            create_velero_backup,
-            create_velero_restore,
-            get_relation_graph,
-            start_exec_session,
-            write_exec_session,
-            stop_exec_session,
-            list_pod_ports,
-            start_port_forward,
-            stop_port_forward,
-            list_port_forwards,
-            open_forward_in_browser,
-            delete_workload,
-            export_deployment_yaml,
-            list_namespace_snapshot,
-            get_cluster_overview,
-            set_node_schedulable,
-            delete_node,
-            drain_node,
-            delete_deployment,
-            scale_workload,
-            restart_workload,
-            list_events
-        ])
-        .build(tauri::generate_context!())
-        .expect("error while building tmjLens")
-        .run(|_app, event| {
-            // Closing the window must end every stream; a follow left running would
-            // keep the API server writing output into a process that is going away.
-            if let tauri::RunEvent::ExitRequested { .. } | tauri::RunEvent::Exit = event {
-                logs::stop_all();
-                watch::stop_all();
-                portforward::stop_all();
-                exec::stop_all();
-            }
-        });
+#[tokio::main]
+async fn main() {
+    if let Err(error) = web::serve().await {
+        eprintln!("tmjLens web failed to start: {error}");
+        std::process::exit(1);
+    }
 }
 
 #[cfg(test)]
 mod tests {
-    use super::{format_age, namespace_for_context};
+    use super::format_age;
     use chrono::{Duration, Utc};
-    use kube::config::Kubeconfig;
-
-    #[test]
-    fn extracts_namespace_from_current_context() {
-        let kubeconfig = Kubeconfig::from_yaml(
-            r#"
-apiVersion: v1
-kind: Config
-clusters:
-- name: prod
-  cluster:
-    server: https://prod.example.com
-contexts:
-- name: prod-admin
-  context:
-    cluster: prod
-    user: prod-user
-    namespace: payments
-current-context: prod-admin
-users:
-- name: prod-user
-  user:
-    token: token-value
-"#,
-        )
-        .expect("valid kubeconfig");
-
-        assert_eq!(namespace_for_context(&kubeconfig, "prod-admin"), Some("payments".to_string()));
-    }
-
-    #[test]
-    fn strips_directory_components_from_a_save_name() {
-        use super::safe_file_stem;
-        assert_eq!(safe_file_stem("checkout-api-abc123-logs"), "checkout-api-abc123-logs");
-        assert_eq!(safe_file_stem("../../../etc/passwd"), "passwd");
-        assert_eq!(safe_file_stem("C:\\Windows\\System32\\config"), "config");
-        assert_eq!(safe_file_stem(""), "logs");
-        assert_eq!(safe_file_stem("   "), "logs");
-        assert_eq!(safe_file_stem(".."), "logs");
-    }
 
     #[test]
     fn formats_age_from_creation_timestamp() {
