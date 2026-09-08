@@ -48,6 +48,7 @@ const PROFILES: ProfileSummary[] = [
 ];
 
 const AUDIT: AuditTable = {
+  enabled: true,
   columns: ['at', 'user_email', 'action', 'target', 'namespace', 'detail', 'allowed'],
   rows: [
     ['2026-09-04 17:58:21:410', 'maria.souza@tmjsistemas.com.br', 'restart_workload', 'payments-api', 'payments', null, 'true'],

@@ -59,6 +59,8 @@ spec:
               value: /var/lib/tmjlens/tmjlens.tmjp
             - name: TMJLENS_ENVIRONMENT
               value: {{ include "tmjlens.environmentType" . | quote }}
+            - name: TMJLENS_AUDIT
+              value: {{ ternary "on" "off" .Values.environment.logAudit | quote }}
             - name: TMJLENS_CLUSTER_NAME
               value: {{ required "environment.cluster is required" .Values.environment.cluster | quote }}
             - name: TMJLENS_BOOTSTRAP_ADMIN

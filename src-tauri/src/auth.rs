@@ -35,11 +35,26 @@ pub const PERMISSIONS: &[(&str, &str)] = &[
 ];
 
 const ADMIN_DESC: &str = "Full control, including user management";
-const DEVELOPER_DESC: &str =
-    "Cluster Overview, workloads, logs and rollout restart. Cannot scale, delete a deploy, or port-forward.";
+const DEVELOPER_DESC: &str = "Cluster Overview, workloads, logs, pod delete and rollout restart. \
+     The environment decides the reach: production is read-only (no restarts), staging allows restarts, \
+     development also shows Secret and ConfigMap values. Cannot scale, delete a deploy, or port-forward.";
 const GUEST_DESC: &str = "Cluster Overview only. Assigned automatically on first SSO login.";
 const DEVELOPER_PERMS: &[&str] = &["overview", "view", "view-logs", "restart-workloads"];
 const GUEST_PERMS: &[&str] = &["overview"];
+
+/// Whether this install records the audit trail. On by default; the chart's
+/// `environment.logAudit: false` sets TMJLENS_AUDIT=off for installs where
+/// the operator worries more about database growth than about the trail.
+pub fn audit_enabled() -> bool {
+    audit_enabled_value(std::env::var("TMJLENS_AUDIT").ok().as_deref())
+}
+
+pub fn audit_enabled_value(raw: Option<&str>) -> bool {
+    !matches!(
+        raw.map(|value| value.trim().to_ascii_lowercase()).as_deref(),
+        Some("off" | "false" | "0" | "disabled")
+    )
+}
 
 pub fn is_known_permission(name: &str) -> bool {
     PERMISSIONS.iter().any(|(p, _)| *p == name)
@@ -360,6 +375,9 @@ impl<'a> AuthStore<'a> {
 
     /// Records the decision, allowed or not. Auditing must never take the
     /// action down with it, so callers treat a returned error as log-and-go.
+    /// A switched-off audit (TMJLENS_AUDIT=off) records nothing — and the
+    /// Access screen says so, because a trail people believe exists but does
+    /// not is worse than no trail.
     pub fn audit(
         &self,
         user_email: &str,
@@ -369,6 +387,9 @@ impl<'a> AuthStore<'a> {
         detail: Option<&str>,
         allowed: bool,
     ) -> Result<(), String> {
+        if !audit_enabled() {
+            return Ok(());
+        }
         self.db.exec(&format!(
             "INSERT INTO audit_log (user_email, action, target, namespace, detail, allowed) \
              VALUES ({}, {}, {}, {}, {}, {});",
@@ -517,6 +538,16 @@ fn is_bootstrap_admin(email: &str) -> bool {
 mod tests {
     use super::*;
     use std::path::PathBuf;
+
+    #[test]
+    fn the_audit_switch_is_on_unless_told_off() {
+        assert!(audit_enabled_value(None));
+        assert!(audit_enabled_value(Some("on")));
+        assert!(audit_enabled_value(Some("anything-else")));
+        for off in ["off", "OFF", " false ", "0", "disabled"] {
+            assert!(!audit_enabled_value(Some(off)), "{off}");
+        }
+    }
 
     fn temp_db(tag: &str) -> PathBuf {
         let dir = std::env::temp_dir().join("tmjlens-db-tests");

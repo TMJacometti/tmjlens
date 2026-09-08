@@ -14,6 +14,9 @@ environment:
   # Must be exactly one of: production | staging | development
   # Settings → Clusters is read-only; this is the only place the label is set.
   type: production
+  # false stops writing the audit trail (who did what) to the instance
+  # database — for when database growth worries you more than the trail.
+  logAudit: true
 
 # Case does not matter — ADMIN@… from the directory still matches.
 bootstrapAdmin: admin@tmjsistemas.com.br

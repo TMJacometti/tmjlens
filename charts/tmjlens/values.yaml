@@ -18,6 +18,9 @@ environment:
   cluster: ""
   # Must be exactly one of: production | staging | development
   type: production
+  # Every action and denial is recorded under the user's own name in the
+  # instance database. Off trades the trail for a database that cannot grow.
+  logAudit: true
 
 # First SSO login matching this email is granted admin. Case does not matter.
 bootstrapAdmin: ""
