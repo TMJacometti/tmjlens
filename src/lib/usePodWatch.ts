@@ -30,7 +30,7 @@ export function usePodWatch(context: string, namespace: string, enabled: boolean
   const [pods, setPods] = useState<PodRow[]>([]);
   const [live, setLive] = useState(false);
   const [error, setError] = useState('');
-  const watchId = useRef(`pods-${Math.random().toString(36).slice(2)}`).current;
+  const watchId = useRef(`pods-${crypto.randomUUID()}`).current;
 
   useEffect(() => {
     if (!enabled || !context || !namespace) return;
