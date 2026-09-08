@@ -40,7 +40,7 @@ export function LogViewer({
   const [error, setError] = useState('');
 
   // One id per mounted viewer, so a stream can be stopped precisely.
-  const streamId = useRef(`log-${Math.random().toString(36).slice(2)}-${Date.now()}`).current;
+  const streamId = useRef(`log-${crypto.randomUUID()}`).current;
   const scroller = useRef<HTMLDivElement>(null);
   const stickToBottom = useRef(true);
   // Web streaming: the SSE connection and the lines it delivered since the

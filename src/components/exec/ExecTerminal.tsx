@@ -33,7 +33,7 @@ export function ExecTerminal({ context, namespace, podName, containers, canExec,
   const [running, setRunning] = useState(false);
   const [error, setError] = useState('');
   const [line, setLine] = useState('');
-  const sessionId = useRef(`exec-${Math.random().toString(36).slice(2)}`).current;
+  const sessionId = useRef(`exec-${crypto.randomUUID()}`).current;
   const scroller = useRef<HTMLDivElement>(null);
   const input = useRef<HTMLInputElement>(null);
 
