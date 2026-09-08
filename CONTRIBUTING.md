@@ -218,14 +218,16 @@ it. A table here would only drift from it.
 ## Publishing the in-cluster build
 
 Operators install from GHCR / the GitHub Release — they never clone. Cutting a
-release is a tag on this branch:
+release is a tag on `main`:
 
 ```bash
-git tag web-0.5.1
-git push origin web-0.5.1
+git tag v0.6.0
+git push origin v0.6.0
 ```
 
-The `web-*` tag must be semver after the prefix (`web-0.5.1`, `web-0.5.1-rc.1`).
+The `v*` tag must be semver after the prefix (`v0.6.0`, `v0.6.0-rc.1`). Releases
+before the branch switch were tagged `web-*`; those tags and their assets stay
+valid, new releases use `v*`.
 GitHub Actions builds the Linux image, packages the Helm chart, pushes both to
 GHCR, and attaches `tmjlens-chart-<version>.tgz` to the Release.
 

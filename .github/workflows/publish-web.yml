@@ -1,12 +1,12 @@
 # Publish the in-cluster image and Helm chart.
-# Trigger: git tag web-0.5.1 && git push origin web-0.5.1
+# Trigger: git tag v0.6.0 && git push origin v0.6.0
 
 name: Publish web
 
 on:
   push:
     tags:
-      - "web-*"
+      - "v*"
 
 permissions:
   contents: write
@@ -23,9 +23,9 @@ jobs:
         run: |
           set -euo pipefail
           tag="${GITHUB_REF_NAME}"
-          version="${tag#web-}"
+          version="${tag#v}"
           if [[ ! "$version" =~ ^[0-9]+\.[0-9]+\.[0-9]+([.-][0-9A-Za-z.-]+)?$ ]]; then
-            echo "tag must be web-<semver>, got ${tag}"
+            echo "tag must be v<semver>, got ${tag}"
             exit 1
           fi
           owner="$(echo "${GITHUB_REPOSITORY_OWNER}" | tr '[:upper:]' '[:lower:]')"
@@ -76,7 +76,7 @@ jobs:
       - uses: softprops/action-gh-release@v2
         with:
           files: tmjlens-chart-${{ steps.ver.outputs.version }}.tgz
-          name: tmjLens web ${{ steps.ver.outputs.version }}
+          name: tmjLens ${{ steps.ver.outputs.version }}
           body: |
             In-cluster image and Helm chart.
 

@@ -118,7 +118,8 @@ have a certificate.
 
 ### 3. Helm
 
-A tag `web-0.5.1` publishes the image and the chart. Install that version:
+A release is a `v*` tag; each publishes the image and the chart. The current
+release is **0.5.1** — install it:
 
 ```bash
 helm upgrade --install tmjlens oci://ghcr.io/tmjacometti/tmjlens-chart \
