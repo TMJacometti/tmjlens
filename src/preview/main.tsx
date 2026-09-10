@@ -9,6 +9,7 @@ import { LogsPreview } from './LogsPreview';
 import { PalettePreview } from './PalettePreview';
 import { PortForwardPreview } from './PortForwardPreview';
 import { VeleroPreview } from './VeleroPreview';
+import { KyvernoPreview } from './KyvernoPreview';
 import { HelmPreview } from './HelmPreview';
 import { PodUsagePreview } from './PodUsagePreview';
 import { ArgoPreview } from './ArgoPreview';
@@ -56,6 +57,8 @@ if (view === 'settings') {
       <main className="main" style={{ overflow: 'visible' }}>
         {view === 'argo' || view === 'argo-absent' ? (
           <ArgoPreview installed={view === 'argo'} />
+        ) : view === 'kyverno' || view === 'kyverno-absent' ? (
+          <KyvernoPreview installed={view === 'kyverno'} />
         ) : view === 'pod-usage' ? (
           <PodUsagePreview />
         ) : view === 'helm' || view === 'helm-nocli' ? (

@@ -577,6 +577,7 @@ fn required_permission(cmd: &str) -> &'static str {
         | "submit_argo_template" | "stop_argo_workflow" | "delete_argo_workflow" => "manage-argo",
         "uninstall_helm_release" | "rollback_helm_release" => "manage-helm",
         "create_velero_backup" | "create_velero_restore" => "manage-velero",
+        "set_kyverno_policy_action" => "manage-kyverno",
         "set_node_schedulable" | "delete_node" | "drain_node" => "manage-nodes",
         _ => "view",
     }
@@ -728,6 +729,9 @@ fn permission_for_review(
     }
     if resource == "namespaces" && !reading {
         return "manage-namespaces";
+    }
+    if group == "kyverno.io" && !reading {
+        return "manage-kyverno";
     }
     match verb {
         "get" | "list" | "watch" => {
@@ -930,6 +934,8 @@ async fn dispatch(cmd: &str, a: &Value) -> Result<Value, String> {
         "delete_argo_workflow" => val(delete_argo_workflow(arg(a, "context")?, arg(a, "namespace")?, arg(a, "name")?).await?),
         "get_pod_metrics" => val(get_pod_metrics(arg(a, "context")?, arg(a, "namespace")?).await?),
         "get_helm_overview" => val(get_helm_overview(arg(a, "context")?, arg(a, "namespace")?).await?),
+        "get_kyverno_overview" => val(get_kyverno_overview(arg(a, "context")?).await?),
+        "set_kyverno_policy_action" => val(set_kyverno_policy_action(arg(a, "context")?, arg(a, "namespace")?, arg(a, "name")?, arg(a, "expected")?, arg(a, "action")?).await?),
         "get_helm_release" => val(get_helm_release(arg(a, "context")?, arg(a, "namespace")?, arg(a, "name")?).await?),
         "uninstall_helm_release" => val(uninstall_helm_release(arg(a, "context")?, arg(a, "namespace")?, arg(a, "name")?).await?),
         "rollback_helm_release" => val(rollback_helm_release(arg(a, "context")?, arg(a, "namespace")?, arg(a, "name")?, arg(a, "revision")?).await?),
@@ -1093,6 +1099,10 @@ mod tests {
         for cmd in ["create_namespace", "delete_namespace", "force_finalize_namespace"] {
             assert_eq!(required_permission(cmd), "manage-namespaces", "{cmd}");
         }
+        assert_eq!(required_permission("get_kyverno_overview"), "view");
+        assert_eq!(required_permission("set_kyverno_policy_action"), "manage-kyverno");
+        assert_eq!(permission_for_review("update", "clusterpolicies", None, Some("kyverno.io")), "manage-kyverno");
+        assert_eq!(permission_for_review("list", "clusterpolicies", None, Some("kyverno.io")), "view");
         assert_eq!(required_permission("delete_pvc"), "delete-workloads");
         // A pod delete is a restart; the controller delete is the destructive one.
         assert_eq!(required_permission("delete_pod"), "restart-workloads");

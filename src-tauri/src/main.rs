@@ -6,6 +6,7 @@ mod db;
 mod graph;
 mod helm;
 mod insights;
+mod kyverno;
 mod metrics;
 mod namespaces;
 mod network;
@@ -458,6 +459,22 @@ async fn get_pod_metrics(
 ) -> Result<metrics::PodMetricsSnapshot, String> {
     let client = client_for_context(&context).await?;
     metrics::pod_metrics(client, &namespace).await
+}
+
+async fn get_kyverno_overview(context: String) -> Result<kyverno::KyvernoOverview, String> {
+    let client = client_for_context(&context).await?;
+    kyverno::overview(client).await
+}
+
+async fn set_kyverno_policy_action(
+    context: String,
+    namespace: Option<String>,
+    name: String,
+    expected: String,
+    action: String,
+) -> Result<String, String> {
+    let client = client_for_context(&context).await?;
+    kyverno::set_policy_action(client, namespace, &name, &expected, &action).await
 }
 
 async fn get_helm_overview(context: String, namespace: Option<String>) -> Result<helm::HelmOverview, String> {
