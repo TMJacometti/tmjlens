@@ -25,7 +25,7 @@ image from GHCR; the only file you write is values.
 
 Health score with evidence, capacity the way the scheduler sees it (requests,
 not live usage), workloads, logs, rollout restart, network, storage,
-configuration, namespaces, Helm, Velero, Argo, reports.
+configuration, namespaces, Helm, Velero, Argo, Kyverno, reports.
 
 If something could not be collected, the overview says so instead of showing a
 quiet zero.

@@ -28,6 +28,7 @@ pub const PERMISSIONS: &[(&str, &str)] = &[
     ("delete-workloads", "Delete deployments, pods and other workloads"),
     ("manage-helm", "Uninstall and roll back Helm releases"),
     ("manage-velero", "Create backups and restores"),
+    ("manage-kyverno", "Switch Kyverno policies between Enforce and Audit"),
     ("manage-argo", "Edit and submit Argo workflows, images, resources, schedules"),
     ("manage-nodes", "Cordon, drain and delete nodes"),
     ("manage-namespaces", "Create and delete namespaces, clear stuck finalizers"),

@@ -2,7 +2,7 @@ import { useEffect, useRef, useState } from 'react';
 import { hasBridge, invoke } from './lib/transport';
 import {
   BarChart3, Box, ChevronDown, CircleAlert, DatabaseBackup, Download, FileCog, Gauge, GitBranch, HardDrive,
-  Layers3, ListTree, Network, Search, Server, Settings, ShieldCheck, Terminal,
+  Gavel, Layers3, ListTree, Network, Search, Server, Settings, ShieldCheck, Terminal,
   Trash2, Workflow, X, XCircle
 } from 'lucide-react';
 import { ActionMenu } from './components/ActionMenu';
@@ -33,6 +33,8 @@ import type { ArgoOverview, CronRow, ImageSlot, ResourcesSpec, TemplateRow, Work
 import { HelmPage } from './components/helm/HelmPage';
 import type { HelmOverview, ReleaseDetail, ReleaseRow } from './types/helm';
 import { VeleroPage } from './components/velero/VeleroPage';
+import { KyvernoPage } from './components/kyverno/KyvernoPage';
+import type { KyvernoOverview, PolicyRow as KyvernoPolicyRow } from './types/kyverno';
 import type { VeleroStatus } from './types/velero';
 import { DeploymentDetailPanel } from './components/workloads/DeploymentDetailPanel';
 import { textToBase64 } from './lib/encoding';
@@ -86,6 +88,10 @@ export function App() {
   const [helmError, setHelmError] = useState('');
   const [isLoadingHelm, setIsLoadingHelm] = useState(false);
   const [velero, setVelero] = useState<VeleroStatus | null>(null);
+  const [kyvernoOverview, setKyvernoOverview] = useState<KyvernoOverview | null>(null);
+  const [kyvernoError, setKyvernoError] = useState('');
+  const [isLoadingKyverno, setIsLoadingKyverno] = useState(false);
+  const [canToggleKyverno, setCanToggleKyverno] = useState(false);
   const [veleroError, setVeleroError] = useState('');
   const [isLoadingVelero, setIsLoadingVelero] = useState(false);
   const [veleroCapabilities, setVeleroCapabilities] = useState({ backup: false, restore: false });
@@ -616,6 +622,30 @@ export function App() {
    * Velero's objects live in Velero's own namespace, not the one selected in the
    * toolbar, so this load is deliberately independent of the namespace picker.
    */
+  const loadKyverno = async () => {
+    setIsLoadingKyverno(true);
+    try {
+      setKyvernoOverview(await invoke<KyvernoOverview>('get_kyverno_overview', { context }));
+      setKyvernoError('');
+    } catch (error) {
+      setKyvernoError(String(error));
+    } finally {
+      setIsLoadingKyverno(false);
+    }
+  };
+
+  const toggleKyvernoAction = async (policy: KyvernoPolicyRow, next: string): Promise<string> => {
+    const outcome = await invoke<string>('set_kyverno_policy_action', {
+      context,
+      namespace: policy.namespace ?? null,
+      name: policy.name,
+      expected: policy.action,
+      action: next,
+    });
+    await loadKyverno();
+    return outcome;
+  };
+
   const loadVelero = async () => {
     setIsLoadingVelero(true);
     try {
@@ -769,6 +799,7 @@ export function App() {
     { id: 'go-network', label: 'Go to Network', group: 'Navigate', run: () => setActive('Network') },
     ...(canSeePlatform(me) ? [
       { id: 'go-velero', label: 'Go to Velero backups', group: 'Navigate', run: () => setActive('Velero') },
+      { id: 'go-kyverno', label: 'Go to Kyverno policies', group: 'Navigate', run: () => setActive('Kyverno') },
       { id: 'go-helm', label: 'Go to Helm releases', group: 'Navigate', run: () => setActive('Helm') },
       { id: 'go-argo', label: 'Go to Argo Workflows', group: 'Navigate', run: () => setActive('Argo Workflows') },
     ] : []),
@@ -872,6 +903,12 @@ export function App() {
   useEffect(() => {
     if (active === 'Network') void loadNetwork();
     if (active === 'Velero') void loadVelero();
+    if (active === 'Kyverno') {
+      void loadKyverno();
+      void invoke<boolean>('check_permission', { context, namespace: '', verb: 'update', resource: 'clusterpolicies', subresource: null, group: 'kyverno.io' })
+        .then(setCanToggleKyverno)
+        .catch(() => setCanToggleKyverno(false));
+    }
     if (active === 'Helm') void loadHelm();
     if (active === 'Argo Workflows') void loadArgo();
     if (active === 'Configuration') void loadConfiguration();
@@ -923,11 +960,11 @@ export function App() {
         <Nav icon={<Layers3 size={16}/>} label="Namespaces" active={active === 'Namespaces'} onClick={() => setActive('Namespaces')} /><Nav icon={<CircleAlert size={16}/>} label="Events" active={active === 'Events'} onClick={() => setActive('Events')} />
         {platform && <Nav icon={<BarChart3 size={16}/>} label="Reports" active={active === 'Reports'} onClick={() => setActive('Reports')} />}
         {platform && <><div className="section-title aws">CLOUD</div><Nav icon={<Network size={16}/>} label="Load Balancers"/><Nav icon={<Box size={16}/>} label="Node Pools"/></>}
-        {platform && <><div className="section-title plugins">PLUGINS</div><Nav icon={<DatabaseBackup size={16}/>} label="Velero" active={active === 'Velero'} onClick={() => setActive('Velero')} /><Nav icon={<Terminal size={16}/>} label="Helm" active={active === 'Helm'} onClick={() => setActive('Helm')} /><Nav icon={<Workflow size={16}/>} label="Argo Workflows" active={active === 'Argo Workflows'} onClick={() => setActive('Argo Workflows')} /><Nav icon={<Workflow size={16}/>} label="Argo CD"/></>}
+        {platform && <><div className="section-title plugins">PLUGINS</div><Nav icon={<DatabaseBackup size={16}/>} label="Velero" active={active === 'Velero'} onClick={() => setActive('Velero')} /><Nav icon={<Gavel size={16}/>} label="Kyverno" active={active === 'Kyverno'} onClick={() => setActive('Kyverno')} /><Nav icon={<Terminal size={16}/>} label="Helm" active={active === 'Helm'} onClick={() => setActive('Helm')} /><Nav icon={<Workflow size={16}/>} label="Argo Workflows" active={active === 'Argo Workflows'} onClick={() => setActive('Argo Workflows')} /><Nav icon={<Workflow size={16}/>} label="Argo CD"/></>}
       </>}
       {isAdmin(me) && <><div className="section-title">ADMIN</div><Nav icon={<ShieldCheck size={16}/>} label="Access" active={active === 'Access'} onClick={() => setActive('Access')} /></>}
     </aside><main className="main"><div className="breadcrumbs">Cluster / {active === 'Access' ? 'app' : namespace} / {active}</div><div className="title-row"><div><h1>{active}</h1>{active === 'Access' ? <p>Who can do what, and who did what</p> : <p>Live Kubernetes resources from <b>{context}</b></p>}</div></div>
-      {showEvents ? <EventsPanel events={events} onRefresh={refreshEvents}/> : active === 'Namespaces' ? <NamespacesPage data={namespaceOverview} loading={isLoadingNamespaces} error={namespaceError} current={namespace} canManage={canManageNamespaces} onRefresh={() => void loadNamespaceOverview()} onSelect={(name) => void handleNamespaceChange(name)} onCreate={async (name) => { await invoke('create_namespace', { context, name }); await loadNamespaceOverview(); setNamespaces(await invoke<string[]>('list_namespaces', { context }).catch(() => namespaces)); }} onDelete={async (name) => { await invoke('delete_namespace', { context, name }); await loadNamespaceOverview(); }} onForceFinalize={async (name) => { const cleared = await invoke<string>('force_finalize_namespace', { context, name }); await loadNamespaceOverview(); setNamespaces(await invoke<string[]>('list_namespaces', { context }).catch(() => namespaces)); return cleared; }} notify={notify}/> : active === 'Storage' ? <StoragePage data={storage} loading={isLoadingStorage} error={storageError} canDelete={canDeleteStorage} onRefresh={() => void loadStorage()} onDeleteClaim={async (name) => { await invoke('delete_pvc', { context, namespace, name }); await loadStorage(); }} onDeleteVolume={async (name) => { await invoke('delete_pv', { context, name }); await loadStorage(); }} notify={notify}/> : active === 'Configuration' ? <ConfigurationPage data={configuration} loading={isLoadingConfiguration} error={configurationError} canEditConfigMaps={capabilities.patchConfigMaps} canEditSecrets={capabilities.patchSecrets} onRefresh={() => void loadConfiguration()} onRead={readConfigurationKey} onSave={saveConfigurationKey} onDelete={deleteConfigurationKey} notify={notify}/> : active === 'Argo Workflows' ? <ArgoPage data={argoOverview} loading={isLoadingArgo} error={argoError} capabilities={argoCapabilities} onRefresh={() => void loadArgo()} onSetImage={setArgoImage} onSetResources={setArgoResources} onSetSchedule={setArgoSchedule} onSuspendCron={suspendArgoCron} onSubmitTemplate={submitArgoTemplate} onStopWorkflow={stopArgoWorkflow} onDeleteWorkflow={deleteArgoWorkflow}/> : active === 'Helm' ? <HelmPage data={helmOverview} loading={isLoadingHelm} error={helmError} onRefresh={() => void loadHelm()} onOpenDetail={openHelmRelease} onUninstall={uninstallHelmRelease} onRollback={rollbackHelmRelease} notify={notify}/> : active === 'Velero' ? <VeleroPage status={velero} loading={isLoadingVelero} error={veleroError} namespaces={namespaces} canBackup={veleroCapabilities.backup} canRestore={veleroCapabilities.restore} onRefresh={() => void loadVelero()} onCreateBackup={createVeleroBackup} onCreateRestore={createVeleroRestore}/> : active === 'Nodes' ? <NodesPage data={clusterOverview} loading={isLoadingCluster} error={clusterError} capabilities={nodeCapabilities} onRefresh={() => void loadClusterOverview()} onNodeAction={nodeAction}/> : active === 'Access' ? <AccessPage me={me} users={accessUsers} profiles={accessProfiles} audit={accessAudit} loading={isLoadingAccess} error={accessError} onRefresh={() => void loadAccess()} onGrant={async (user, profile) => { await invoke('admin_grant_profile', { userId: user.id, profileId: profile.id }); await loadAccess(); }} onRevoke={async (user, profileName) => { const profile = accessProfiles.find((entry) => entry.name === profileName); if (!profile) throw String('unknown profile'); await invoke('admin_revoke_profile', { userId: user.id, profileId: profile.id }); await loadAccess(); }} onSetActive={async (user, activeFlag) => { await invoke('admin_set_user_active', { userId: user.id, active: activeFlag }); await loadAccess(); }} notify={notify}/> : active === 'Network' ? <NetworkPage data={network} loading={isLoadingNetwork} error={networkError} onRefresh={() => void loadNetwork()} onEditYaml={(kind, name) => setYamlTarget({ kind, name })}/> :active === 'Workloads' ? <><WorkloadsPage view={workloadView} onViewChange={setWorkloadView} pods={pods} deployments={deployments} selectedPod={selectedPod} selectedDeployment={selectedDeployment} capabilities={{ deletePods: capabilities.deletePods, deleteDeployments: capabilities.deleteDeployments, patchDeployments: capabilities.patchDeployments }} onSelectPod={selectPod} onSelectDeployment={(name) => { setSelectedDeployment(name); setShowDetail(false); }} onDeletePod={(name) => void deletePod(name)} onOpenPodLogs={setLogPopupPod} onExportPodLogs={(name) => void exportLogsFor(name)} onDeleteDeployment={(name) => void deleteDeployment(name)} onExportDeployment={(name) => void exportDeployment(name)} podsLive={podWatch.live} usage={podMetrics.byPod} usageAvailable={podMetrics.available} usageReason={podMetrics.reason}
+      {showEvents ? <EventsPanel events={events} onRefresh={refreshEvents}/> : active === 'Namespaces' ? <NamespacesPage data={namespaceOverview} loading={isLoadingNamespaces} error={namespaceError} current={namespace} canManage={canManageNamespaces} onRefresh={() => void loadNamespaceOverview()} onSelect={(name) => void handleNamespaceChange(name)} onCreate={async (name) => { await invoke('create_namespace', { context, name }); await loadNamespaceOverview(); setNamespaces(await invoke<string[]>('list_namespaces', { context }).catch(() => namespaces)); }} onDelete={async (name) => { await invoke('delete_namespace', { context, name }); await loadNamespaceOverview(); }} onForceFinalize={async (name) => { const cleared = await invoke<string>('force_finalize_namespace', { context, name }); await loadNamespaceOverview(); setNamespaces(await invoke<string[]>('list_namespaces', { context }).catch(() => namespaces)); return cleared; }} notify={notify}/> : active === 'Storage' ? <StoragePage data={storage} loading={isLoadingStorage} error={storageError} canDelete={canDeleteStorage} onRefresh={() => void loadStorage()} onDeleteClaim={async (name) => { await invoke('delete_pvc', { context, namespace, name }); await loadStorage(); }} onDeleteVolume={async (name) => { await invoke('delete_pv', { context, name }); await loadStorage(); }} notify={notify}/> : active === 'Configuration' ? <ConfigurationPage data={configuration} loading={isLoadingConfiguration} error={configurationError} canEditConfigMaps={capabilities.patchConfigMaps} canEditSecrets={capabilities.patchSecrets} onRefresh={() => void loadConfiguration()} onRead={readConfigurationKey} onSave={saveConfigurationKey} onDelete={deleteConfigurationKey} notify={notify}/> : active === 'Argo Workflows' ? <ArgoPage data={argoOverview} loading={isLoadingArgo} error={argoError} capabilities={argoCapabilities} onRefresh={() => void loadArgo()} onSetImage={setArgoImage} onSetResources={setArgoResources} onSetSchedule={setArgoSchedule} onSuspendCron={suspendArgoCron} onSubmitTemplate={submitArgoTemplate} onStopWorkflow={stopArgoWorkflow} onDeleteWorkflow={deleteArgoWorkflow}/> : active === 'Helm' ? <HelmPage data={helmOverview} loading={isLoadingHelm} error={helmError} onRefresh={() => void loadHelm()} onOpenDetail={openHelmRelease} onUninstall={uninstallHelmRelease} onRollback={rollbackHelmRelease} notify={notify}/> : active === 'Velero' ? <VeleroPage status={velero} loading={isLoadingVelero} error={veleroError} namespaces={namespaces} canBackup={veleroCapabilities.backup} canRestore={veleroCapabilities.restore} onRefresh={() => void loadVelero()} onCreateBackup={createVeleroBackup} onCreateRestore={createVeleroRestore}/> : active === 'Kyverno' ? <KyvernoPage data={kyvernoOverview} loading={isLoadingKyverno} error={kyvernoError} canToggle={canToggleKyverno} onRefresh={() => void loadKyverno()} onToggleAction={toggleKyvernoAction} notify={notify}/> : active === 'Nodes' ? <NodesPage data={clusterOverview} loading={isLoadingCluster} error={clusterError} capabilities={nodeCapabilities} onRefresh={() => void loadClusterOverview()} onNodeAction={nodeAction}/> : active === 'Access' ? <AccessPage me={me} users={accessUsers} profiles={accessProfiles} audit={accessAudit} loading={isLoadingAccess} error={accessError} onRefresh={() => void loadAccess()} onGrant={async (user, profile) => { await invoke('admin_grant_profile', { userId: user.id, profileId: profile.id }); await loadAccess(); }} onRevoke={async (user, profileName) => { const profile = accessProfiles.find((entry) => entry.name === profileName); if (!profile) throw String('unknown profile'); await invoke('admin_revoke_profile', { userId: user.id, profileId: profile.id }); await loadAccess(); }} onSetActive={async (user, activeFlag) => { await invoke('admin_set_user_active', { userId: user.id, active: activeFlag }); await loadAccess(); }} notify={notify}/> : active === 'Network' ? <NetworkPage data={network} loading={isLoadingNetwork} error={networkError} onRefresh={() => void loadNetwork()} onEditYaml={(kind, name) => setYamlTarget({ kind, name })}/> :active === 'Workloads' ? <><WorkloadsPage view={workloadView} onViewChange={setWorkloadView} pods={pods} deployments={deployments} selectedPod={selectedPod} selectedDeployment={selectedDeployment} capabilities={{ deletePods: capabilities.deletePods, deleteDeployments: capabilities.deleteDeployments, patchDeployments: capabilities.patchDeployments }} onSelectPod={selectPod} onSelectDeployment={(name) => { setSelectedDeployment(name); setShowDetail(false); }} onDeletePod={(name) => void deletePod(name)} onOpenPodLogs={setLogPopupPod} onExportPodLogs={(name) => void exportLogsFor(name)} onDeleteDeployment={(name) => void deleteDeployment(name)} onExportDeployment={(name) => void exportDeployment(name)} podsLive={podWatch.live} usage={podMetrics.byPod} usageAvailable={podMetrics.available} usageReason={podMetrics.reason}
       controllers={<WorkloadInventoryTable inventory={inventory} loading={isLoadingInventory} error={inventoryError}
         selected={selectedDeployment ? `Deployment/${selectedDeployment}` : ''} canDelete={capabilities.deleteDeployments}
         onSelect={(row) => { if (row.kind === 'Deployment') { setSelectedDeployment(row.name); } else { setYamlTarget({ kind: row.kind, name: row.name }); } }}
