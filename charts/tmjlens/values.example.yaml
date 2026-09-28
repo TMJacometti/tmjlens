@@ -47,6 +47,24 @@ ingress:
 
 persistence:
   enabled: true
-  size: 1Gi
-  # kubectl get storageclass — required if none is marked default.
+  size: 10Gi
   storageClass: ebs-csi-sc
+
+# Leave empty to use Azure AD (azure.* above). For EKS / Cognito / Keycloak:
+# oidc:
+#   issuer: https://cognito-idp.us-east-1.amazonaws.com/us-east-1_example
+#   clientId: "..."
+#   clientSecret: "..."
+#   emailClaim: email
+
+collector:
+  enabled: true
+  kubelet:
+    # Kubelet certificates are often self-signed; set true after confirming
+    # nodes/metrics GET on :10250 works with the collector ServiceAccount.
+    insecureSkipVerify: false
+
+hpaManager:
+  enabled: false
+  maxReplicasCeiling: 50
+  gitopsGuard: warn

@@ -20,3 +20,11 @@
 
 The first SSO login matching bootstrapAdmin is granted admin. Everyone else starts as guest.
 Settings → Clusters is read-only: cluster {{ .Values.environment.cluster }} / {{ .Values.environment.type }}.
+{{- if .Values.collector.enabled }}
+Collector DaemonSet is on ({{ include "tmjlens.fullname" . }}-collector). It POSTs rollups to the web Service; it does not mount the PVC.
+{{- end }}
+{{- if .Values.hpaManager.enabled }}
+HPA manager is ON — Admin can apply HorizontalPodAutoscalers. Developer and Guest receive 403.
+{{- else }}
+HPA manager is off (hpaManager.enabled=false). Rightsizing reports still work for Admin.
+{{- end }}

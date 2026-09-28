@@ -92,19 +92,38 @@ pub fn sql_opt(value: Option<&str>) -> Result<String, String> {
 }
 
 const SCHEMA: &str = include_str!("../../tools/tmjlite/schema.sql");
-const SCHEMA_VERSION: i64 = 2;
+const SCHEMA_VERSION: i64 = 3;
 
 /// What upgrades an older database to each version. schema.sql always creates
 /// the CURRENT shape, so migrations only run on files born before the change.
 /// Statements tolerate partial re-runs ("already exists" is not a failure):
 /// a crash between a migration and the version bump must not brick the file.
-const MIGRATIONS: &[(i64, &[&str])] = &[(
-    2,
-    &[
-        "CREATE TABLE app_settings (id PK, name STRING(100) NOT NULL, value TEXT NOT NULL, updated_at DATETIME DEFAULT(TODAY));",
-        "CREATE UNIQUE INDEX idx_app_settings_name ON app_settings (name);",
-    ],
-)];
+const MIGRATIONS: &[(i64, &[&str])] = &[
+    (
+        2,
+        &[
+            "CREATE TABLE app_settings (id PK, name STRING(100) NOT NULL, value TEXT NOT NULL, updated_at DATETIME DEFAULT(TODAY));",
+            "CREATE UNIQUE INDEX idx_app_settings_name ON app_settings (name);",
+        ],
+    ),
+    (
+        3,
+        &[
+            "CREATE TABLE rs_rollup_5m (id PK, namespace STRING(253) NOT NULL, kind STRING(40) NOT NULL, workload STRING(253) NOT NULL, container STRING(253) NOT NULL, window_start STRING(40) NOT NULL, cpu_hist TEXT NOT NULL, mem_hist TEXT NOT NULL, mem_max_bytes STRING(40), samples INT NOT NULL, oom_kills INT NOT NULL, throttle_ratio STRING(32), cpu_request_milli STRING(40), cpu_limit_milli STRING(40), mem_request_bytes STRING(40), mem_limit_bytes STRING(40), replicas INT, limited_data BOOL DEFAULT(FALSE));",
+            "CREATE UNIQUE INDEX idx_rs_5m ON rs_rollup_5m (namespace, kind, workload, container, window_start);",
+            "CREATE TABLE rs_rollup_1h (id PK, namespace STRING(253) NOT NULL, kind STRING(40) NOT NULL, workload STRING(253) NOT NULL, container STRING(253) NOT NULL, window_start STRING(40) NOT NULL, cpu_hist TEXT NOT NULL, mem_hist TEXT NOT NULL, mem_max_bytes STRING(40), samples INT NOT NULL, oom_kills INT NOT NULL, throttle_ratio STRING(32), cpu_request_milli STRING(40), cpu_limit_milli STRING(40), mem_request_bytes STRING(40), mem_limit_bytes STRING(40), replicas INT, limited_data BOOL DEFAULT(FALSE));",
+            "CREATE UNIQUE INDEX idx_rs_1h ON rs_rollup_1h (namespace, kind, workload, container, window_start);",
+            "CREATE TABLE rs_rollup_1d (id PK, namespace STRING(253) NOT NULL, kind STRING(40) NOT NULL, workload STRING(253) NOT NULL, container STRING(253) NOT NULL, window_start STRING(40) NOT NULL, cpu_hist TEXT NOT NULL, mem_hist TEXT NOT NULL, mem_max_bytes STRING(40), samples INT NOT NULL, oom_kills INT NOT NULL, throttle_ratio STRING(32), cpu_request_milli STRING(40), cpu_limit_milli STRING(40), mem_request_bytes STRING(40), mem_limit_bytes STRING(40), replicas INT, limited_data BOOL DEFAULT(FALSE));",
+            "CREATE UNIQUE INDEX idx_rs_1d ON rs_rollup_1d (namespace, kind, workload, container, window_start);",
+            "CREATE TABLE rs_recommendation (id PK, namespace STRING(253) NOT NULL, kind STRING(40) NOT NULL, workload STRING(253) NOT NULL, container STRING(253) NOT NULL, cpu_request_milli STRING(40), mem_request_bytes STRING(40), confidence STRING(16) NOT NULL, days_of_data STRING(16) NOT NULL, reason TEXT NOT NULL, computed_at STRING(40) NOT NULL);",
+            "CREATE UNIQUE INDEX idx_rs_rec ON rs_recommendation (namespace, kind, workload, container);",
+            "CREATE TABLE hpa_managed (id PK, namespace STRING(253) NOT NULL, name STRING(253) NOT NULL, target_kind STRING(40) NOT NULL, target_name STRING(253) NOT NULL, applied_yaml TEXT NOT NULL, previous_yaml TEXT, applied_at STRING(40) NOT NULL, applied_by STRING(320) NOT NULL);",
+            "CREATE UNIQUE INDEX idx_hpa_managed ON hpa_managed (namespace, name);",
+            "CREATE TABLE collector_nodes (id PK, node_name STRING(253) NOT NULL, last_seen STRING(40) NOT NULL, limited_data BOOL DEFAULT(FALSE));",
+            "CREATE UNIQUE INDEX idx_collector_nodes ON collector_nodes (node_name);",
+        ],
+    ),
+];
 
 /// The engine library ships in-repo under tools/tmjlite. Resolution order:
 /// explicit env override, next to the executable, the working directory, then
@@ -420,9 +439,11 @@ mod tests {
         }
         let db = Db::open(&path).expect("reopen migrates");
         let meta = db.query("SELECT version FROM schema_meta;").expect("meta");
-        assert_eq!(meta.single(), Some("2"));
+        assert_eq!(meta.single(), Some("3"));
         db.exec("INSERT INTO app_settings (name, value) VALUES ('probe', '{}');")
             .expect("app_settings usable after migration");
+        db.exec("INSERT INTO collector_nodes (node_name, last_seen, limited_data) VALUES ('node-a', '2026-09-01T00:00:00Z', FALSE);")
+            .expect("rightsizing tables usable after migration");
     }
 
     #[test]

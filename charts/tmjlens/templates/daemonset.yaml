@@ -1,0 +1,74 @@
+{{- if .Values.collector.enabled }}
+apiVersion: apps/v1
+kind: DaemonSet
+metadata:
+  name: {{ include "tmjlens.fullname" . }}-collector
+  labels:
+    {{- include "tmjlens.labels" . | nindent 4 }}
+    app.kubernetes.io/component: collector
+spec:
+  selector:
+    matchLabels:
+      {{- include "tmjlens.selectorLabels" . | nindent 6 }}
+      app.kubernetes.io/component: collector
+  template:
+    metadata:
+      labels:
+        {{- include "tmjlens.selectorLabels" . | nindent 8 }}
+        app.kubernetes.io/component: collector
+    spec:
+      serviceAccountName: {{ include "tmjlens.fullname" . }}-collector
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 65532
+        runAsGroup: 65532
+      {{- with .Values.imagePullSecrets }}
+      imagePullSecrets:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.collector.tolerations }}
+      tolerations:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      containers:
+        - name: collector
+          image: "{{ .Values.image.repository }}:{{ .Values.image.tag | default .Chart.AppVersion }}"
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          args: ["collector"]
+          env:
+            - name: NODE_NAME
+              valueFrom:
+                fieldRef:
+                  fieldPath: spec.nodeName
+            - name: NODE_IP
+              valueFrom:
+                fieldRef:
+                  fieldPath: status.hostIP
+            - name: TMJLENS_INGEST_URL
+              value: "http://{{ include "tmjlens.fullname" . }}.{{ .Release.Namespace }}.svc:{{ .Values.service.port }}/api/ingest/rollups"
+            - name: TMJLENS_INGEST_TOKEN
+              valueFrom:
+                secretKeyRef:
+                  name: {{ include "tmjlens.fullname" . }}-ingest
+                  key: token
+            - name: TMJLENS_COLLECTOR_INTERVAL
+              value: {{ .Values.collector.interval | quote }}
+            - name: TMJLENS_COLLECTOR_WINDOW
+              value: {{ .Values.collector.window | quote }}
+            - name: TMJLENS_KUBELET_INSECURE
+              value: {{ ternary "1" "0" .Values.collector.kubelet.insecureSkipVerify | quote }}
+            {{- if .Values.collector.kubelet.caFile }}
+            - name: TMJLENS_KUBELET_CA
+              value: {{ .Values.collector.kubelet.caFile | quote }}
+            {{- end }}
+            - name: TMJLENS_COLLECTOR_BUFFER
+              value: /var/lib/tmjlens-collector/buffer
+          resources:
+            {{- toYaml .Values.collector.resources | nindent 12 }}
+          volumeMounts:
+            - name: buffer
+              mountPath: /var/lib/tmjlens-collector
+      volumes:
+        - name: buffer
+          emptyDir: {}
+{{- end }}

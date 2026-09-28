@@ -4,10 +4,10 @@
 //!
 //! This is where the security model decided for the web version is enforced:
 //! the ServiceAccount can do anything, therefore EVERY request passes through
-//! (1) a session that came from Azure AD OIDC, (2) the app-layer permission
-//! gate, and (3) the audit log for anything beyond plain viewing. There is no
-//! client-side enforcement anywhere — the browser only ever decides what to
-//! draw, never what is allowed.
+//! (1) a session that came from OIDC (Azure AD or a generic issuer), (2) the
+//! app-layer permission gate, and (3) the audit log for anything beyond plain
+//! viewing. There is no client-side enforcement anywhere — the browser only
+//! ever decides what to draw, never what is allowed.
 
 use crate::auth::{AuthStore, UserRecord, PERMISSIONS};
 use crate::db::Db;
@@ -37,10 +37,15 @@ struct PendingLogin {
 }
 
 struct OidcConfig {
-    tenant: String,
     client_id: String,
     client_secret: String,
     redirect_url: String,
+    authorize_url: String,
+    token_url: String,
+    /// `iss` must equal this, or start with it (Azure v2 tokens include a tenant path).
+    issuer: String,
+    email_claim: String,
+    label: String,
 }
 
 pub struct WebState {
@@ -50,6 +55,8 @@ pub struct WebState {
     sessions: Mutex<HashMap<String, Session>>,
     pending: Mutex<HashMap<String, PendingLogin>>,
     oidc: Option<OidcConfig>,
+    /// Shared secret the DaemonSet presents on POST /api/ingest/rollups.
+    ingest_token: Option<String>,
     /// TMJLENS_DEV_USER: every request runs as this email, no IdP involved.
     /// A development convenience that must never reach a cluster manifest.
     dev_user: Option<String>,
@@ -70,14 +77,15 @@ pub async fn serve() -> Result<(), String> {
     // Seeds the three fixed profiles (admin / developer / guest) on every boot.
     AuthStore::new(&db)?;
 
+    let http = reqwest::Client::new();
     let dev_user = std::env::var("TMJLENS_DEV_USER").ok().filter(|v| !v.is_empty());
-    let oidc = oidc_from_env()?;
+    let oidc = oidc_from_env(&http).await?;
     if oidc.is_none() && dev_user.is_none() {
         return Err(
-            "no identity source configured: set TMJLENS_AZURE_TENANT_ID, \
-             TMJLENS_AZURE_CLIENT_ID, TMJLENS_AZURE_CLIENT_SECRET and \
-             TMJLENS_REDIRECT_URL for Azure AD login (or TMJLENS_DEV_USER \
-             for local development only)"
+            "no identity source configured: set TMJLENS_OIDC_ISSUER + TMJLENS_OIDC_CLIENT_ID + \
+             TMJLENS_OIDC_CLIENT_SECRET + TMJLENS_REDIRECT_URL for generic OIDC, or \
+             TMJLENS_AZURE_TENANT_ID + TMJLENS_AZURE_CLIENT_ID + TMJLENS_AZURE_CLIENT_SECRET + \
+             TMJLENS_REDIRECT_URL for Azure AD (or TMJLENS_DEV_USER for local development only)"
                 .into(),
         );
     }
@@ -94,8 +102,9 @@ pub async fn serve() -> Result<(), String> {
         sessions: Mutex::new(HashMap::new()),
         pending: Mutex::new(HashMap::new()),
         oidc,
+        ingest_token: std::env::var("TMJLENS_INGEST_TOKEN").ok().filter(|s| !s.is_empty()),
         dev_user,
-        http: reqwest::Client::new(),
+        http,
         secure_cookie: std::env::var("TMJLENS_INSECURE_COOKIE").ok().as_deref() != Some("1"),
     });
 
@@ -113,6 +122,7 @@ pub async fn serve() -> Result<(), String> {
         .route("/auth/callback", get(callback))
         .route("/auth/logout", post(logout))
         .route("/api/me", get(me))
+        .route("/api/ingest/rollups", post(ingest_rollups))
         .route("/api/logs/stream", get(log_stream))
         .route("/api/invoke/{command}", post(invoke))
         .fallback_service(files)
@@ -152,7 +162,57 @@ fn cluster_display_name() -> String {
         .unwrap_or_else(|| "in-cluster".to_string())
 }
 
-fn oidc_from_env() -> Result<Option<OidcConfig>, String> {
+async fn oidc_from_env(http: &reqwest::Client) -> Result<Option<OidcConfig>, String> {
+    let redirect = std::env::var("TMJLENS_REDIRECT_URL").ok().filter(|s| !s.is_empty());
+    let issuer = std::env::var("TMJLENS_OIDC_ISSUER").ok().filter(|s| !s.is_empty());
+    if issuer.is_some()
+        || std::env::var("TMJLENS_OIDC_CLIENT_ID").ok().filter(|s| !s.is_empty()).is_some()
+        || std::env::var("TMJLENS_OIDC_CLIENT_SECRET").ok().filter(|s| !s.is_empty()).is_some()
+    {
+        let issuer = issuer.ok_or("generic OIDC is partially configured: TMJLENS_OIDC_ISSUER is missing")?;
+        let client_id = env_req("TMJLENS_OIDC_CLIENT_ID")?;
+        let client_secret = env_req("TMJLENS_OIDC_CLIENT_SECRET")?;
+        let redirect_url = redirect.ok_or("generic OIDC is partially configured: TMJLENS_REDIRECT_URL is missing")?;
+        let email_claim = std::env::var("TMJLENS_OIDC_EMAIL_CLAIM")
+            .ok()
+            .filter(|s| !s.is_empty())
+            .unwrap_or_else(|| "email".into());
+        let disco_url = format!(
+            "{}/.well-known/openid-configuration",
+            issuer.trim_end_matches('/')
+        );
+        let disco: serde_json::Value = http
+            .get(&disco_url)
+            .send()
+            .await
+            .map_err(|e| format!("could not reach the OIDC issuer at {disco_url}: {e}"))?
+            .error_for_status()
+            .map_err(|e| format!("OIDC discovery failed: {e}"))?
+            .json()
+            .await
+            .map_err(|e| format!("OIDC discovery JSON is unreadable: {e}"))?;
+        let authorize_url = disco
+            .get("authorization_endpoint")
+            .and_then(|v| v.as_str())
+            .ok_or("OIDC discovery is missing authorization_endpoint")?
+            .to_string();
+        let token_url = disco
+            .get("token_endpoint")
+            .and_then(|v| v.as_str())
+            .ok_or("OIDC discovery is missing token_endpoint")?
+            .to_string();
+        return Ok(Some(OidcConfig {
+            client_id,
+            client_secret,
+            redirect_url,
+            authorize_url,
+            token_url,
+            issuer: issuer.trim_end_matches('/').to_string(),
+            email_claim,
+            label: "OIDC".into(),
+        }));
+    }
+
     let vars = [
         "TMJLENS_AZURE_TENANT_ID",
         "TMJLENS_AZURE_CLIENT_ID",
@@ -170,12 +230,33 @@ fn oidc_from_env() -> Result<Option<OidcConfig>, String> {
         return Err(format!("Azure AD login is partially configured: {} is missing", missing.0));
     }
     let mut it = values.into_iter().map(Option::unwrap);
+    let tenant = it.next().unwrap();
+    let client_id = it.next().unwrap();
+    let client_secret = it.next().unwrap();
+    let redirect_url = it.next().unwrap();
     Ok(Some(OidcConfig {
-        tenant: it.next().unwrap(),
-        client_id: it.next().unwrap(),
-        client_secret: it.next().unwrap(),
-        redirect_url: it.next().unwrap(),
+        client_id,
+        client_secret,
+        redirect_url,
+        authorize_url: format!(
+            "https://login.microsoftonline.com/{}/oauth2/v2.0/authorize",
+            tenant
+        ),
+        token_url: format!(
+            "https://login.microsoftonline.com/{}/oauth2/v2.0/token",
+            tenant
+        ),
+        issuer: "https://login.microsoftonline.com/".into(),
+        email_claim: "email".into(),
+        label: "Azure AD".into(),
     }))
+}
+
+fn env_req(name: &str) -> Result<String, String> {
+    std::env::var(name)
+        .ok()
+        .filter(|s| !s.is_empty())
+        .ok_or_else(|| format!("generic OIDC is partially configured: {name} is missing"))
 }
 
 // ---- identity -------------------------------------------------------------
@@ -249,7 +330,7 @@ async fn login(State(state): State<std::sync::Arc<WebState>>) -> Response {
     let Some(oidc) = &state.oidc else {
         return plain(
             StatusCode::NOT_IMPLEMENTED,
-            "Azure AD login is not configured on this deployment",
+            "OIDC login is not configured on this deployment",
         );
     };
     let csrf = random_token();
@@ -260,10 +341,9 @@ async fn login(State(state): State<std::sync::Arc<WebState>>) -> Response {
         pending.insert(csrf.clone(), PendingLogin { nonce: nonce.clone(), created_at: Instant::now() });
     }
     let url = format!(
-        "https://login.microsoftonline.com/{}/oauth2/v2.0/authorize\
-         ?client_id={}&response_type=code&redirect_uri={}&response_mode=query\
+        "{}?client_id={}&response_type=code&redirect_uri={}&response_mode=query\
          &scope=openid%20profile%20email&state={}&nonce={}",
-        urlencode(&oidc.tenant),
+        oidc.authorize_url,
         urlencode(&oidc.client_id),
         urlencode(&oidc.redirect_url),
         csrf,
@@ -334,28 +414,16 @@ struct TokenResponse {
     id_token: String,
 }
 
-#[derive(serde::Deserialize)]
-struct IdClaims {
-    iss: String,
-    aud: String,
-    exp: i64,
-    nonce: Option<String>,
-    email: Option<String>,
-    preferred_username: Option<String>,
-    name: Option<String>,
-    sub: String,
-}
-
 async fn callback(
     State(state): State<std::sync::Arc<WebState>>,
     Query(params): Query<CallbackParams>,
 ) -> Response {
     let Some(oidc) = &state.oidc else {
-        return plain(StatusCode::NOT_IMPLEMENTED, "Azure AD login is not configured");
+        return plain(StatusCode::NOT_IMPLEMENTED, "OIDC login is not configured");
     };
     if let Some(error) = params.error {
         let detail = params.error_description.unwrap_or_default();
-        return plain(StatusCode::UNAUTHORIZED, &format!("Azure AD refused the login: {error} {detail}"));
+        return plain(StatusCode::UNAUTHORIZED, &format!("{} refused the login: {error} {detail}", oidc.label));
     }
     let (Some(code), Some(csrf)) = (params.code, params.state) else {
         return plain(StatusCode::BAD_REQUEST, "the login response is missing code or state");
@@ -367,10 +435,6 @@ async fn callback(
         return plain(StatusCode::UNAUTHORIZED, "the login attempt expired — start again at /auth/login");
     }
 
-    let token_url = format!(
-        "https://login.microsoftonline.com/{}/oauth2/v2.0/token",
-        urlencode(&oidc.tenant)
-    );
     let form = [
         ("client_id", oidc.client_id.as_str()),
         ("client_secret", oidc.client_secret.as_str()),
@@ -378,13 +442,13 @@ async fn callback(
         ("code", code.as_str()),
         ("redirect_uri", oidc.redirect_url.as_str()),
     ];
-    let response = match state.http.post(&token_url).form(&form).send().await {
+    let response = match state.http.post(&oidc.token_url).form(&form).send().await {
         Ok(r) => r,
-        Err(e) => return plain(StatusCode::BAD_GATEWAY, &format!("could not reach Azure AD: {e}")),
+        Err(e) => return plain(StatusCode::BAD_GATEWAY, &format!("could not reach {}: {e}", oidc.label)),
     };
     if !response.status().is_success() {
         let body = response.text().await.unwrap_or_default();
-        return plain(StatusCode::UNAUTHORIZED, &format!("Azure AD rejected the code exchange: {body}"));
+        return plain(StatusCode::UNAUTHORIZED, &format!("{} rejected the code exchange: {body}", oidc.label));
     }
     let tokens: TokenResponse = match response.json().await {
         Ok(t) => t,
@@ -394,32 +458,41 @@ async fn callback(
     // The id_token arrived over the direct TLS channel to the issuer's token
     // endpoint, which is the OIDC-sanctioned alternative to verifying its
     // signature (Core §3.1.3.7). The claims are still validated one by one.
-    let claims = match decode_id_token(&tokens.id_token) {
+    let claims_value = match decode_id_token_value(&tokens.id_token) {
         Ok(c) => c,
         Err(e) => return plain(StatusCode::UNAUTHORIZED, &e),
     };
-    let expected_iss_prefix = "https://login.microsoftonline.com/";
-    if !claims.iss.starts_with(expected_iss_prefix) {
-        return plain(StatusCode::UNAUTHORIZED, "the token issuer is not Microsoft");
+    let iss = claims_value.get("iss").and_then(|v| v.as_str()).unwrap_or("");
+    if iss != oidc.issuer && !iss.starts_with(&oidc.issuer) {
+        return plain(StatusCode::UNAUTHORIZED, "the token issuer is not the configured OIDC issuer");
     }
-    if claims.aud != oidc.client_id {
+    let aud = claims_value.get("aud").and_then(|v| v.as_str()).unwrap_or("");
+    if aud != oidc.client_id {
         return plain(StatusCode::UNAUTHORIZED, "the token was issued for a different application");
     }
-    if claims.exp < chrono::Utc::now().timestamp() {
+    let exp = claims_value.get("exp").and_then(|v| v.as_i64()).unwrap_or(0);
+    if exp < chrono::Utc::now().timestamp() {
         return plain(StatusCode::UNAUTHORIZED, "the token is already expired");
     }
-    if claims.nonce.as_deref() != Some(pending.nonce.as_str()) {
+    let nonce = claims_value.get("nonce").and_then(|v| v.as_str());
+    if nonce != Some(pending.nonce.as_str()) {
         return plain(StatusCode::UNAUTHORIZED, "the token does not answer this login attempt");
     }
-    let Some(email) = claims.email.or(claims.preferred_username) else {
+    let email = email_from_claims(&claims_value, &oidc.email_claim);
+    let Some(email) = email else {
         return plain(
             StatusCode::UNAUTHORIZED,
-            "Azure AD sent no email for this account; the app cannot register it",
+            &format!(
+                "{} sent no email for this account (claim '{}'); the app cannot register it",
+                oidc.label, oidc.email_claim
+            ),
         );
     };
+    let name = claims_value.get("name").and_then(|v| v.as_str());
+    let sub = claims_value.get("sub").and_then(|v| v.as_str());
 
     let store = AuthStore::attach(&state.db);
-    let user = match store.register_login(&email, claims.name.as_deref(), Some(&claims.sub)) {
+    let user = match store.register_login(&email, name, sub) {
         Ok(u) => u,
         Err(e) => return plain(StatusCode::FORBIDDEN, &e),
     };
@@ -442,7 +515,7 @@ async fn callback(
         .unwrap()
 }
 
-fn decode_id_token(token: &str) -> Result<IdClaims, String> {
+fn decode_id_token_value(token: &str) -> Result<serde_json::Value, String> {
     use base64::Engine;
     let payload = token
         .split('.')
@@ -452,6 +525,28 @@ fn decode_id_token(token: &str) -> Result<IdClaims, String> {
         .decode(payload)
         .map_err(|e| format!("the id_token payload is not base64: {e}"))?;
     serde_json::from_slice(&bytes).map_err(|e| format!("the id_token claims are unreadable: {e}"))
+}
+
+fn email_from_claims(claims: &serde_json::Value, claim: &str) -> Option<String> {
+    claims
+        .get(claim)
+        .and_then(|v| v.as_str())
+        .filter(|s| s.contains('@'))
+        .map(|s| s.to_string())
+        .or_else(|| {
+            claims
+                .get("email")
+                .and_then(|v| v.as_str())
+                .filter(|s| s.contains('@'))
+                .map(|s| s.to_string())
+        })
+        .or_else(|| {
+            claims
+                .get("preferred_username")
+                .and_then(|v| v.as_str())
+                .filter(|s| s.contains('@'))
+                .map(|s| s.to_string())
+        })
 }
 
 async fn logout(State(state): State<std::sync::Arc<WebState>>, headers: HeaderMap) -> Response {
@@ -473,6 +568,42 @@ async fn me(State(state): State<std::sync::Arc<WebState>>, headers: HeaderMap) -
     match current_user(&state, &headers) {
         Ok(user) => (StatusCode::OK, axum::Json(user)).into_response(),
         Err(response) => response,
+    }
+}
+
+fn bearer_token(headers: &HeaderMap) -> Option<&str> {
+    headers
+        .get(header::AUTHORIZATION)?
+        .to_str()
+        .ok()?
+        .strip_prefix("Bearer ")
+}
+
+fn tokens_equal(got: &str, want: &str) -> bool {
+    if got.len() != want.len() {
+        return false;
+    }
+    got.bytes().zip(want.bytes()).fold(0u8, |acc, (a, b)| acc | (a ^ b)) == 0
+}
+
+/// DaemonSet ingest — not a user session. The shared secret is the only gate.
+async fn ingest_rollups(
+    State(state): State<std::sync::Arc<WebState>>,
+    headers: HeaderMap,
+    body: axum::Json<crate::ingest::IngestBatch>,
+) -> Response {
+    let Some(expected) = state.ingest_token.as_deref() else {
+        return plain(StatusCode::NOT_FOUND, "collector ingest is not configured on this install");
+    };
+    let Some(got) = bearer_token(&headers) else {
+        return plain(StatusCode::UNAUTHORIZED, "missing ingest token");
+    };
+    if !tokens_equal(got, expected) {
+        return plain(StatusCode::UNAUTHORIZED, "ingest token is not valid");
+    }
+    match crate::ingest::ingest(&state.db, body.0).await {
+        Ok(result) => (StatusCode::OK, axum::Json(result)).into_response(),
+        Err(error) => plain(StatusCode::BAD_REQUEST, &error),
     }
 }
 
@@ -579,6 +710,8 @@ fn required_permission(cmd: &str) -> &'static str {
         "create_velero_backup" | "create_velero_restore" => "manage-velero",
         "set_kyverno_policy_action" => "manage-kyverno",
         "set_node_schedulable" | "delete_node" | "drain_node" => "manage-nodes",
+        "list_rightsizing_workloads" | "get_rightsizing_workload" | "get_hpa_status"
+        | "preview_hpa" | "apply_hpa" | "undo_hpa" => "admin",
         _ => "view",
     }
 }
@@ -828,7 +961,7 @@ async fn invoke(
 
     let outcome = match shell_command(&state, &command, &args, &user, &store) {
         Some(result) => result,
-        None => dispatch(&command, &args).await,
+        None => dispatch(state.as_ref(), &user, &command, &args).await,
     };
 
     // Reads gated only by 'view' or 'view-logs' would flood the log from
@@ -902,9 +1035,55 @@ fn val<T: serde::Serialize>(value: T) -> Result<Value, String> {
     serde_json::to_value(value).map_err(|e| e.to_string())
 }
 
-async fn dispatch(cmd: &str, a: &Value) -> Result<Value, String> {
+fn form_from_args(a: &Value) -> Result<crate::hpa::HpaForm, String> {
+    Ok(crate::hpa::HpaForm {
+        namespace: arg(a, "namespace")?,
+        target_kind: arg(a, "target_kind")?,
+        target_name: arg(a, "target_name")?,
+        name: arg(a, "name")?,
+        min_replicas: arg(a, "min_replicas")?,
+        max_replicas: arg(a, "max_replicas")?,
+        metric: arg(a, "metric")?,
+        target_utilization: arg(a, "target_utilization")?,
+        stabilize_up_seconds: arg(a, "stabilize_up_seconds")?,
+        stabilize_down_seconds: arg(a, "stabilize_down_seconds")?,
+        import_existing: arg(a, "import_existing")?,
+    })
+}
+
+async fn dispatch(state: &WebState, user: &UserRecord, cmd: &str, a: &Value) -> Result<Value, String> {
     use super::*;
     match cmd {
+        "list_rightsizing_workloads" => val(crate::rightsizing::list_workloads(&state.db).await?),
+        "get_rightsizing_workload" => val(crate::rightsizing::workload_detail(
+            &state.db,
+            &arg::<String>(a, "namespace")?,
+            &arg::<String>(a, "kind")?,
+            &arg::<String>(a, "name")?,
+            arg::<Option<String>>(a, "container")?.as_deref(),
+        ).await?),
+        "get_hpa_status" => val(crate::hpa::status(
+            &state.db,
+            &arg::<String>(a, "namespace")?,
+            &arg::<String>(a, "kind")?,
+            &arg::<String>(a, "name")?,
+        ).await?),
+        "preview_hpa" => {
+            let form: crate::hpa::HpaForm = serde_json::from_value(a.clone())
+                .or_else(|_| form_from_args(a))?;
+            val(crate::hpa::preview(&form).await?)
+        }
+        "apply_hpa" => {
+            let form: crate::hpa::HpaForm = serde_json::from_value(a.clone())
+                .or_else(|_| form_from_args(a))?;
+            val(crate::hpa::apply(&state.db, &form, &user.email).await?)
+        }
+        "undo_hpa" => val(crate::hpa::undo(
+            &state.db,
+            &arg::<String>(a, "namespace")?,
+            &arg::<String>(a, "name")?,
+            &user.email,
+        ).await?),
         "list_namespaces" => val(list_namespaces(arg(a, "context")?).await?),
         "list_pods" => val(list_pods(arg(a, "context")?, arg(a, "namespace")?).await?),
         "list_pod_containers" => val(list_pod_containers(arg(a, "context")?, arg(a, "namespace")?, arg(a, "pod_name")?).await?),
@@ -1132,8 +1311,57 @@ mod tests {
 
     #[test]
     fn unknown_commands_are_refused_not_guessed() {
-        let outcome = futures::executor::block_on(dispatch("open_reverse_shell", &json!({})));
+        let dir = std::env::temp_dir().join("tmjlens-db-tests");
+        std::fs::create_dir_all(&dir).expect("temp dir");
+        let path = dir.join(format!(
+            "web-dispatch-{}-{}.tmjp",
+            std::process::id(),
+            std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos()
+        ));
+        let db = crate::db::Db::open(&path).expect("open");
+        let state = WebState {
+            db,
+            cluster_name: String::new(),
+            sessions: Mutex::new(HashMap::new()),
+            pending: Mutex::new(HashMap::new()),
+            oidc: None,
+            ingest_token: None,
+            dev_user: None,
+            http: reqwest::Client::new(),
+            secure_cookie: false,
+        };
+        let guest = user(&["guest"], &["overview"], true);
+        let outcome = futures::executor::block_on(dispatch(&state, &guest, "open_reverse_shell", &json!({})));
         assert!(outcome.is_err());
+    }
+
+    #[test]
+    fn rightsizing_and_hpa_are_admin_even_on_reads() {
+        for cmd in [
+            "list_rightsizing_workloads",
+            "get_rightsizing_workload",
+            "get_hpa_status",
+            "preview_hpa",
+            "apply_hpa",
+            "undo_hpa",
+        ] {
+            assert_eq!(required_permission(cmd), "admin", "{cmd} must 403 a developer or guest");
+        }
+        with_store(|store| {
+            let guest = user(&["guest"], &["overview"], true);
+            let dev = user(&["developer"], DEV_PERMS, true);
+            let admin = user(&["admin"], &["admin"], true);
+            assert_eq!(decide(store, &guest, "admin", "production"), Decision::DeniedMissing);
+            assert_eq!(decide(store, &dev, "admin", "production"), Decision::DeniedMissing);
+            assert_eq!(decide(store, &admin, "admin", "production"), Decision::Allow);
+        });
+    }
+
+    #[test]
+    fn ingest_tokens_compare_in_constant_time_and_reject_length_mismatch() {
+        assert!(tokens_equal("abc", "abc"));
+        assert!(!tokens_equal("abc", "abd"));
+        assert!(!tokens_equal("abc", "ab"));
     }
 
     #[test]

@@ -1,0 +1,38 @@
+{{- if .Values.collector.enabled }}
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: {{ include "tmjlens.fullname" . }}-collector
+  labels:
+    {{- include "tmjlens.labels" . | nindent 4 }}
+    app.kubernetes.io/component: collector
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: {{ include "tmjlens.fullname" . }}-collector
+  labels:
+    {{- include "tmjlens.labels" . | nindent 4 }}
+    app.kubernetes.io/component: collector
+rules:
+  # Direct kubelet scrape on :10250. nodes/proxy is intentionally absent.
+  - apiGroups: [""]
+    resources: ["nodes/metrics"]
+    verbs: ["get"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: {{ include "tmjlens.fullname" . }}-collector
+  labels:
+    {{- include "tmjlens.labels" . | nindent 4 }}
+    app.kubernetes.io/component: collector
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: {{ include "tmjlens.fullname" . }}-collector
+subjects:
+  - kind: ServiceAccount
+    name: {{ include "tmjlens.fullname" . }}-collector
+    namespace: {{ .Release.Namespace }}
+{{- end }}

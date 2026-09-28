@@ -2,7 +2,7 @@ import { useEffect, useRef, useState } from 'react';
 import { hasBridge, invoke } from './lib/transport';
 import {
   BarChart3, Box, ChevronDown, CircleAlert, DatabaseBackup, Download, FileCog, Gauge, GitBranch, HardDrive,
-  Gavel, Layers3, ListTree, Network, Search, Server, Settings, ShieldCheck, Terminal,
+  Gavel, Layers3, ListTree, Network, Search, Server, Settings, ShieldCheck, SlidersHorizontal, Terminal,
   Trash2, Workflow, X, XCircle
 } from 'lucide-react';
 import { ActionMenu } from './components/ActionMenu';
@@ -19,6 +19,8 @@ import type { NetworkOverview } from './types/network';
 import { ReportsPage, type RunRequest } from './components/reports/ReportsPage';
 import { AccessPage } from './components/access/AccessPage';
 import { canSeePlatform, hasPermission, isAdmin, type AuditTable, type MeUser, type ProfileSummary, type UserSummary } from './types/access';
+import { RightsizingPage } from './components/rightsizing/RightsizingPage';
+import type { HpaPreview, HpaStatus, WorkloadDetail, WorkloadRow as RightsizingRow } from './types/rightsizing';
 import { NamespacesPage } from './components/namespaces/NamespacesPage';
 import { NodesPage } from './components/nodes/NodesPage';
 import type { NamespaceOverview } from './types/reports';
@@ -122,6 +124,14 @@ export function App() {
   const [accessAudit, setAccessAudit] = useState<AuditTable | null>(null);
   const [accessError, setAccessError] = useState('');
   const [isLoadingAccess, setIsLoadingAccess] = useState(false);
+  const [rightsizing, setRightsizing] = useState<RightsizingRow[]>([]);
+  const [rightsizingError, setRightsizingError] = useState('');
+  const [isLoadingRightsizing, setIsLoadingRightsizing] = useState(false);
+  const [rightsizingSelected, setRightsizingSelected] = useState<RightsizingRow | null>(null);
+  const [rightsizingDetail, setRightsizingDetail] = useState<WorkloadDetail | null>(null);
+  const [hpaStatus, setHpaStatus] = useState<HpaStatus | null>(null);
+  const [hpaPreview, setHpaPreview] = useState<HpaPreview | null>(null);
+  const [hpaApplying, setHpaApplying] = useState(false);
   const [settings, setSettings] = useState<AppSettings>({ context_environments: {}, confirm_destructive_in_production: true });
   const [showSettings, setShowSettings] = useState(false);
   const [showPalette, setShowPalette] = useState(false);
@@ -167,6 +177,32 @@ export function App() {
       setAccessError(String(error));
     } finally {
       setIsLoadingAccess(false);
+    }
+  };
+
+  const loadRightsizing = async () => {
+    setIsLoadingRightsizing(true); setRightsizingError('');
+    try {
+      setRightsizing(await invoke<RightsizingRow[]>('list_rightsizing_workloads', {}));
+    } catch (error) {
+      setRightsizingError(String(error));
+    } finally {
+      setIsLoadingRightsizing(false);
+    }
+  };
+
+  const openRightsizing = async (row: RightsizingRow) => {
+    setRightsizingSelected(row);
+    setHpaPreview(null);
+    try {
+      const [detail, status] = await Promise.all([
+        invoke<WorkloadDetail>('get_rightsizing_workload', { namespace: row.namespace, kind: row.kind, name: row.name, container: row.container }),
+        invoke<HpaStatus>('get_hpa_status', { namespace: row.namespace, kind: row.kind, name: row.name }),
+      ]);
+      setRightsizingDetail(detail);
+      setHpaStatus(status);
+    } catch (error) {
+      setRightsizingError(String(error));
     }
   };
 
@@ -810,7 +846,9 @@ export function App() {
     ...(canSeePlatform(me) ? [
       { id: 'go-reports', label: 'Go to Reports', group: 'Navigate', run: () => setActive('Reports') },
     ] : []),
-    { id: 'open-settings', label: 'Open Settings', group: 'App', run: () => setShowSettings(true) },
+    ...(isAdmin(me) ? [
+      { id: 'go-rightsizing', label: 'Go to Rightsizing', group: 'Navigate', run: () => setActive('Rightsizing') },
+    ] : []),
     { id: 'refresh-cluster', label: 'Refresh cluster overview', group: 'Action', run: () => void loadClusterOverview() },
     { id: 'refresh-network', label: 'Refresh network', group: 'Action', run: () => void loadNetwork() },
     { id: 'refresh-workloads', label: 'Refresh controllers', group: 'Action', run: () => void loadInventory() },
@@ -926,6 +964,7 @@ export function App() {
     }
     if (active === 'Workloads' && workloadView === 'Deployments') void loadInventory();
     if (active === 'Access') void loadAccess();
+    if (active === 'Rightsizing') void loadRightsizing();
     if (active === 'Nodes') {
       void loadClusterOverview();
       void refreshNodeCapabilities(context);
@@ -962,9 +1001,68 @@ export function App() {
         {platform && <><div className="section-title aws">CLOUD</div><Nav icon={<Network size={16}/>} label="Load Balancers"/><Nav icon={<Box size={16}/>} label="Node Pools"/></>}
         {platform && <><div className="section-title plugins">PLUGINS</div><Nav icon={<DatabaseBackup size={16}/>} label="Velero" active={active === 'Velero'} onClick={() => setActive('Velero')} /><Nav icon={<Gavel size={16}/>} label="Kyverno" active={active === 'Kyverno'} onClick={() => setActive('Kyverno')} /><Nav icon={<Terminal size={16}/>} label="Helm" active={active === 'Helm'} onClick={() => setActive('Helm')} /><Nav icon={<Workflow size={16}/>} label="Argo Workflows" active={active === 'Argo Workflows'} onClick={() => setActive('Argo Workflows')} /><Nav icon={<Workflow size={16}/>} label="Argo CD"/></>}
       </>}
-      {isAdmin(me) && <><div className="section-title">ADMIN</div><Nav icon={<ShieldCheck size={16}/>} label="Access" active={active === 'Access'} onClick={() => setActive('Access')} /></>}
+      {isAdmin(me) && <><div className="section-title">ADMIN</div><Nav icon={<ShieldCheck size={16}/>} label="Access" active={active === 'Access'} onClick={() => setActive('Access')} /><Nav icon={<SlidersHorizontal size={16}/>} label="Rightsizing" active={active === 'Rightsizing'} onClick={() => setActive('Rightsizing')} /></>}
     </aside><main className="main"><div className="breadcrumbs">Cluster / {active === 'Access' ? 'app' : namespace} / {active}</div><div className="title-row"><div><h1>{active}</h1>{active === 'Access' ? <p>Who can do what, and who did what</p> : <p>Live Kubernetes resources from <b>{context}</b></p>}</div></div>
-      {showEvents ? <EventsPanel events={events} onRefresh={refreshEvents}/> : active === 'Namespaces' ? <NamespacesPage data={namespaceOverview} loading={isLoadingNamespaces} error={namespaceError} current={namespace} canManage={canManageNamespaces} onRefresh={() => void loadNamespaceOverview()} onSelect={(name) => void handleNamespaceChange(name)} onCreate={async (name) => { await invoke('create_namespace', { context, name }); await loadNamespaceOverview(); setNamespaces(await invoke<string[]>('list_namespaces', { context }).catch(() => namespaces)); }} onDelete={async (name) => { await invoke('delete_namespace', { context, name }); await loadNamespaceOverview(); }} onForceFinalize={async (name) => { const cleared = await invoke<string>('force_finalize_namespace', { context, name }); await loadNamespaceOverview(); setNamespaces(await invoke<string[]>('list_namespaces', { context }).catch(() => namespaces)); return cleared; }} notify={notify}/> : active === 'Storage' ? <StoragePage data={storage} loading={isLoadingStorage} error={storageError} canDelete={canDeleteStorage} onRefresh={() => void loadStorage()} onDeleteClaim={async (name) => { await invoke('delete_pvc', { context, namespace, name }); await loadStorage(); }} onDeleteVolume={async (name) => { await invoke('delete_pv', { context, name }); await loadStorage(); }} notify={notify}/> : active === 'Configuration' ? <ConfigurationPage data={configuration} loading={isLoadingConfiguration} error={configurationError} canEditConfigMaps={capabilities.patchConfigMaps} canEditSecrets={capabilities.patchSecrets} onRefresh={() => void loadConfiguration()} onRead={readConfigurationKey} onSave={saveConfigurationKey} onDelete={deleteConfigurationKey} notify={notify}/> : active === 'Argo Workflows' ? <ArgoPage data={argoOverview} loading={isLoadingArgo} error={argoError} capabilities={argoCapabilities} onRefresh={() => void loadArgo()} onSetImage={setArgoImage} onSetResources={setArgoResources} onSetSchedule={setArgoSchedule} onSuspendCron={suspendArgoCron} onSubmitTemplate={submitArgoTemplate} onStopWorkflow={stopArgoWorkflow} onDeleteWorkflow={deleteArgoWorkflow}/> : active === 'Helm' ? <HelmPage data={helmOverview} loading={isLoadingHelm} error={helmError} onRefresh={() => void loadHelm()} onOpenDetail={openHelmRelease} onUninstall={uninstallHelmRelease} onRollback={rollbackHelmRelease} notify={notify}/> : active === 'Velero' ? <VeleroPage status={velero} loading={isLoadingVelero} error={veleroError} namespaces={namespaces} canBackup={veleroCapabilities.backup} canRestore={veleroCapabilities.restore} onRefresh={() => void loadVelero()} onCreateBackup={createVeleroBackup} onCreateRestore={createVeleroRestore}/> : active === 'Kyverno' ? <KyvernoPage data={kyvernoOverview} loading={isLoadingKyverno} error={kyvernoError} canToggle={canToggleKyverno} onRefresh={() => void loadKyverno()} onToggleAction={toggleKyvernoAction} notify={notify}/> : active === 'Nodes' ? <NodesPage data={clusterOverview} loading={isLoadingCluster} error={clusterError} capabilities={nodeCapabilities} onRefresh={() => void loadClusterOverview()} onNodeAction={nodeAction}/> : active === 'Access' ? <AccessPage me={me} users={accessUsers} profiles={accessProfiles} audit={accessAudit} loading={isLoadingAccess} error={accessError} onRefresh={() => void loadAccess()} onGrant={async (user, profile) => { await invoke('admin_grant_profile', { userId: user.id, profileId: profile.id }); await loadAccess(); }} onRevoke={async (user, profileName) => { const profile = accessProfiles.find((entry) => entry.name === profileName); if (!profile) throw String('unknown profile'); await invoke('admin_revoke_profile', { userId: user.id, profileId: profile.id }); await loadAccess(); }} onSetActive={async (user, activeFlag) => { await invoke('admin_set_user_active', { userId: user.id, active: activeFlag }); await loadAccess(); }} notify={notify}/> : active === 'Network' ? <NetworkPage data={network} loading={isLoadingNetwork} error={networkError} onRefresh={() => void loadNetwork()} onEditYaml={(kind, name) => setYamlTarget({ kind, name })}/> :active === 'Workloads' ? <><WorkloadsPage view={workloadView} onViewChange={setWorkloadView} pods={pods} deployments={deployments} selectedPod={selectedPod} selectedDeployment={selectedDeployment} capabilities={{ deletePods: capabilities.deletePods, deleteDeployments: capabilities.deleteDeployments, patchDeployments: capabilities.patchDeployments }} onSelectPod={selectPod} onSelectDeployment={(name) => { setSelectedDeployment(name); setShowDetail(false); }} onDeletePod={(name) => void deletePod(name)} onOpenPodLogs={setLogPopupPod} onExportPodLogs={(name) => void exportLogsFor(name)} onDeleteDeployment={(name) => void deleteDeployment(name)} onExportDeployment={(name) => void exportDeployment(name)} podsLive={podWatch.live} usage={podMetrics.byPod} usageAvailable={podMetrics.available} usageReason={podMetrics.reason}
+      {showEvents ? <EventsPanel events={events} onRefresh={refreshEvents}/> : active === 'Rightsizing' ? <RightsizingPage
+        rows={rightsizing} loading={isLoadingRightsizing} error={rightsizingError}
+        selected={rightsizingSelected} detail={rightsizingDetail} hpa={hpaStatus} preview={hpaPreview} applying={hpaApplying}
+        onRefresh={() => void loadRightsizing()}
+        onSelect={(row) => void openRightsizing(row)}
+        onPreview={async (input) => {
+          if (!rightsizingSelected) return;
+          try {
+            const result = await invoke<HpaPreview>('preview_hpa', {
+              namespace: rightsizingSelected.namespace,
+              targetKind: rightsizingSelected.kind,
+              targetName: rightsizingSelected.name,
+              minReplicas: input.minReplicas,
+              maxReplicas: input.maxReplicas,
+              metric: input.metric,
+              targetUtilization: input.targetUtilization,
+              importExisting: input.importExisting,
+            });
+            setHpaPreview(result);
+            if (result.blocks.length) notify('Preview blocked', result.blocks.join(' '), 'bad');
+          } catch (error) {
+            notify('HPA preview failed', String(error), 'bad');
+          }
+        }}
+        onApply={async (input) => {
+          if (!rightsizingSelected) return;
+          if (!confirmDestructive(`Apply HPA for ${rightsizingSelected.kind}/${rightsizingSelected.name}?`)) return;
+          setHpaApplying(true);
+          try {
+            await invoke('apply_hpa', {
+              namespace: rightsizingSelected.namespace,
+              targetKind: rightsizingSelected.kind,
+              targetName: rightsizingSelected.name,
+              minReplicas: input.minReplicas,
+              maxReplicas: input.maxReplicas,
+              metric: input.metric,
+              targetUtilization: input.targetUtilization,
+              importExisting: input.importExisting,
+            });
+            notify('HPA applied', rightsizingSelected.name, 'good');
+            setHpaPreview(null);
+            await openRightsizing(rightsizingSelected);
+          } catch (error) {
+            notify('HPA apply failed', String(error), 'bad');
+          } finally {
+            setHpaApplying(false);
+          }
+        }}
+        onUndo={async () => {
+          if (!rightsizingSelected || !hpaStatus?.name) return;
+          if (!confirmDestructive(`Undo HPA ${hpaStatus.name}?`)) return;
+          try {
+            await invoke('undo_hpa', { namespace: rightsizingSelected.namespace, name: hpaStatus.name });
+            notify('HPA undone', hpaStatus.name, 'good');
+            await openRightsizing(rightsizingSelected);
+          } catch (error) {
+            notify('HPA undo failed', String(error), 'bad');
+          }
+        }}
+      /> : active === 'Namespaces' ? <NamespacesPage data={namespaceOverview} loading={isLoadingNamespaces} error={namespaceError} current={namespace} canManage={canManageNamespaces} onRefresh={() => void loadNamespaceOverview()} onSelect={(name) => void handleNamespaceChange(name)} onCreate={async (name) => { await invoke('create_namespace', { context, name }); await loadNamespaceOverview(); setNamespaces(await invoke<string[]>('list_namespaces', { context }).catch(() => namespaces)); }} onDelete={async (name) => { await invoke('delete_namespace', { context, name }); await loadNamespaceOverview(); }} onForceFinalize={async (name) => { const cleared = await invoke<string>('force_finalize_namespace', { context, name }); await loadNamespaceOverview(); setNamespaces(await invoke<string[]>('list_namespaces', { context }).catch(() => namespaces)); return cleared; }} notify={notify}/> : active === 'Storage' ? <StoragePage data={storage} loading={isLoadingStorage} error={storageError} canDelete={canDeleteStorage} onRefresh={() => void loadStorage()} onDeleteClaim={async (name) => { await invoke('delete_pvc', { context, namespace, name }); await loadStorage(); }} onDeleteVolume={async (name) => { await invoke('delete_pv', { context, name }); await loadStorage(); }} notify={notify}/> : active === 'Configuration' ? <ConfigurationPage data={configuration} loading={isLoadingConfiguration} error={configurationError} canEditConfigMaps={capabilities.patchConfigMaps} canEditSecrets={capabilities.patchSecrets} onRefresh={() => void loadConfiguration()} onRead={readConfigurationKey} onSave={saveConfigurationKey} onDelete={deleteConfigurationKey} notify={notify}/> : active === 'Argo Workflows' ? <ArgoPage data={argoOverview} loading={isLoadingArgo} error={argoError} capabilities={argoCapabilities} onRefresh={() => void loadArgo()} onSetImage={setArgoImage} onSetResources={setArgoResources} onSetSchedule={setArgoSchedule} onSuspendCron={suspendArgoCron} onSubmitTemplate={submitArgoTemplate} onStopWorkflow={stopArgoWorkflow} onDeleteWorkflow={deleteArgoWorkflow}/> : active === 'Helm' ? <HelmPage data={helmOverview} loading={isLoadingHelm} error={helmError} onRefresh={() => void loadHelm()} onOpenDetail={openHelmRelease} onUninstall={uninstallHelmRelease} onRollback={rollbackHelmRelease} notify={notify}/> : active === 'Velero' ? <VeleroPage status={velero} loading={isLoadingVelero} error={veleroError} namespaces={namespaces} canBackup={veleroCapabilities.backup} canRestore={veleroCapabilities.restore} onRefresh={() => void loadVelero()} onCreateBackup={createVeleroBackup} onCreateRestore={createVeleroRestore}/> : active === 'Kyverno' ? <KyvernoPage data={kyvernoOverview} loading={isLoadingKyverno} error={kyvernoError} canToggle={canToggleKyverno} onRefresh={() => void loadKyverno()} onToggleAction={toggleKyvernoAction} notify={notify}/> : active === 'Nodes' ? <NodesPage data={clusterOverview} loading={isLoadingCluster} error={clusterError} capabilities={nodeCapabilities} onRefresh={() => void loadClusterOverview()} onNodeAction={nodeAction}/> : active === 'Access' ? <AccessPage me={me} users={accessUsers} profiles={accessProfiles} audit={accessAudit} loading={isLoadingAccess} error={accessError} onRefresh={() => void loadAccess()} onGrant={async (user, profile) => { await invoke('admin_grant_profile', { userId: user.id, profileId: profile.id }); await loadAccess(); }} onRevoke={async (user, profileName) => { const profile = accessProfiles.find((entry) => entry.name === profileName); if (!profile) throw String('unknown profile'); await invoke('admin_revoke_profile', { userId: user.id, profileId: profile.id }); await loadAccess(); }} onSetActive={async (user, activeFlag) => { await invoke('admin_set_user_active', { userId: user.id, active: activeFlag }); await loadAccess(); }} notify={notify}/> : active === 'Network' ? <NetworkPage data={network} loading={isLoadingNetwork} error={networkError} onRefresh={() => void loadNetwork()} onEditYaml={(kind, name) => setYamlTarget({ kind, name })}/> :active === 'Workloads' ? <><WorkloadsPage view={workloadView} onViewChange={setWorkloadView} pods={pods} deployments={deployments} selectedPod={selectedPod} selectedDeployment={selectedDeployment} capabilities={{ deletePods: capabilities.deletePods, deleteDeployments: capabilities.deleteDeployments, patchDeployments: capabilities.patchDeployments }} onSelectPod={selectPod} onSelectDeployment={(name) => { setSelectedDeployment(name); setShowDetail(false); }} onDeletePod={(name) => void deletePod(name)} onOpenPodLogs={setLogPopupPod} onExportPodLogs={(name) => void exportLogsFor(name)} onDeleteDeployment={(name) => void deleteDeployment(name)} onExportDeployment={(name) => void exportDeployment(name)} podsLive={podWatch.live} usage={podMetrics.byPod} usageAvailable={podMetrics.available} usageReason={podMetrics.reason}
       controllers={<WorkloadInventoryTable inventory={inventory} loading={isLoadingInventory} error={inventoryError}
         selected={selectedDeployment ? `Deployment/${selectedDeployment}` : ''} canDelete={capabilities.deleteDeployments}
         onSelect={(row) => { if (row.kind === 'Deployment') { setSelectedDeployment(row.name); } else { setYamlTarget({ kind: row.kind, name: row.name }); } }}
