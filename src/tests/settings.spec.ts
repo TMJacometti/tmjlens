@@ -25,7 +25,7 @@ test.describe('settings about', () => {
   test('the release notes close the tab and name this release', async ({ page }) => {
     const dialog = page.getByRole('dialog', { name: 'Settings' });
     await expect(dialog).toContainText(`What's new in ${version}`);
-    await expect(dialog).toContainText('New Kyverno plugin');
-    await expect(dialog).toContainText('reporting, not blocking');
+    await expect(dialog).toContainText('Rightsizing for Admins');
+    await expect(dialog).toContainText('never a silent zero');
   });
 });
