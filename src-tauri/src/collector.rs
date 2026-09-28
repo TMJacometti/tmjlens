@@ -5,6 +5,7 @@ use crate::cadvisor::{cpu_millicores, parse_cadvisor, throttle_ratio, ContainerS
 use crate::histogram::Histogram;
 use serde::Serialize;
 use std::collections::HashMap;
+use std::net::{IpAddr, SocketAddr};
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
@@ -88,14 +89,18 @@ pub async fn run() -> Result<(), String> {
         Some("1" | "true" | "yes" | "on")
     );
     let ca_file = std::env::var("TMJLENS_KUBELET_CA").ok().filter(|s| !s.is_empty());
-    let port = std::env::var("KUBELET_PORT").unwrap_or_else(|_| "10250".into());
-    let cadvisor_url = format!("https://{node_ip}:{port}/metrics/cadvisor");
+    let port_raw = std::env::var("KUBELET_PORT").unwrap_or_else(|_| "10250".into());
+    let port: u16 = port_raw
+        .parse()
+        .map_err(|_| format!("KUBELET_PORT {port_raw} is not a port"))?;
+    // SNI and cert hostname are the node name; the Downward API IP is only the dial target.
+    let cadvisor_url = format!("https://{node}:{port}/metrics/cadvisor");
 
     let sa_token = std::fs::read_to_string("/var/run/secrets/kubernetes.io/serviceaccount/token")
         .map_err(|e| format!("could not read the ServiceAccount token: {e}"))?;
     let default_ca = PathBuf::from("/var/run/secrets/kubernetes.io/serviceaccount/ca.crt");
 
-    let kubelet = kubelet_client(insecure, ca_file.as_deref(), default_ca.as_path())?;
+    let kubelet = kubelet_client(&node, &node_ip, port, ca_file.as_deref(), default_ca.as_path())?;
     let ingest = reqwest::Client::builder()
         .timeout(Duration::from_secs(20))
         .build()
@@ -104,8 +109,14 @@ pub async fn run() -> Result<(), String> {
     let dir = buffer_dir();
     std::fs::create_dir_all(&dir).map_err(|e| format!("could not create buffer dir {}: {e}", dir.display()))?;
 
+    if insecure {
+        eprintln!(
+            "collector.kubelet.insecureSkipVerify is set: TLS is still verified. \
+             The scrape uses NODE_NAME as SNI and dials NODE_IP. Set kubelet.caFile if the cluster CA is not the kubelet serving CA."
+        );
+    }
     eprintln!(
-        "tmjLens collector on {node} ({node_ip}) interval={}s window={}s insecure={insecure}",
+        "tmjLens collector on {node} ({node_ip}) interval={}s window={}s",
         interval.as_secs(),
         window.as_secs()
     );
@@ -135,19 +146,26 @@ pub async fn run() -> Result<(), String> {
     }
 }
 
-fn kubelet_client(insecure: bool, ca_file: Option<&str>, default_ca: &Path) -> Result<reqwest::Client, String> {
-    let mut builder = reqwest::Client::builder().timeout(Duration::from_secs(10));
-    if insecure {
-        builder = builder.danger_accept_invalid_certs(true);
-    } else {
-        let pem_path = ca_file.map(PathBuf::from).unwrap_or_else(|| default_ca.to_path_buf());
-        if pem_path.exists() {
-            let pem = std::fs::read(&pem_path)
-                .map_err(|e| format!("could not read kubelet CA {}: {e}", pem_path.display()))?;
-            let cert = reqwest::Certificate::from_pem(&pem)
-                .map_err(|e| format!("kubelet CA is not a PEM certificate: {e}"))?;
-            builder = builder.add_root_certificate(cert);
-        }
+fn kubelet_client(
+    node: &str,
+    node_ip: &str,
+    port: u16,
+    ca_file: Option<&str>,
+    default_ca: &Path,
+) -> Result<reqwest::Client, String> {
+    let ip: IpAddr = node_ip
+        .parse()
+        .map_err(|e| format!("NODE_IP {node_ip} is not an IP address: {e}"))?;
+    let mut builder = reqwest::Client::builder()
+        .timeout(Duration::from_secs(10))
+        .resolve(node, SocketAddr::new(ip, port));
+    let pem_path = ca_file.map(PathBuf::from).unwrap_or_else(|| default_ca.to_path_buf());
+    if pem_path.exists() {
+        let pem = std::fs::read(&pem_path)
+            .map_err(|e| format!("could not read kubelet CA {}: {e}", pem_path.display()))?;
+        let cert = reqwest::Certificate::from_pem(&pem)
+            .map_err(|e| format!("kubelet CA is not a PEM certificate: {e}"))?;
+        builder = builder.add_root_certificate(cert);
     }
     builder.build().map_err(|e| e.to_string())
 }

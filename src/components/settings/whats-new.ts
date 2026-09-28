@@ -4,8 +4,8 @@
  * The version number itself comes from package.json; only the story lives here.
  */
 export const WHATS_NEW: string[] = [
-  'New Kyverno plugin: every policy with its verdicts joined in — which rules Enforce and which merely Audit, the resources that fail them, and why.',
-  'Audit policies with failing resources are called out as "reporting, not blocking" — writing a policy is not the same as being protected by it.',
-  'Admins can switch a policy between Enforce and Audit from the screen, with the blast radius spelled out before the click and the change compare-and-set on the server.',
-  'Policies Kyverno itself rejected surface as Not ready with the rejection message, instead of quietly not applying.',
+  'Rightsizing for Admins: request vs real CPU/memory from a node DaemonSet, waste, and an explainable recommendation — never a silent zero when data could not be collected.',
+  'HPA manager (off by default): preview a server-side diff, apply with field manager tmjlens, undo. Developer and Guest get 403 even on the reads.',
+  'Generic OIDC alongside Azure AD, so an EKS install can sign in without Entra.',
+  'The collector posts rollups to the web replica; it never opens the tmjLite file on the PVC.',
 ];

@@ -85,7 +85,10 @@ collector:
     raw: 48h
     rollup: 90d
   kubelet:
+    # PEM of the kubelet serving CA. Empty uses the pod's cluster CA.
     caFile: ""
+    # Kept for the chart API. The scrape always verifies TLS: SNI is the node
+    # name, dialed at the Downward API host IP so the hostname on the cert matches.
     insecureSkipVerify: false
   resources:
     requests:

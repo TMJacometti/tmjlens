@@ -6,7 +6,7 @@
 
 image:
   repository: ghcr.io/tmjacometti/tmjlens
-  tag: "0.5.1"
+  tag: "0.6.0"
   pullPolicy: IfNotPresent
 
 environment:
@@ -60,8 +60,9 @@ persistence:
 collector:
   enabled: true
   kubelet:
-    # Kubelet certificates are often self-signed; set true after confirming
-    # nodes/metrics GET on :10250 works with the collector ServiceAccount.
+    # TLS is always verified. Set collector.kubelet.caFile if the cluster CA
+    # is not the kubelet serving CA. insecureSkipVerify is kept for the chart
+    # API and does not skip verification.
     insecureSkipVerify: false
 
 hpaManager:

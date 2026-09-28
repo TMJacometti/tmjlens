@@ -87,7 +87,7 @@ every field. Do not commit it — it holds the Azure secret.
 ```yaml
 image:
   repository: ghcr.io/tmjacometti/tmjlens
-  tag: "0.5.1"
+  tag: "0.6.0"
   pullPolicy: IfNotPresent
 
 environment:
@@ -121,7 +121,7 @@ ingress:
 
 persistence:
   enabled: true
-  size: 1Gi
+  size: 10Gi
   storageClass: ebs-csi-sc     # kubectl get storageclass — skip only if one is default
 ```
 
@@ -134,12 +134,12 @@ have a certificate.
 
 ### 3. Helm
 
-A release is a `v*` tag; each publishes the image and the chart. The current
-release is **0.5.1** — install it:
+A release is a `v*` tag; each publishes the image and the chart. After this
+version is tagged **v0.6.0**, install it:
 
 ```bash
 helm upgrade --install tmjlens oci://ghcr.io/tmjacometti/tmjlens-chart \
-  --version 0.5.1 \
+  --version 0.6.0 \
   -n tmjlens --create-namespace \
   -f values.install.yaml
 ```
@@ -149,13 +149,13 @@ public, same file):
 
 ```bash
 helm upgrade --install tmjlens \
-  https://github.com/TMJacometti/tmjlens/releases/download/web-0.5.1/tmjlens-chart-0.5.1.tgz \
+  https://github.com/TMJacometti/tmjlens/releases/download/v0.6.0/tmjlens-chart-0.6.0.tgz \
   -n tmjlens --create-namespace \
   -f values.install.yaml
 ```
 
 ```bash
-helm show values oci://ghcr.io/tmjacometti/tmjlens-chart --version 0.5.1
+helm show values oci://ghcr.io/tmjacometti/tmjlens-chart --version 0.6.0
 ```
 
 ### 4. What you get
@@ -165,10 +165,11 @@ In namespace `tmjlens`:
 | Resource | Notes |
 |---|---|
 | Deployment, **1 replica** | Do not scale. The database is a file on the disk; login sessions live in that one process. |
-| PVC 1Gi | Survives pod restarts. `helm uninstall` deletes it. |
+| DaemonSet collector | Scrapes this node's kubelet; POSTs rollups to the web Service. Never mounts the PVC. |
+| PVC 10Gi | Survives pod restarts. `helm uninstall` deletes it. |
 | Service port 80 (`http`) | Target for Ingress |
 | Ingress | `https://tmjlens.example.com` |
-| Secret | Azure credentials |
+| Secret | Identity-provider credentials and the ingest token |
 | ServiceAccount + `cluster-admin` | The ceiling. Profiles are the gate. |
 
 Without Ingress:
@@ -206,7 +207,7 @@ apply HPAs (`autoscaling/v2`, field manager `tmjlens`). Developer and Guest get
 - One replica only. The collector DaemonSet is a separate process and never
   opens the database.
 
-This is a `0.5` MVP. It has not had an independent security review. Treat it
+This is a `0.6` MVP. It has not had an independent security review. Treat it
 accordingly on clusters that matter.
 
 ## License
