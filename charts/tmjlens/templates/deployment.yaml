@@ -67,6 +67,49 @@ spec:
               value: {{ required "bootstrapAdmin is required" .Values.bootstrapAdmin | trim | lower | quote }}
             - name: TMJLENS_REDIRECT_URL
               value: {{ include "tmjlens.redirectUrl" . | quote }}
+            {{- if .Values.collector.enabled }}
+            - name: TMJLENS_INGEST_TOKEN
+              valueFrom:
+                secretKeyRef:
+                  name: {{ include "tmjlens.fullname" . }}-ingest
+                  key: token
+            - name: TMJLENS_RETENTION_RAW
+              value: {{ .Values.collector.retention.raw | quote }}
+            - name: TMJLENS_RETENTION_ROLLUP
+              value: {{ .Values.collector.retention.rollup | quote }}
+            {{- end }}
+            - name: TMJLENS_HPA_MANAGER
+              value: {{ ternary "on" "off" .Values.hpaManager.enabled | quote }}
+            - name: TMJLENS_HPA_MAX_REPLICAS
+              value: {{ .Values.hpaManager.maxReplicasCeiling | quote }}
+            - name: TMJLENS_HPA_GITOPS_GUARD
+              value: {{ .Values.hpaManager.gitopsGuard | quote }}
+            - name: TMJLENS_PRICING_PROVIDER
+              value: {{ .Values.pricing.provider | quote }}
+            {{- if .Values.pricing.instanceType }}
+            - name: TMJLENS_PRICE_INSTANCE
+              value: {{ .Values.pricing.instanceType | quote }}
+            {{- end }}
+            {{- if .Values.pricing.region }}
+            - name: TMJLENS_PRICE_REGION
+              value: {{ .Values.pricing.region | quote }}
+            {{- end }}
+            {{- if .Values.oidc.issuer }}
+            - name: TMJLENS_OIDC_ISSUER
+              value: {{ .Values.oidc.issuer | quote }}
+            - name: TMJLENS_OIDC_EMAIL_CLAIM
+              value: {{ .Values.oidc.emailClaim | quote }}
+            - name: TMJLENS_OIDC_CLIENT_ID
+              valueFrom:
+                secretKeyRef:
+                  name: {{ include "tmjlens.oidcSecretName" . }}
+                  key: {{ .Values.oidc.existingSecretKeys.clientId }}
+            - name: TMJLENS_OIDC_CLIENT_SECRET
+              valueFrom:
+                secretKeyRef:
+                  name: {{ include "tmjlens.oidcSecretName" . }}
+                  key: {{ .Values.oidc.existingSecretKeys.clientSecret }}
+            {{- else }}
             - name: TMJLENS_AZURE_TENANT_ID
               valueFrom:
                 secretKeyRef:
@@ -82,6 +125,7 @@ spec:
                 secretKeyRef:
                   name: {{ .Values.azure.existingSecret | default (include "tmjlens.fullname" .) }}
                   key: {{ .Values.azure.existingSecretKeys.clientSecret }}
+            {{- end }}
           livenessProbe:
             httpGet:
               path: /healthz

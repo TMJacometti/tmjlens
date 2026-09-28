@@ -1,0 +1,105 @@
+.rs-page {
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+  padding-bottom: 40px;
+}
+
+.rs-page.is-refreshing {
+  opacity: 0.7;
+}
+
+.rs-kpis {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+  gap: 12px;
+}
+
+.rs-toolbar {
+  display: flex;
+  gap: 10px;
+  align-items: center;
+}
+
+.rs-filter {
+  flex: 1;
+  height: 32px;
+  border: 1px solid #303641;
+  background: #181c23;
+  color: #dfe3ea;
+  border-radius: 6px;
+  padding: 0 10px;
+}
+
+.rs-reason,
+.rs-detail .muted {
+  padding: 0 16px 12px;
+  color: #c1c8d2;
+  font-size: 13px;
+  line-height: 1.5;
+}
+
+.rs-rec {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 10px;
+  padding: 0 16px 16px;
+}
+
+.rs-rec > div {
+  border: 1px solid #272d37;
+  background: #171b22;
+  border-radius: 7px;
+  padding: 12px;
+}
+
+.rs-rec span {
+  display: block;
+  color: #737d8b;
+  font-size: 11px;
+  margin-bottom: 6px;
+}
+
+.rs-form {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 12px;
+  padding: 12px 16px;
+}
+
+.rs-form label {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  font-size: 11px;
+  color: #737d8b;
+}
+
+.rs-form input,
+.rs-form select {
+  height: 30px;
+  border: 1px solid #303641;
+  background: #181c23;
+  color: #dfe3ea;
+  border-radius: 6px;
+  padding: 0 8px;
+}
+
+.rs-actions {
+  display: flex;
+  gap: 8px;
+  padding: 0 16px 16px;
+}
+
+.rs-import {
+  display: flex;
+  gap: 8px;
+  align-items: center;
+  padding: 0 16px 12px;
+  font-size: 13px;
+  color: #c1c8d2;
+}
+
+.rs-hpa .diff {
+  margin: 0 16px 16px;
+}

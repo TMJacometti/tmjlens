@@ -59,10 +59,55 @@ ingress:
 
 persistence:
   enabled: true
-  size: 1Gi
+  size: 10Gi
   storageClass: ""
   accessModes:
     - ReadWriteOnce
+
+# Generic OIDC (EKS / any issuer). When issuer is set, Azure AD vars are ignored.
+oidc:
+  issuer: ""
+  clientId: ""
+  clientSecret: ""
+  emailClaim: email
+  redirectUrl: ""
+  existingSecret: ""
+  existingSecretKeys:
+    clientId: client-id
+    clientSecret: client-secret
+
+collector:
+  enabled: true
+  interval: 30s
+  window: 5m
+  ingestToken: ""
+  retention:
+    raw: 48h
+    rollup: 90d
+  kubelet:
+    # PEM of the kubelet serving CA. Empty uses the pod's cluster CA.
+    caFile: ""
+    # Kept for the chart API. The scrape always verifies TLS: SNI is the node
+    # name, dialed at the Downward API host IP so the hostname on the cert matches.
+    insecureSkipVerify: false
+  resources:
+    requests:
+      cpu: 20m
+      memory: 32Mi
+    limits:
+      memory: 64Mi
+  tolerations:
+    - operator: Exists
+
+hpaManager:
+  enabled: false
+  maxReplicasCeiling: 50
+  gitopsGuard: warn
+
+pricing:
+  provider: auto
+  instanceType: ""
+  region: ""
 
 resources:
   requests:

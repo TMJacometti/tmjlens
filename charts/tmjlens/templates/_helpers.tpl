@@ -50,9 +50,19 @@ app.kubernetes.io/instance: {{ .Release.Name }}
 {{- define "tmjlens.redirectUrl" -}}
 {{- if .Values.azure.redirectUrl }}
 {{- .Values.azure.redirectUrl }}
+{{- else if .Values.oidc.redirectUrl }}
+{{- .Values.oidc.redirectUrl }}
 {{- else if and .Values.ingress.enabled .Values.ingress.host }}
 {{- printf "https://%s/auth/callback" .Values.ingress.host }}
 {{- else }}
-{{- fail "set azure.redirectUrl, or enable ingress with a host so the OIDC callback can be derived" }}
+{{- fail "set azure.redirectUrl or oidc.redirectUrl, or enable ingress with a host so the OIDC callback can be derived" }}
+{{- end }}
+{{- end }}
+
+{{- define "tmjlens.oidcSecretName" -}}
+{{- if .Values.oidc.issuer }}
+{{- .Values.oidc.existingSecret | default (include "tmjlens.fullname" .) }}
+{{- else }}
+{{- .Values.azure.existingSecret | default (include "tmjlens.fullname" .) }}
 {{- end }}
 {{- end }}

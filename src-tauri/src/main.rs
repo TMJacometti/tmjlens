@@ -1,17 +1,24 @@
 mod argo;
 mod auth;
+mod cadvisor;
 mod cluster;
+mod collector;
 mod configuration;
 mod db;
 mod graph;
 mod helm;
+mod histogram;
+mod hpa;
+mod ingest;
 mod insights;
 mod kyverno;
 mod metrics;
 mod namespaces;
 mod network;
+mod pricing;
 mod search;
 mod reports;
+mod rightsizing;
 mod settings;
 mod storage;
 mod errors;
@@ -1229,8 +1236,17 @@ async fn list_events(context: String, namespace: String) -> Result<Vec<EventInfo
 
 #[tokio::main]
 async fn main() {
-    if let Err(error) = web::serve().await {
-        eprintln!("tmjLens web failed to start: {error}");
+    let mut args = std::env::args();
+    let _exe = args.next();
+    let result = match args.next().as_deref() {
+        Some("collector") => collector::run().await,
+        Some(other) => Err(format!(
+            "unknown command '{other}' — run with no arguments for the web console, or 'collector'"
+        )),
+        None => web::serve().await,
+    };
+    if let Err(error) = result {
+        eprintln!("tmjLens failed to start: {error}");
         std::process::exit(1);
     }
 }

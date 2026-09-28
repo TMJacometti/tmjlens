@@ -6,7 +6,7 @@
 
 image:
   repository: ghcr.io/tmjacometti/tmjlens
-  tag: "0.5.1"
+  tag: "0.6.0"
   pullPolicy: IfNotPresent
 
 environment:
@@ -47,6 +47,25 @@ ingress:
 
 persistence:
   enabled: true
-  size: 1Gi
-  # kubectl get storageclass — required if none is marked default.
+  size: 10Gi
   storageClass: ebs-csi-sc
+
+# Leave empty to use Azure AD (azure.* above). For EKS / Cognito / Keycloak:
+# oidc:
+#   issuer: https://cognito-idp.us-east-1.amazonaws.com/us-east-1_example
+#   clientId: "..."
+#   clientSecret: "..."
+#   emailClaim: email
+
+collector:
+  enabled: true
+  kubelet:
+    # TLS is always verified. Set collector.kubelet.caFile if the cluster CA
+    # is not the kubelet serving CA. insecureSkipVerify is kept for the chart
+    # API and does not skip verification.
+    insecureSkipVerify: false
+
+hpaManager:
+  enabled: false
+  maxReplicasCeiling: 50
+  gitopsGuard: warn
