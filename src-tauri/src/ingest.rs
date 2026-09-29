@@ -65,11 +65,22 @@ pub struct PreparedBatch {
 
 /// Phase one, async: resolve every sample's workload owner against the API.
 /// Nothing here touches the database, so nothing here blocks a runtime thread.
+/// A node has a few hundred containers at most; a batch far beyond that is
+/// not a collector talking. Bounding it here keeps the request body from
+/// dictating memory, which is what CodeQL flagged in the old with_capacity.
+const MAX_SAMPLES_PER_BATCH: usize = 10_000;
+
 pub async fn prepare(batch: IngestBatch) -> Result<PreparedBatch, String> {
+    if batch.samples.len() > MAX_SAMPLES_PER_BATCH {
+        return Err(format!(
+            "batch carries {} samples; a node's collector sends at most a few hundred",
+            batch.samples.len()
+        ));
+    }
     let mut prepared = PreparedBatch {
         node: batch.node.clone(),
         window_start: batch.window_start.clone(),
-        rows: Vec::with_capacity(batch.samples.len()),
+        rows: Vec::new(),
         skipped: 0,
     };
     if batch.samples.is_empty() {
