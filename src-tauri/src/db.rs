@@ -446,18 +446,29 @@ mod tests {
             .expect("rightsizing tables usable after migration");
     }
 
-    /// Pins a current tmjLite limitation, on purpose. Measured with the CLI on
-    /// a 13 MB file: every auto-committed write costs a fixed ~400 ms whatever
-    /// the .sync mode, while the same writes inside BEGIN/COMMIT cost ~12 ms
-    /// each. The shared handle the app uses refuses transactions today, so the
-    /// ingest cannot batch. THE DAY THIS TEST FAILS the engine gained them:
-    /// wrap `ingest::apply` in BEGIN/COMMIT and delete this test.
+    /// tmjLite 0.2.9 gave the shared handle interactive transactions, bound to
+    /// the calling thread. The ingest batches hundreds of writes into one
+    /// commit on the strength of this — a regression here would silently put
+    /// the ~400 ms-per-statement cost back (measured on 0.2.8).
     #[test]
-    fn the_shared_handle_still_refuses_transactions() {
+    fn a_transaction_batches_writes_on_the_shared_handle() {
         let path = temp_db("txn");
         let db = Db::open(&path).expect("open");
-        let refusal = db.exec("BEGIN;").expect_err("shared handle accepted BEGIN — batch the ingest now");
-        assert!(refusal.contains("not yet supported"), "{refusal}");
+        db.exec("CREATE TABLE txn_probe (id PK, n INT NOT NULL);").expect("table");
+
+        db.exec("BEGIN;").expect("shared handle accepts BEGIN since engine 0.2.9");
+        for i in 0..20 {
+            db.exec(&format!("INSERT INTO txn_probe (n) VALUES ({i});")).expect("insert inside txn");
+        }
+        db.exec("COMMIT;").expect("commit");
+        let count = db.query("SELECT COUNT(*) FROM txn_probe;").expect("count");
+        assert_eq!(count.single(), Some("20"), "all rows visible after COMMIT");
+
+        db.exec("BEGIN;").expect("begin");
+        db.exec("INSERT INTO txn_probe (n) VALUES (99);").expect("insert");
+        db.exec("ROLLBACK;").expect("rollback");
+        let count = db.query("SELECT COUNT(*) FROM txn_probe;").expect("count");
+        assert_eq!(count.single(), Some("20"), "ROLLBACK discards the uncommitted row");
     }
 
     #[test]

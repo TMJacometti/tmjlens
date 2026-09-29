@@ -116,13 +116,36 @@ static APPLY_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
 /// liveness restart loop under twelve collectors.
 pub fn apply(db: &Db, prepared: PreparedBatch) -> Result<IngestResult, String> {
     let _serial = APPLY_LOCK.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
-    let mut accepted = 0usize;
-    for (owner, sample, res) in &prepared.rows {
-        upsert_5m(db, owner, sample, res, &prepared.window_start)?;
-        merge_up(db, owner, &sample.container, &prepared.window_start)?;
-        accepted += 1;
-    }
-    touch_node(db, &prepared.node)?;
+
+    // One transaction per batch. tmjLite binds a shared-handle transaction to
+    // the calling thread, and this whole function runs on one spawn_blocking
+    // thread under the lock above — BEGIN and COMMIT cannot drift apart.
+    // Hundreds of writes then cost one commit instead of hundreds.
+    db.exec("BEGIN;")?;
+    let written = (|| -> Result<usize, String> {
+        let mut accepted = 0usize;
+        for (owner, sample, res) in &prepared.rows {
+            upsert_5m(db, owner, sample, res, &prepared.window_start)?;
+            merge_up(db, owner, &sample.container, &prepared.window_start)?;
+            accepted += 1;
+        }
+        touch_node(db, &prepared.node)?;
+        Ok(accepted)
+    })();
+    let accepted = match written {
+        Ok(accepted) => {
+            db.exec("COMMIT;")?;
+            accepted
+        }
+        Err(error) => {
+            // A half-applied batch is worse than a retried one: the collector
+            // keeps its buffer until it hears 200.
+            let _ = db.exec("ROLLBACK;");
+            return Err(error);
+        }
+    };
+    // Retention runs in its own commit — a purge that touches thousands of
+    // rows should not sit inside the batch's transaction.
     purge_if_due(db)?;
     let skip_reason = if prepared.skipped > 0 {
         Some(format!(
