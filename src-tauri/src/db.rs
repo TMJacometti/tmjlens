@@ -446,6 +446,20 @@ mod tests {
             .expect("rightsizing tables usable after migration");
     }
 
+    /// Pins a current tmjLite limitation, on purpose. Measured with the CLI on
+    /// a 13 MB file: every auto-committed write costs a fixed ~400 ms whatever
+    /// the .sync mode, while the same writes inside BEGIN/COMMIT cost ~12 ms
+    /// each. The shared handle the app uses refuses transactions today, so the
+    /// ingest cannot batch. THE DAY THIS TEST FAILS the engine gained them:
+    /// wrap `ingest::apply` in BEGIN/COMMIT and delete this test.
+    #[test]
+    fn the_shared_handle_still_refuses_transactions() {
+        let path = temp_db("txn");
+        let db = Db::open(&path).expect("open");
+        let refusal = db.exec("BEGIN;").expect_err("shared handle accepted BEGIN — batch the ingest now");
+        assert!(refusal.contains("not yet supported"), "{refusal}");
+    }
+
     #[test]
     fn a_malicious_literal_stays_a_literal() {
         let path = temp_db("inject");

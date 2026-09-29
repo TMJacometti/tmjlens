@@ -177,7 +177,7 @@ async fn scrape(client: &reqwest::Client, url: &str, token: &str) -> Result<Vec<
         .header(reqwest::header::ACCEPT, "text/plain")
         .send()
         .await
-        .map_err(|e| e.to_string())?;
+        .map_err(|e| error_chain(&e))?;
     if !response.status().is_success() {
         return Err(format!("kubelet answered {}", response.status()));
     }
@@ -294,7 +294,7 @@ async fn post_batch(
         .json(batch)
         .send()
         .await
-        .map_err(|e| e.to_string())?;
+        .map_err(|e| error_chain(&e))?;
     if response.status().is_success() {
         Ok(())
     } else {
@@ -414,4 +414,18 @@ mod tests {
         apply_samples(vec![second], &mut prev, &mut acc);
         assert_eq!(acc[&("shop".into(), "api-1".into(), "api".into())].cpu.samples(), 0);
     }
+}
+
+/// reqwest's Display stops at "error sending request for url"; the cause —
+/// timeout, connection refused, DNS — sits in the source chain. An operator
+/// reading the log needs that word, not the wrapper.
+fn error_chain(error: &dyn std::error::Error) -> String {
+    let mut parts = vec![error.to_string()];
+    let mut source = error.source();
+    while let Some(inner) = source {
+        parts.push(inner.to_string());
+        source = inner.source();
+    }
+    parts.dedup();
+    parts.join(": ")
 }

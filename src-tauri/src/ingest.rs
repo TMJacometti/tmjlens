@@ -54,10 +54,26 @@ struct ContainerRes {
     oom: bool,
 }
 
-pub async fn ingest(db: &Db, batch: IngestBatch) -> Result<IngestResult, String> {
+/// A batch with its owners resolved — everything the write phase needs, and
+/// nothing that still requires the network.
+pub struct PreparedBatch {
+    node: String,
+    window_start: String,
+    rows: Vec<(WorkloadKey, IngestSample, ContainerRes)>,
+    skipped: usize,
+}
+
+/// Phase one, async: resolve every sample's workload owner against the API.
+/// Nothing here touches the database, so nothing here blocks a runtime thread.
+pub async fn prepare(batch: IngestBatch) -> Result<PreparedBatch, String> {
+    let mut prepared = PreparedBatch {
+        node: batch.node.clone(),
+        window_start: batch.window_start.clone(),
+        rows: Vec::with_capacity(batch.samples.len()),
+        skipped: 0,
+    };
     if batch.samples.is_empty() {
-        touch_node(db, &batch.node)?;
-        return Ok(IngestResult { accepted: 0, skipped: 0, skip_reason: None });
+        return Ok(prepared);
     }
     let client = crate::client_for_context("").await?;
     let pods: Api<Pod> = Api::all(client.clone());
@@ -73,39 +89,50 @@ pub async fn ingest(db: &Db, batch: IngestBatch) -> Result<IngestResult, String>
         }
     }
     let mut rs_cache: HashMap<(String, String), Option<WorkloadKey>> = HashMap::new();
-
-    let mut accepted = 0usize;
-    let mut skipped = 0usize;
     for sample in batch.samples {
-        let pod = match by_ns_name.get(&(sample.namespace.clone(), sample.pod.clone())) {
-            Some(p) => p,
-            None => {
-                skipped += 1;
-                continue;
-            }
+        let Some(pod) = by_ns_name.get(&(sample.namespace.clone(), sample.pod.clone())) else {
+            prepared.skipped += 1;
+            continue;
         };
-        let owner = match resolve_owner(client.clone(), pod, &mut rs_cache).await? {
-            Some(o) => o,
-            None => {
-                skipped += 1;
-                continue;
-            }
+        let Some(owner) = resolve_owner(client.clone(), pod, &mut rs_cache).await? else {
+            prepared.skipped += 1;
+            continue;
         };
         let res = container_resources(pod, &sample.container);
-        upsert_5m(db, &owner, &sample, &res, &batch.window_start)?;
-        merge_up(db, &owner, &sample.container, &batch.window_start)?;
+        prepared.rows.push((owner, sample, res));
+    }
+    Ok(prepared)
+}
+
+/// Every tmjLite call is synchronous FFI with an fsync behind it. Batches
+/// apply one at a time: twelve collectors landing in the same minute would
+/// otherwise contend for the engine's write lock across as many threads, and
+/// serialising here keeps the thread pool honest too.
+static APPLY_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+/// Phase two, blocking: the writes. Call from `spawn_blocking` — it never
+/// awaits, and on a runtime worker it would starve every other request,
+/// /healthz included, which is exactly how the web pod ended up in a
+/// liveness restart loop under twelve collectors.
+pub fn apply(db: &Db, prepared: PreparedBatch) -> Result<IngestResult, String> {
+    let _serial = APPLY_LOCK.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+    let mut accepted = 0usize;
+    for (owner, sample, res) in &prepared.rows {
+        upsert_5m(db, owner, sample, res, &prepared.window_start)?;
+        merge_up(db, owner, &sample.container, &prepared.window_start)?;
         accepted += 1;
     }
-    touch_node(db, &batch.node)?;
-    purge(db)?;
-    let skip_reason = if skipped > 0 {
+    touch_node(db, &prepared.node)?;
+    purge_if_due(db)?;
+    let skip_reason = if prepared.skipped > 0 {
         Some(format!(
-            "{skipped} sample(s) had no resolvable workload owner (pod gone, or no controller)"
+            "{} sample(s) had no resolvable workload owner (pod gone, or no controller)",
+            prepared.skipped
         ))
     } else {
         None
     };
-    Ok(IngestResult { accepted, skipped, skip_reason })
+    Ok(IngestResult { accepted, skipped: prepared.skipped, skip_reason })
 }
 
 async fn resolve_owner(
@@ -420,6 +447,30 @@ fn parse_retention_env(name: &str, default: chrono::Duration) -> chrono::Duratio
     default
 }
 
+/// Retention deletes scan whole tables (window_start is not the leading
+/// index column). Once an hour is plenty for a 48h/90d policy; once per
+/// batch — twelve times a minute under load — was most of the CPU.
+const PURGE_EVERY: std::time::Duration = std::time::Duration::from_secs(60 * 60);
+static LAST_PURGE: std::sync::Mutex<Option<std::time::Instant>> = std::sync::Mutex::new(None);
+
+pub fn purge_due(last: Option<std::time::Instant>, now: std::time::Instant) -> bool {
+    match last {
+        None => true,
+        Some(at) => now.duration_since(at) >= PURGE_EVERY,
+    }
+}
+
+fn purge_if_due(db: &Db) -> Result<(), String> {
+    let now = std::time::Instant::now();
+    let mut last = LAST_PURGE.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+    if !purge_due(*last, now) {
+        return Ok(());
+    }
+    *last = Some(now);
+    drop(last);
+    purge(db)
+}
+
 pub fn purge(db: &Db) -> Result<(), String> {
     let raw_cut = (chrono::Utc::now() - retention_raw()).to_rfc3339();
     let roll_cut = (chrono::Utc::now() - retention_rollup()).to_rfc3339();
@@ -582,6 +633,14 @@ mod tests {
                 ("payments".into(), "Deployment".into(), "fraud-scoring".into(), "app".into()),
             ]
         );
+    }
+
+    #[test]
+    fn retention_runs_on_the_first_batch_then_at_most_hourly() {
+        let t0 = std::time::Instant::now();
+        assert!(purge_due(None, t0));
+        assert!(!purge_due(Some(t0), t0 + std::time::Duration::from_secs(59 * 60)));
+        assert!(purge_due(Some(t0), t0 + std::time::Duration::from_secs(61 * 60)));
     }
 
     #[test]

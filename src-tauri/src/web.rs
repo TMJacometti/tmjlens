@@ -601,9 +601,18 @@ async fn ingest_rollups(
     if !tokens_equal(got, expected) {
         return plain(StatusCode::UNAUTHORIZED, "ingest token is not valid");
     }
-    match crate::ingest::ingest(&state.db, body.0).await {
-        Ok(result) => (StatusCode::OK, axum::Json(result)).into_response(),
-        Err(error) => plain(StatusCode::BAD_REQUEST, &error),
+    let prepared = match crate::ingest::prepare(body.0).await {
+        Ok(prepared) => prepared,
+        Err(error) => return plain(StatusCode::BAD_REQUEST, &error),
+    };
+    // The writes are synchronous FFI; on a runtime thread they starve
+    // /healthz and the liveness probe kills the pod.
+    let worker = state.clone();
+    let applied = tokio::task::spawn_blocking(move || crate::ingest::apply(&worker.db, prepared)).await;
+    match applied {
+        Ok(Ok(result)) => (StatusCode::OK, axum::Json(result)).into_response(),
+        Ok(Err(error)) => plain(StatusCode::BAD_REQUEST, &error),
+        Err(join) => plain(StatusCode::INTERNAL_SERVER_ERROR, &format!("ingest task failed: {join}")),
     }
 }
 

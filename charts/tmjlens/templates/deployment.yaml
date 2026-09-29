@@ -126,14 +126,24 @@ spec:
                   name: {{ .Values.azure.existingSecret | default (include "tmjlens.fullname" .) }}
                   key: {{ .Values.azure.existingSecretKeys.clientSecret }}
             {{- end }}
+          # A pod ingesting rollups does real work; the Kubernetes defaults
+          # (1s timeout, dead after three misses) turned a busy minute into a
+          # restart loop. Liveness waits a full minute of silence before killing.
           livenessProbe:
             httpGet:
               path: /healthz
               port: http
+            initialDelaySeconds: 5
+            periodSeconds: 10
+            timeoutSeconds: 5
+            failureThreshold: 6
           readinessProbe:
             httpGet:
               path: /healthz
               port: http
+            periodSeconds: 10
+            timeoutSeconds: 3
+            failureThreshold: 3
           resources:
             {{- toYaml .Values.resources | nindent 12 }}
           volumeMounts:
