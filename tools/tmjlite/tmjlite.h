@@ -107,12 +107,42 @@ TmjSharedDb *tmjlite_open_shared(const char *path);
 /* Close the shared handle and release the file lock. */
 void tmjlite_close_shared(TmjSharedDb *db);
 
-/* Execute a non-query statement. Thread-safe. */
+/* Execute a non-query statement. Thread-safe.
+ * Transactions: BEGIN opens an interactive transaction bound to the CALLING
+ * THREAD; its statements (exec/query/stmt_*) run inside it until COMMIT or
+ * ROLLBACK on that same thread. Other threads block on writes (and on new
+ * reads) until it ends. */
 int tmjlite_exec_shared(const TmjSharedDb *db, const char *sql);
 
 /* Execute any statement and get the result. Thread-safe.
  * Caller must free the result with tmjlite_result_free(). */
 TmjResult *tmjlite_query_shared(const TmjSharedDb *db, const char *sql);
+
+/* ---- Prepared statements (parse once, execute many) ----
+ *
+ * Any statement with `?` placeholders: INSERT, UPDATE, DELETE, SELECT,
+ * INSERT … ON CONFLICT. Parameters are passed as ONE JSON array string,
+ * e.g. "[\"ns3\", 14, 1.5, true, null]" — types are preserved (string,
+ * integer, float, bool, null) and no SQL escaping is needed. NULL or ""
+ * means no parameters. One TmjStmt works with both handle kinds.
+ *
+ *   TmjStmt *st = tmjlite_prepare(db, "UPDATE rs SET samples = ? WHERE ns = ? AND k = ?;");
+ *   tmjlite_stmt_exec(db, st, "[14, \"ns3\", \"Deployment\"]");
+ *   tmjlite_stmt_free(st);
+ */
+typedef struct TmjStmt TmjStmt;
+
+/* Prepare on a classic / shared handle. NULL on parse error (see errmsg). */
+TmjStmt *tmjlite_prepare(TmjDb *db, const char *sql);
+TmjStmt *tmjlite_prepare_shared(const TmjSharedDb *db, const char *sql);
+void tmjlite_stmt_free(TmjStmt *stmt);
+/* Number of `?` placeholders (-1 if stmt is NULL). */
+int tmjlite_stmt_param_count(const TmjStmt *stmt);
+
+int tmjlite_stmt_exec(TmjDb *db, const TmjStmt *stmt, const char *params_json);
+TmjResult *tmjlite_stmt_query(TmjDb *db, const TmjStmt *stmt, const char *params_json);
+int tmjlite_stmt_exec_shared(const TmjSharedDb *db, const TmjStmt *stmt, const char *params_json);
+TmjResult *tmjlite_stmt_query_shared(const TmjSharedDb *db, const TmjStmt *stmt, const char *params_json);
 
 /* Last error message for the calling thread, or NULL.
  * The pointer stays valid for this thread until its next call. */

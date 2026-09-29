@@ -446,6 +446,31 @@ mod tests {
             .expect("rightsizing tables usable after migration");
     }
 
+    /// tmjLite 0.2.9 gave the shared handle interactive transactions, bound to
+    /// the calling thread. The ingest batches hundreds of writes into one
+    /// commit on the strength of this — a regression here would silently put
+    /// the ~400 ms-per-statement cost back (measured on 0.2.8).
+    #[test]
+    fn a_transaction_batches_writes_on_the_shared_handle() {
+        let path = temp_db("txn");
+        let db = Db::open(&path).expect("open");
+        db.exec("CREATE TABLE txn_probe (id PK, n INT NOT NULL);").expect("table");
+
+        db.exec("BEGIN;").expect("shared handle accepts BEGIN since engine 0.2.9");
+        for i in 0..20 {
+            db.exec(&format!("INSERT INTO txn_probe (n) VALUES ({i});")).expect("insert inside txn");
+        }
+        db.exec("COMMIT;").expect("commit");
+        let count = db.query("SELECT COUNT(*) FROM txn_probe;").expect("count");
+        assert_eq!(count.single(), Some("20"), "all rows visible after COMMIT");
+
+        db.exec("BEGIN;").expect("begin");
+        db.exec("INSERT INTO txn_probe (n) VALUES (99);").expect("insert");
+        db.exec("ROLLBACK;").expect("rollback");
+        let count = db.query("SELECT COUNT(*) FROM txn_probe;").expect("count");
+        assert_eq!(count.single(), Some("20"), "ROLLBACK discards the uncommitted row");
+    }
+
     #[test]
     fn a_malicious_literal_stays_a_literal() {
         let path = temp_db("inject");
