@@ -25,7 +25,7 @@ test.describe('settings about', () => {
   test('the release notes close the tab and name this release', async ({ page }) => {
     const dialog = page.getByRole('dialog', { name: 'Settings' });
     await expect(dialog).toContainText(`What's new in ${version}`);
-    await expect(dialog).toContainText('tmjLite 0.2.9 under the hood');
+    await expect(dialog).toContainText('Rightsizing measures again');
     await expect(dialog).toContainText('never a silent zero');
   });
 });

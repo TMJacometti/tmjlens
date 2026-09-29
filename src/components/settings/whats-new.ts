@@ -4,6 +4,8 @@
  * The version number itself comes from package.json; only the story lives here.
  */
 export const WHATS_NEW: string[] = [
+  'Rightsizing measures again: the collector parsed the kubelet’s cAdvisor lines by their last space, so every series carrying a timestamp — all the CPU and memory ones — was dropped and only spec lines came through. Rows existed, values were “—”. Fixed against a real kubelet dump.',
+  'The collector is never silent now: one line per window with the server’s answer (accepted/skipped), a flush line when a buffered window lands, and a loud warning if a window closes with containers but zero measurements.',
   'tmjLite 0.2.9 under the hood: a one-row write went from ~400 ms to ~4 ms (the engine rewrote whole tables and indexes on every commit), and each collector batch now lands in ONE transaction instead of hundreds of commits.',
   'The web pod no longer restarts under collector load: database writes moved off the async runtime, batches apply one at a time, retention runs hourly, and the liveness probe waits a full minute before killing.',
   'Rightsizing names the nodes the collector is NOT running on, with the scheduler’s reason (e.g. Too many pods); collector.priorityClassName in the chart lets it preempt to fit.',

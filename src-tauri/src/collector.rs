@@ -138,8 +138,23 @@ pub async fn run() -> Result<(), String> {
             let batch = take_batch(&node, window_start, window.as_secs(), &mut acc);
             window_start = chrono::Utc::now();
             last_flush = Instant::now();
-            if let Err(error) = send_or_buffer(&ingest, &ingest_url, &token, &dir, &batch).await {
-                eprintln!("ingest failed: {error}");
+            let containers = batch.samples.len();
+            let observations: u64 = batch.samples.iter().map(|s| s.samples).sum();
+            // A window that saw containers but measured nothing is the
+            // parser or the kubelet format changing under us — say so.
+            if containers > 0 && observations == 0 {
+                eprintln!(
+                    "window closed with {containers} container(s) and ZERO cpu samples — \
+                     the kubelet metrics were reachable but no usage series parsed; \
+                     rollups for this window carry no measurements"
+                );
+            }
+            match send_or_buffer(&ingest, &ingest_url, &token, &dir, &batch).await {
+                Ok(answer) => eprintln!(
+                    "posted window {}: {containers} container(s), {observations} cpu sample(s) -> {answer}",
+                    batch.window_start
+                ),
+                Err(error) => eprintln!("ingest failed: {error}"),
             }
             flush_buffer(&ingest, &ingest_url, &token, &dir).await;
         }
@@ -272,9 +287,9 @@ async fn send_or_buffer(
     token: &str,
     dir: &Path,
     batch: &IngestBatch,
-) -> Result<(), String> {
+) -> Result<String, String> {
     match post_batch(http, url, token, batch).await {
-        Ok(()) => Ok(()),
+        Ok(answer) => Ok(answer),
         Err(error) => {
             buffer_write(dir, batch)?;
             Err(error)
@@ -282,12 +297,14 @@ async fn send_or_buffer(
     }
 }
 
+/// Resolves to the server's own answer — `{"accepted":141,"skipped":7,…}` —
+/// so the log line says what landed, not just that a request went out.
 async fn post_batch(
     http: &reqwest::Client,
     url: &str,
     token: &str,
     batch: &IngestBatch,
-) -> Result<(), String> {
+) -> Result<String, String> {
     let response = http
         .post(url)
         .bearer_auth(token)
@@ -295,10 +312,12 @@ async fn post_batch(
         .send()
         .await
         .map_err(|e| error_chain(&e))?;
-    if response.status().is_success() {
-        Ok(())
+    let status = response.status();
+    let body = response.text().await.unwrap_or_default();
+    if status.is_success() {
+        Ok(body.trim().chars().take(200).collect())
     } else {
-        Err(format!("ingest answered {}", response.status()))
+        Err(format!("ingest answered {status}: {}", body.trim().chars().take(200).collect::<String>()))
     }
 }
 
@@ -372,7 +391,8 @@ async fn flush_buffer(http: &reqwest::Client, url: &str, token: &str, dir: &Path
             }
         };
         match post_batch(http, url, token, &batch).await {
-            Ok(()) => {
+            Ok(answer) => {
+                eprintln!("flushed buffered window {} -> {answer}", batch.window_start);
                 let _ = std::fs::remove_file(&path);
             }
             Err(error) => {
