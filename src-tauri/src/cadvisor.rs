@@ -58,19 +58,35 @@ pub fn parse_cadvisor(text: &str) -> Vec<ContainerSample> {
     by_key.into_values().collect()
 }
 
+/// One line of Prometheus text format: `name{labels} value [timestamp_ms]`.
+///
+/// The kubelet's cAdvisor endpoint stamps every usage series with a
+/// timestamp — `container_cpu_usage_seconds_total{…} 2892.85 1790713931439` —
+/// while `container_spec_*` and `container_start_time_seconds` come without.
+/// An earlier version split on the LAST space, so exactly the series that
+/// carry a value failed to parse and only the spec lines came through: the
+/// collector knew every container and measured none of them. The labels end
+/// at the closing brace; whatever follows is the value and, optionally, a
+/// timestamp this collector does not need (it stamps windows itself).
 fn parse_line(line: &str) -> Option<Series<'_>> {
     let line = line.trim();
     if line.is_empty() || line.starts_with('#') {
         return None;
     }
-    let (name_and_labels, value_and_ts) = line.rsplit_once(' ')?;
-    let value: f64 = value_and_ts.split_whitespace().next()?.parse().ok()?;
-    if let Some((name, labels)) = name_and_labels.split_once('{') {
-        let labels = labels.strip_suffix('}')?;
-        Some(Series { name, labels, value })
-    } else {
-        Some(Series { name: name_and_labels, labels: "", value })
-    }
+    let (name, labels, rest) = match line.find('{') {
+        Some(open) => {
+            // Label values are quoted and may hold spaces, so the closing
+            // brace — not a space — is the boundary.
+            let close = open + line[open..].find('}')?;
+            (&line[..open], &line[open + 1..close], &line[close + 1..])
+        }
+        None => {
+            let (name, rest) = line.split_once(char::is_whitespace)?;
+            (name, "", rest)
+        }
+    };
+    let value: f64 = rest.split_whitespace().next()?.parse().ok()?;
+    Some(Series { name, labels, value })
 }
 
 fn parse_labels(raw: &str) -> HashMap<String, String> {
@@ -107,6 +123,31 @@ pub fn throttle_ratio(throttled: Option<f64>, periods: Option<f64>) -> Option<f6
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Verbatim shape from a kubelet (labels invented): usage series carry a
+    /// trailing timestamp, spec series do not. Both must parse, and the
+    /// timestamped ones are the ones that matter.
+    #[test]
+    fn timestamped_series_parse_and_carry_their_value() {
+        let text = concat!(
+            "container_memory_working_set_bytes{container=\"api\",namespace=\"payments\",pod=\"checkout-api-1\"} 1.61245184e+09 1790713931439\n",
+            "container_cpu_usage_seconds_total{container=\"api\",namespace=\"payments\",pod=\"checkout-api-1\"} 2892.855872 1790713931439\n",
+            "container_start_time_seconds{container=\"api\",namespace=\"payments\",pod=\"checkout-api-1\"} 1.790700e+09\n",
+        );
+        let samples = parse_cadvisor(text);
+        assert_eq!(samples.len(), 1, "{samples:?}");
+        let sample = &samples[0];
+        assert_eq!(sample.memory_working_set, Some(1.61245184e9));
+        assert_eq!(sample.cpu_seconds, Some(2892.855872));
+    }
+
+    #[test]
+    fn a_label_value_with_a_space_does_not_break_the_line() {
+        let text = "container_cpu_usage_seconds_total{container=\"api\",image=\"reg/x:1 latest\",namespace=\"n\",pod=\"p\"} 5.5 1790713931439\n";
+        let samples = parse_cadvisor(text);
+        assert_eq!(samples.len(), 1);
+        assert_eq!(samples[0].cpu_seconds, Some(5.5));
+    }
 
     const SAMPLE: &str = r#"
 # HELP container_cpu_usage_seconds_total Cumulative cpu time consumed
