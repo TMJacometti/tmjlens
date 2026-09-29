@@ -361,7 +361,8 @@ fn compact_into(
     belongs: impl Fn(&str) -> bool,
 ) -> Result<(), String> {
     let rows = db.query(&format!(
-        "SELECT cpu_hist, mem_hist, mem_max_bytes, samples, oom_kills, throttle_ratio, window_start FROM {from} \
+        "SELECT cpu_hist, mem_hist, mem_max_bytes, samples, oom_kills, throttle_ratio, window_start, \
+         cpu_request_milli, cpu_limit_milli, mem_request_bytes, mem_limit_bytes, replicas, limited_data FROM {from} \
          WHERE namespace = {} AND kind = {} AND workload = {} AND container = {};",
         sql_str(&owner.namespace)?,
         sql_str(&owner.kind)?,
@@ -396,6 +397,27 @@ fn compact_into(
         }
     }
     let throttle = if thr_n == 0 { None } else { Some(thr_sum / thr_n as f64) };
+    // Requests, limits and replicas are not aggregates: the newest window says
+    // what the workload asks for today. They used to be left NULL here, so
+    // every 1h/1d row — the ones the screen reads first — rendered "—".
+    let newest = matched
+        .iter()
+        .max_by(|a, b| a[6].cmp(&b[6]))
+        .expect("matched is non-empty");
+    let carry = |index: usize| -> Result<String, String> {
+        match newest.get(index).and_then(|v| v.as_deref()) {
+            Some(raw) if raw != "NULL" && !raw.is_empty() => sql_str(raw),
+            _ => Ok("NULL".to_string()),
+        }
+    };
+    let (cpu_req, cpu_lim, mem_req, mem_lim) = (carry(7)?, carry(8)?, carry(9)?, carry(10)?);
+    let replicas = match newest.get(11).and_then(|v| v.as_deref()) {
+        Some(raw) if raw.parse::<i64>().is_ok() => raw.to_string(),
+        _ => "NULL".to_string(),
+    };
+    let limited = matched
+        .iter()
+        .any(|row| row.get(12).and_then(|v| v.as_deref()) == Some("true"));
     let exists = db.query(&format!(
         "SELECT id FROM {into} WHERE namespace = {} AND kind = {} AND workload = {} AND container = {} AND window_start = {};",
         sql_str(&owner.namespace)?,
@@ -409,7 +431,7 @@ fn compact_into(
             "INSERT INTO {into} (namespace, kind, workload, container, window_start, cpu_hist, mem_hist, \
              mem_max_bytes, samples, oom_kills, throttle_ratio, cpu_request_milli, cpu_limit_milli, \
              mem_request_bytes, mem_limit_bytes, replicas, limited_data) VALUES (\
-             {}, {}, {}, {}, {}, {}, {}, {}, {samples}, {ooms}, {}, NULL, NULL, NULL, NULL, NULL, FALSE);",
+             {}, {}, {}, {}, {}, {}, {}, {}, {samples}, {ooms}, {}, {cpu_req}, {cpu_lim}, {mem_req}, {mem_lim}, {replicas}, {});",
             sql_str(&owner.namespace)?,
             sql_str(&owner.kind)?,
             sql_str(&owner.name)?,
@@ -419,11 +441,13 @@ fn compact_into(
             sql_str(&hist_json(&mem)?)?,
             sql_str(&format!("{mem_max:.0}"))?,
             num_opt(throttle)?,
+            if limited { "TRUE" } else { "FALSE" },
         ))
     } else {
         db.exec(&format!(
             "UPDATE {into} SET cpu_hist = {}, mem_hist = {}, mem_max_bytes = {}, samples = {samples}, \
-             oom_kills = {ooms}, throttle_ratio = {} \
+             oom_kills = {ooms}, throttle_ratio = {}, cpu_request_milli = {cpu_req}, cpu_limit_milli = {cpu_lim}, \
+             mem_request_bytes = {mem_req}, mem_limit_bytes = {mem_lim}, replicas = {replicas} \
              WHERE namespace = {} AND kind = {} AND workload = {} AND container = {} AND window_start = {};",
             sql_str(&hist_json(&cpu)?)?,
             sql_str(&hist_json(&mem)?)?,
@@ -675,6 +699,51 @@ mod tests {
         assert!(purge_due(None, t0));
         assert!(!purge_due(Some(t0), t0 + std::time::Duration::from_secs(59 * 60)));
         assert!(purge_due(Some(t0), t0 + std::time::Duration::from_secs(61 * 60)));
+    }
+
+    /// Production showed P95 and peak but "—" for every request: the 1h/1d
+    /// rows the screen reads first were compacted with requests left NULL.
+    /// Compaction must carry the NEWEST window's request/limit/replicas.
+    #[test]
+    fn compaction_carries_the_newest_requests_into_the_coarser_window() {
+        let dir = std::env::temp_dir().join("tmjlens-db-tests");
+        std::fs::create_dir_all(&dir).expect("temp dir");
+        let path = dir.join(format!(
+            "ingest-compact-{}-{}.tmjp",
+            std::process::id(),
+            std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos()
+        ));
+        let db = crate::db::Db::open(&path).expect("open");
+        // Two 5m windows in the same hour; the request grew between them.
+        for (window, cpu_req, mem_req) in [
+            ("2026-09-29T10:05:00+00:00", "250", "268435456"),
+            ("2026-09-29T10:10:00+00:00", "500", "1073741824"),
+        ] {
+            db.exec(&format!(
+                "INSERT INTO rs_rollup_5m (namespace, kind, workload, container, window_start, cpu_hist,                  mem_hist, samples, oom_kills, cpu_request_milli, mem_request_bytes, cpu_limit_milli, replicas)                  VALUES ('payments', 'Deployment', 'checkout-api', 'app', '{window}', '{{}}', '{{}}', 3, 0,                  '{cpu_req}', '{mem_req}', '500', 3);"
+            ))
+            .expect("seed");
+        }
+        let owner = WorkloadKey {
+            namespace: "payments".into(),
+            kind: "Deployment".into(),
+            name: "checkout-api".into(),
+        };
+        compact_into(&db, "rs_rollup_5m", "rs_rollup_1h", &owner, "app", "2026-09-29T10:00:00+00:00", |stamp| {
+            stamp.starts_with("2026-09-29T10:")
+        })
+        .expect("compact");
+
+        let row = db
+            .query("SELECT cpu_request_milli, mem_request_bytes, cpu_limit_milli, replicas, samples FROM rs_rollup_1h;")
+            .expect("query");
+        assert_eq!(row.rows.len(), 1);
+        let cells: Vec<&str> = row.rows[0].iter().map(|c| c.as_deref().unwrap_or("NULL")).collect();
+        assert_eq!(cells[0], "500", "newest request wins: {cells:?}");
+        assert_eq!(cells[1], "1073741824", "{cells:?}");
+        assert_eq!(cells[2], "500", "{cells:?}");
+        assert_eq!(cells[3], "3", "{cells:?}");
+        assert_eq!(cells[4], "6", "samples are summed: {cells:?}");
     }
 
     #[test]
