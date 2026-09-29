@@ -48,6 +48,17 @@ export function RightsizingPreview() {
       </div>
       <RightsizingPage
         rows={ROWS}
+        coverage={{
+          nodes_total: 9,
+          nodes_covered: 5,
+          collector_found: true,
+          missing: [
+            { node: 'ip-10-42-7-11.sa-east-1.compute.internal', reason: 'Too many pods' },
+            { node: 'ip-10-42-7-12.sa-east-1.compute.internal', reason: 'Too many pods' },
+            { node: 'ip-10-42-8-20.sa-east-1.compute.internal', reason: 'Too many pods' },
+            { node: 'ip-10-42-8-21.sa-east-1.compute.internal', reason: 'Too many pods' },
+          ],
+        }}
         loading={false}
         error=""
         selected={ROWS[0]}

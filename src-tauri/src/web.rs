@@ -710,7 +710,7 @@ fn required_permission(cmd: &str) -> &'static str {
         "create_velero_backup" | "create_velero_restore" => "manage-velero",
         "set_kyverno_policy_action" => "manage-kyverno",
         "set_node_schedulable" | "delete_node" | "drain_node" => "manage-nodes",
-        "list_rightsizing_workloads" | "get_rightsizing_workload" | "get_hpa_status"
+        "list_rightsizing_workloads" | "get_rightsizing_workload" | "get_collector_coverage" | "get_hpa_status"
         | "preview_hpa" | "apply_hpa" | "undo_hpa" => "admin",
         _ => "view",
     }
@@ -1055,6 +1055,7 @@ async fn dispatch(state: &WebState, user: &UserRecord, cmd: &str, a: &Value) -> 
     use super::*;
     match cmd {
         "list_rightsizing_workloads" => val(crate::rightsizing::list_workloads(&state.db).await?),
+        "get_collector_coverage" => val(crate::rightsizing::collector_coverage(client_for_context("").await?).await?),
         "get_rightsizing_workload" => val(crate::rightsizing::workload_detail(
             &state.db,
             &arg::<String>(a, "namespace")?,

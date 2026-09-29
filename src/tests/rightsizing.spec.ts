@@ -29,3 +29,17 @@ test.describe('rightsizing', () => {
     await expect(page.locator('.rs-rec')).toContainText('Recommended CPU');
   });
 });
+
+test.describe('rightsizing coverage', () => {
+  test('nodes without a running collector are named, with the scheduler reason', async ({ page }) => {
+    await page.setViewportSize({ width: 1500, height: 1000 });
+    await page.goto('/preview.html?view=rightsizing');
+    const banner = page.locator('.viz-callout-critical').filter({ hasText: 'The collector runs on' });
+    await expect(banner).toContainText('5 of 9 nodes');
+    await expect(banner).toContainText('the other 4 are NOT measured');
+    await expect(banner).toContainText('ip-10-42-7-11');
+    await expect(banner).toContainText('Too many pods');
+    // The fix is spelled out next to the problem, not left to a search.
+    await expect(banner).toContainText('collector.priorityClassName');
+  });
+});

@@ -1,5 +1,14 @@
 export type Confidence = 'none' | 'low' | 'medium' | 'high';
 
+export type MissingNode = { node: string; reason: string };
+
+export type CollectorCoverage = {
+  nodes_total: number;
+  nodes_covered: number;
+  missing: MissingNode[];
+  collector_found: boolean;
+};
+
 export type WorkloadRow = {
   namespace: string;
   kind: string;

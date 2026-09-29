@@ -468,8 +468,9 @@ pub fn merged_usage(
 pub fn list_containers(db: &Db) -> Result<Vec<(String, String, String, String)>, String> {
     let mut seen = std::collections::BTreeSet::new();
     for table in ["rs_rollup_5m", "rs_rollup_1h", "rs_rollup_1d"] {
+        // No DISTINCT: tmjLite does not parse it. The BTreeSet below is the dedup.
         let rows = db.query(&format!(
-            "SELECT DISTINCT namespace, kind, workload, container FROM {table};"
+            "SELECT namespace, kind, workload, container FROM {table};"
         ))?;
         for r in rows.rows {
             if let (Some(ns), Some(kind), Some(name), Some(ctr)) = (r[0].clone(), r[1].clone(), r[2].clone(), r[3].clone()) {
@@ -550,6 +551,38 @@ fn fold_rows(rows: &[Vec<Option<String>>]) -> MergedUsage {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Regression: this query once said `SELECT DISTINCT …`, which tmjLite
+    /// does not parse — the Rightsizing screen opened straight into
+    /// "Parse error: expected From, got Identifier(namespace)". The dedup
+    /// belongs to the BTreeSet in Rust, not to a keyword the engine lacks.
+    #[test]
+    fn listing_containers_speaks_tmjlites_sql_and_dedups_in_rust() {
+        let dir = std::env::temp_dir().join("tmjlens-db-tests");
+        std::fs::create_dir_all(&dir).expect("temp dir");
+        let path = dir.join(format!(
+            "ingest-containers-{}-{}.tmjp",
+            std::process::id(),
+            std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos()
+        ));
+        let db = crate::db::Db::open(&path).expect("open");
+        for (window, workload) in [("w1", "checkout-api"), ("w2", "checkout-api"), ("w1", "fraud-scoring")] {
+            db.exec(&format!(
+                "INSERT INTO rs_rollup_5m (namespace, kind, workload, container, window_start, cpu_hist,                  mem_hist, samples, oom_kills) VALUES ('payments', 'Deployment', '{workload}', 'app',                  '{window}', '{{}}', '{{}}', 1, 0);"
+            ))
+            .expect("seed row");
+        }
+
+        let containers = list_containers(&db).expect("the query must parse on tmjLite");
+        // Two windows of the same container collapse to one entry.
+        assert_eq!(
+            containers,
+            vec![
+                ("payments".into(), "Deployment".into(), "checkout-api".into(), "app".into()),
+                ("payments".into(), "Deployment".into(), "fraud-scoring".into(), "app".into()),
+            ]
+        );
+    }
 
     #[test]
     fn hist_json_round_trips() {

@@ -5,13 +5,15 @@ import { StatTile } from '../cluster/charts';
 import { formatBytes, formatCpu } from '../../lib/format';
 import {
   confidenceLabel, workloadKey,
-  type HpaPreview, type HpaStatus, type WorkloadDetail, type WorkloadRow,
+  type CollectorCoverage, type HpaPreview, type HpaStatus, type WorkloadDetail, type WorkloadRow,
 } from '../../types/rightsizing';
 import './rightsizing.css';
 import '../yaml-editor.css';
 
 type Props = {
   rows: WorkloadRow[];
+  /** Which nodes the collector actually runs on; null while unknown. */
+  coverage: CollectorCoverage | null;
   loading: boolean;
   error: string;
   selected: WorkloadRow | null;
@@ -43,7 +45,7 @@ type Props = {
  * authorise. Hiding this screen is not the control — every call is gated.
  */
 export function RightsizingPage({
-  rows, loading, error, selected, detail, hpa, preview, applying,
+  rows, coverage, loading, error, selected, detail, hpa, preview, applying,
   onRefresh, onSelect, onPreview, onApply, onUndo,
 }: Props) {
   const [filter, setFilter] = useState('');
@@ -105,6 +107,42 @@ export function RightsizingPage({
           severity={low > 0 || limited > 0 ? 'warning' : 'good'}
         />
       </div>
+
+      {coverage && !coverage.collector_found && (
+        <div className="viz-callout viz-callout-critical">
+          <ShieldAlert size={16} aria-hidden />
+          <div>
+            <strong>No collector is running.</strong>
+            <p>
+              Nothing on this screen is being measured right now — the rows below are history,
+              not the present. Check the tmjlens-collector DaemonSet.
+            </p>
+          </div>
+        </div>
+      )}
+      {coverage && coverage.collector_found && coverage.missing.length > 0 && (
+        <div className="viz-callout viz-callout-critical">
+          <ShieldAlert size={16} aria-hidden />
+          <div>
+            <strong>
+              The collector runs on {coverage.nodes_covered} of {coverage.nodes_total} nodes — workloads on
+              the other {coverage.missing.length} are NOT measured.
+            </strong>
+            <ul className="rs-missing">
+              {coverage.missing.map((entry) => (
+                <li key={entry.node}>
+                  <span className="mono">{entry.node}</span> — {entry.reason}
+                </li>
+              ))}
+            </ul>
+            <p>
+              "Too many pods" means the node is out of pod slots: raise the node group's max pods,
+              or set <code>collector.priorityClassName</code> in the chart so the collector may
+              preempt a lower-priority pod to fit.
+            </p>
+          </div>
+        </div>
+      )}
 
       <div className="viz-callout viz-callout-warning">
         <ShieldAlert size={16} aria-hidden />

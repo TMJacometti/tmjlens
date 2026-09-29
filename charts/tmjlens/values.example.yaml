@@ -64,6 +64,11 @@ collector:
     # is not the kubelet serving CA. insecureSkipVerify is kept for the chart
     # API and does not skip verification.
     insecureSkipVerify: false
+  # The collector runs on every node. When a node is out of pod slots it stays
+  # Pending there and that node is not measured — the Rightsizing screen names
+  # such nodes. "system-node-critical" lets it preempt a lower-priority pod to
+  # fit; leave empty to never evict anything.
+  priorityClassName: ""
 
 hpaManager:
   enabled: false
