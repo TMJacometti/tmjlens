@@ -343,28 +343,22 @@ async fn cli_version() -> Option<String> {
 }
 
 /// A real uninstall: hooks run, history goes, exactly as `helm uninstall` defines it.
-pub async fn uninstall(context: &str, namespace: &str, name: &str) -> Result<String, String> {
-    run_helm(vec![
-        "uninstall".into(),
-        name.into(),
-        "--namespace".into(),
-        namespace.into(),
-        "--kube-context".into(),
-        context.into(),
-    ])
-    .await
+///
+/// No `--kube-context`: in the cluster there is no kubeconfig at all and helm
+/// authenticates as the pod's ServiceAccount; on a dev machine it uses the
+/// current context, the same one the kube client already resolved.
+pub async fn uninstall(_context: &str, namespace: &str, name: &str) -> Result<String, String> {
+    run_helm(vec!["uninstall".into(), name.into(), "--namespace".into(), namespace.into()]).await
 }
 
 /// Rolls back to a revision — also how a stuck pending lock is released.
-pub async fn rollback(context: &str, namespace: &str, name: &str, revision: i64) -> Result<String, String> {
+pub async fn rollback(_context: &str, namespace: &str, name: &str, revision: i64) -> Result<String, String> {
     run_helm(vec![
         "rollback".into(),
         name.into(),
         revision.to_string(),
         "--namespace".into(),
         namespace.into(),
-        "--kube-context".into(),
-        context.into(),
     ])
     .await
 }

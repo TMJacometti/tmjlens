@@ -6,6 +6,7 @@ use crate::histogram::Histogram;
 use crate::ingest::{list_containers, merged_usage, MergedUsage};
 use crate::pricing;
 use serde::Serialize;
+use serde_json::Value;
 
 const CPU_HEADROOM: f64 = 0.10;
 const MEM_HEADROOM: f64 = 0.20;
@@ -367,5 +368,153 @@ mod tests {
         let rec = recommend(&empty_usage(), "Deployment");
         assert!(rec.cpu_request_milli.is_none());
         assert!(rec.reason.contains("empty"));
+    }
+}
+
+// ---------------------------------------------------------------- coverage
+
+#[derive(Serialize, Clone, Debug, PartialEq)]
+pub struct MissingNode {
+    pub node: String,
+    /// The scheduler's own reason, trimmed to the part that is not the
+    /// DaemonSet's normal per-node affinity noise.
+    pub reason: String,
+}
+
+#[derive(Serialize, Clone, Debug)]
+pub struct CollectorCoverage {
+    pub nodes_total: usize,
+    pub nodes_covered: usize,
+    pub missing: Vec<MissingNode>,
+    /// False when no collector pod exists at all — a very different message
+    /// from "some nodes are full".
+    pub collector_found: bool,
+}
+
+/// A DaemonSet pod pending on a full node reports
+/// "0/9 nodes are available: 1 Too many pods, 8 node(s) didn't satisfy plugin(s)
+/// [NodeAffinity]. …". The eight NodeAffinity misses are how every DaemonSet
+/// pod looks — only the first clause explains anything.
+pub fn scheduling_reason(message: &str) -> String {
+    let body = message.split_once(": ").map(|(_, rest)| rest).unwrap_or(message);
+    let body = body.split(". ").next().unwrap_or(body);
+    let clauses: Vec<&str> = body
+        .split(", ")
+        .map(str::trim)
+        .filter(|clause| !clause.contains("NodeAffinity") && !clause.is_empty())
+        .collect();
+    if clauses.is_empty() {
+        return message.chars().take(140).collect();
+    }
+    clauses
+        .iter()
+        .map(|clause| {
+            // "1 Too many pods" → "Too many pods": the count is the node itself.
+            clause
+                .split_once(' ')
+                .filter(|(count, _)| count.chars().all(|c| c.is_ascii_digit()))
+                .map(|(_, rest)| rest)
+                .unwrap_or(clause)
+        })
+        .collect::<Vec<_>>()
+        .join("; ")
+}
+
+/// Which nodes the collector actually runs on. Rightsizing rows only exist
+/// for workloads a collector could see; a node without one is a blind spot
+/// this screen must announce, never quietly leave as "no data".
+pub async fn collector_coverage(client: kube::Client) -> Result<CollectorCoverage, String> {
+    use k8s_openapi::api::core::v1::{Node, Pod};
+    use kube::api::{Api, ListParams};
+
+    let nodes: Api<Node> = Api::all(client.clone());
+    let pods: Api<Pod> = Api::all(client);
+    let node_list = nodes
+        .list(&ListParams::default())
+        .await
+        .map_err(|e| crate::errors::humanize(&e.to_string()))?;
+    let pod_list = pods
+        .list(&ListParams::default().labels("app.kubernetes.io/component=collector,app.kubernetes.io/name=tmjlens"))
+        .await
+        .map_err(|e| crate::errors::humanize(&e.to_string()))?;
+
+    let mut covered: std::collections::BTreeSet<String> = std::collections::BTreeSet::new();
+    let mut pending_reasons: std::collections::BTreeMap<String, String> = std::collections::BTreeMap::new();
+    for pod in &pod_list.items {
+        let spec = pod.spec.as_ref();
+        let status = pod.status.as_ref();
+        let ready = status
+            .and_then(|s| s.conditions.as_ref())
+            .is_some_and(|conditions| conditions.iter().any(|c| c.type_ == "Ready" && c.status == "True"));
+        if let Some(node) = spec.and_then(|s| s.node_name.clone()) {
+            if ready {
+                covered.insert(node);
+                continue;
+            }
+        }
+        // Unscheduled DaemonSet pods carry their target node in the affinity
+        // the controller wrote, not in nodeName.
+        let target = serde_json::to_value(spec.and_then(|s| s.affinity.as_ref()))
+            .ok()
+            .and_then(|affinity| {
+                affinity
+                    .pointer("/nodeAffinity/requiredDuringSchedulingIgnoredDuringExecution/nodeSelectorTerms/0/matchFields/0/values/0")
+                    .and_then(Value::as_str)
+                    .map(str::to_string)
+            })
+            .or_else(|| spec.and_then(|s| s.node_name.clone()));
+        if let Some(target) = target {
+            let reason = status
+                .and_then(|s| s.conditions.as_ref())
+                .and_then(|conditions| conditions.iter().find(|c| c.type_ == "PodScheduled" && c.status != "True"))
+                .and_then(|c| c.message.clone())
+                .map(|m| scheduling_reason(&m))
+                .unwrap_or_else(|| "collector pod is not ready".to_string());
+            pending_reasons.insert(target, reason);
+        }
+    }
+
+    let mut missing = Vec::new();
+    for node in &node_list.items {
+        let Some(name) = node.metadata.name.clone() else { continue };
+        if covered.contains(&name) {
+            continue;
+        }
+        let reason = pending_reasons
+            .get(&name)
+            .cloned()
+            .unwrap_or_else(|| "no collector pod on this node".to_string());
+        missing.push(MissingNode { node: name, reason });
+    }
+
+    Ok(CollectorCoverage {
+        nodes_total: node_list.items.len(),
+        nodes_covered: covered.len(),
+        missing,
+        collector_found: !pod_list.items.is_empty(),
+    })
+}
+
+#[cfg(test)]
+mod coverage_tests {
+    use super::scheduling_reason;
+
+    #[test]
+    fn the_daemonset_affinity_noise_is_dropped_and_the_real_reason_kept() {
+        // Verbatim shape from a full t3a.medium: the NodeAffinity misses are
+        // every other node, the pod slot count is the actual story.
+        let message = "0/9 nodes are available: 1 Too many pods, 8 node(s) didn't satisfy plugin(s) [NodeAffinity]. no new claims to deallocate, preemption: 0/9 nodes are available: 1 No preemption victims found for incoming pod, 8 Preemption is not helpful for scheduling.";
+        assert_eq!(scheduling_reason(message), "Too many pods");
+    }
+
+    #[test]
+    fn several_real_reasons_are_all_kept() {
+        let message = "0/3 nodes are available: 1 Insufficient cpu, 1 Insufficient memory, 1 node(s) didn't satisfy plugin(s) [NodeAffinity].";
+        assert_eq!(scheduling_reason(message), "Insufficient cpu; Insufficient memory");
+    }
+
+    #[test]
+    fn an_unknown_shape_is_passed_through_rather_than_emptied() {
+        assert_eq!(scheduling_reason("image pull backoff"), "image pull backoff");
     }
 }

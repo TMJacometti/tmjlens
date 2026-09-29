@@ -20,7 +20,7 @@ import { ReportsPage, type RunRequest } from './components/reports/ReportsPage';
 import { AccessPage } from './components/access/AccessPage';
 import { canSeePlatform, hasPermission, isAdmin, type AuditTable, type MeUser, type ProfileSummary, type UserSummary } from './types/access';
 import { RightsizingPage } from './components/rightsizing/RightsizingPage';
-import type { HpaPreview, HpaStatus, WorkloadDetail, WorkloadRow as RightsizingRow } from './types/rightsizing';
+import type { CollectorCoverage, HpaPreview, HpaStatus, WorkloadDetail, WorkloadRow as RightsizingRow } from './types/rightsizing';
 import { NamespacesPage } from './components/namespaces/NamespacesPage';
 import { NodesPage } from './components/nodes/NodesPage';
 import type { NamespaceOverview } from './types/reports';
@@ -125,6 +125,7 @@ export function App() {
   const [accessError, setAccessError] = useState('');
   const [isLoadingAccess, setIsLoadingAccess] = useState(false);
   const [rightsizing, setRightsizing] = useState<RightsizingRow[]>([]);
+  const [rightsizingCoverage, setRightsizingCoverage] = useState<CollectorCoverage | null>(null);
   const [rightsizingError, setRightsizingError] = useState('');
   const [isLoadingRightsizing, setIsLoadingRightsizing] = useState(false);
   const [rightsizingSelected, setRightsizingSelected] = useState<RightsizingRow | null>(null);
@@ -184,6 +185,9 @@ export function App() {
     setIsLoadingRightsizing(true); setRightsizingError('');
     try {
       setRightsizing(await invoke<RightsizingRow[]>('list_rightsizing_workloads', {}));
+      // A separate read, so a coverage failure cannot hide the rows; unknown
+      // coverage renders as no banner, never as "all nodes covered".
+      setRightsizingCoverage(await invoke<CollectorCoverage>('get_collector_coverage', { context }).catch(() => null));
     } catch (error) {
       setRightsizingError(String(error));
     } finally {
@@ -1004,7 +1008,7 @@ export function App() {
       {isAdmin(me) && <><div className="section-title">ADMIN</div><Nav icon={<ShieldCheck size={16}/>} label="Access" active={active === 'Access'} onClick={() => setActive('Access')} /><Nav icon={<SlidersHorizontal size={16}/>} label="Rightsizing" active={active === 'Rightsizing'} onClick={() => setActive('Rightsizing')} /></>}
     </aside><main className="main"><div className="breadcrumbs">Cluster / {active === 'Access' ? 'app' : namespace} / {active}</div><div className="title-row"><div><h1>{active}</h1>{active === 'Access' ? <p>Who can do what, and who did what</p> : <p>Live Kubernetes resources from <b>{context}</b></p>}</div></div>
       {showEvents ? <EventsPanel events={events} onRefresh={refreshEvents}/> : active === 'Rightsizing' ? <RightsizingPage
-        rows={rightsizing} loading={isLoadingRightsizing} error={rightsizingError}
+        rows={rightsizing} coverage={rightsizingCoverage} loading={isLoadingRightsizing} error={rightsizingError}
         selected={rightsizingSelected} detail={rightsizingDetail} hpa={hpaStatus} preview={hpaPreview} applying={hpaApplying}
         onRefresh={() => void loadRightsizing()}
         onSelect={(row) => void openRightsizing(row)}

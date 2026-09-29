@@ -98,6 +98,12 @@ collector:
       memory: 64Mi
   tolerations:
     - operator: Exists
+  # Empty leaves the collector at default priority. On nodes that are full
+  # ("Too many pods" in the Rightsizing coverage warning) the pod stays
+  # Pending and that node is not measured; "system-node-critical" lets it
+  # preempt a lower-priority pod to fit — your call, since something else
+  # gets evicted to make room.
+  priorityClassName: ""
 
 hpaManager:
   enabled: false

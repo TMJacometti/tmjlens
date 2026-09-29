@@ -103,3 +103,12 @@
 .rs-hpa .diff {
   margin: 0 16px 16px;
 }
+
+.rs-missing {
+  margin: 6px 0;
+  padding-left: 16px;
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  font-size: 12.5px;
+}
