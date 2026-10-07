@@ -1,7 +1,6 @@
 import { useEffect, useState } from 'react';
 import { createPortal } from 'react-dom';
 import { RefreshCw, ShieldAlert, SlidersHorizontal, X } from 'lucide-react';
-import { RefreshCw, ShieldAlert, SlidersHorizontal } from 'lucide-react';
 import { DiffReview } from '../DiffReview';
 import { StatTile } from '../cluster/charts';
 import { formatBytes, formatCpu } from '../../lib/format';
@@ -61,7 +60,6 @@ export function RightsizingPage({
   resources, resourcesPreview,
   onRefresh, onSelect, onPreview, onApply, onUndo,
   onResourcesPreview, onResourcesApply, onResourcesUndo, onClose,
-  onResourcesPreview, onResourcesApply, onResourcesUndo,
 }: Props) {
   // The detail is a popup over the table: panels that lived below the fold
   // read as "nothing happened" to anyone who did not know to scroll.

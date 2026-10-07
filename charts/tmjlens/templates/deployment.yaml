@@ -19,6 +19,7 @@ spec:
     metadata:
       labels:
         {{- include "tmjlens.selectorLabels" . | nindent 8 }}
+        app.kubernetes.io/component: web
     spec:
       serviceAccountName: {{ include "tmjlens.serviceAccountName" . }}
       securityContext:
