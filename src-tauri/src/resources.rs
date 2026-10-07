@@ -406,10 +406,11 @@ pub async fn preview(form: &ResourcesForm) -> Result<ResourcesPreview, String> {
     })
 }
 
-/// `Apply failed with 1 conflict: conflict with "helm" using apps/v1: …` → `helm`.
+/// The API server says `conflict with "helm"` for one field and `conflicts
+/// with "helm"` for several — the manager's name is what the operator needs.
 fn owners_from(message: &str) -> String {
     let mut owners: Vec<String> = Vec::new();
-    for part in message.split("conflict with \"").skip(1) {
+    for part in message.split("with \"").skip(1) {
         if let Some(end) = part.find('"') {
             let owner = part[..end].to_string();
             if !owners.contains(&owner) {
@@ -666,8 +667,17 @@ mod tests {
 
     #[test]
     fn conflict_messages_name_the_other_manager() {
-        let message = "Apply failed with 2 conflicts: conflict with \"helm\" using apps/v1: .spec.template.spec.containers[name=\"api\"].resources.requests.cpu, conflict with \"helm\" using apps/v1: .spec.template.spec.containers[name=\"api\"].resources.requests.memory";
-        assert_eq!(owners_from(message), "helm");
+        // Verbatim from the API server: plural for several fields…
+        let plural = "Apply failed with 2 conflicts: conflicts with \"helm\" using apps/v1:
+- .spec.template.spec.containers[name=\"scheduler\"].resources.requests.cpu
+- .spec.template.spec.containers[name=\"scheduler\"].resources.requests.memory
+Please review the fields above";
+        assert_eq!(owners_from(plural), "helm");
+        // …singular for one, and more than one manager is listed once each.
+        let singular = "Apply failed with 1 conflict: conflict with \"kubectl-client-side-apply\" using apps/v1: .spec.replicas";
+        assert_eq!(owners_from(singular), "kubectl-client-side-apply");
+        let two = "conflicts with \"helm\" using apps/v1: a, conflicts with \"node-fetch\" using apps/v1: b";
+        assert_eq!(owners_from(two), "helm, node-fetch");
         assert_eq!(owners_from("something else"), "unknown manager");
     }
 }
