@@ -78,3 +78,26 @@ test.describe('resource editor', () => {
     await expect(page.getByLabel('CPU request millicores')).toHaveValue('110');
   });
 });
+
+test.describe('rightsizing detail popup', () => {
+  test.beforeEach(async ({ page }) => {
+    await page.setViewportSize({ width: 1500, height: 1000 });
+    await page.goto('/preview.html?view=rightsizing');
+    await page.waitForSelector('.rs-page');
+  });
+
+  test('selecting a workload opens its detail over the table, not below the fold', async ({ page }) => {
+    const dialog = page.getByRole('dialog', { name: /Rightsizing Deployment\/checkout/ });
+    await expect(dialog).toBeVisible();
+    await expect(dialog).toContainText('Recommended CPU');
+    await expect(dialog.locator('.rs-hpa')).toBeVisible();
+    await expect(dialog.locator('.rs-resources')).toBeVisible();
+  });
+
+  test('escape closes it and a row click reopens it', async ({ page }) => {
+    await page.keyboard.press('Escape');
+    await expect(page.getByRole('dialog')).toHaveCount(0);
+    await page.getByRole('row').filter({ hasText: 'payments' }).click();
+    await expect(page.getByRole('dialog', { name: /payments/ })).toBeVisible();
+  });
+});

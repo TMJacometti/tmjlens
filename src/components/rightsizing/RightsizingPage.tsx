@@ -1,4 +1,6 @@
 import { useEffect, useState } from 'react';
+import { createPortal } from 'react-dom';
+import { RefreshCw, ShieldAlert, SlidersHorizontal, X } from 'lucide-react';
 import { RefreshCw, ShieldAlert, SlidersHorizontal } from 'lucide-react';
 import { DiffReview } from '../DiffReview';
 import { StatTile } from '../cluster/charts';
@@ -46,6 +48,8 @@ type Props = {
   onResourcesPreview: (input: ResourcesInput) => void;
   onResourcesApply: (input: ResourcesInput) => void;
   onResourcesUndo: () => void;
+  /** Closes the detail popup and clears the selection. */
+  onClose: () => void;
 };
 
 /**
@@ -56,8 +60,19 @@ export function RightsizingPage({
   rows, coverage, loading, error, selected, detail, hpa, preview, applying,
   resources, resourcesPreview,
   onRefresh, onSelect, onPreview, onApply, onUndo,
+  onResourcesPreview, onResourcesApply, onResourcesUndo, onClose,
   onResourcesPreview, onResourcesApply, onResourcesUndo,
 }: Props) {
+  // The detail is a popup over the table: panels that lived below the fold
+  // read as "nothing happened" to anyone who did not know to scroll.
+  useEffect(() => {
+    if (!selected) return;
+    const onKey = (event: KeyboardEvent) => {
+      if (event.key === 'Escape') onClose();
+    };
+    window.addEventListener('keydown', onKey);
+    return () => window.removeEventListener('keydown', onKey);
+  }, [selected, onClose]);
   const [filter, setFilter] = useState('');
   const [minReplicas, setMinReplicas] = useState(1);
   const [maxReplicas, setMaxReplicas] = useState(10);
@@ -236,6 +251,26 @@ export function RightsizingPage({
         </div>
       )}
 
+      {selected && createPortal(
+        <div className="yaml-scrim" onClick={onClose}>
+          <section
+            className="rs-modal"
+            role="dialog"
+            aria-modal="true"
+            aria-label={`Rightsizing ${selected.kind}/${selected.name}`}
+            onClick={(event) => event.stopPropagation()}
+          >
+            <header className="yaml-head">
+              <div>
+                <h2 className="mono">{selected.name}</h2>
+                <p>{selected.namespace} · {selected.kind} · container {selected.container}</p>
+              </div>
+              <button type="button" className="viz-toggle" onClick={onClose} aria-label="Close">
+                <X size={14} aria-hidden />
+              </button>
+            </header>
+            <div className="rs-modal-body">
+      {!detail && <div className="viz-empty">Reading the recommendation…</div>}
       {detail && (
         <section className="panel rs-detail">
           <div className="panel-head">
@@ -270,9 +305,12 @@ export function RightsizingPage({
               <p>HPA manager is disabled on this install (hpaManager.enabled=false). Preview and apply stay blocked.</p>
             </div>
           )}
-          {hpa.blocks.map((item) => (
-            <div className="viz-callout viz-callout-critical" key={item}><p>{item}</p></div>
-          ))}
+          {hpa.blocks
+            // The install-flag block is already the callout above; say it once.
+            .filter((item) => !item.startsWith('HPA manager is disabled'))
+            .map((item) => (
+              <div className="viz-callout viz-callout-critical" key={item}><p>{item}</p></div>
+            ))}
           {hpa.warnings.map((item) => (
             <div className="viz-callout viz-callout-warning" key={item}><p>{item}</p></div>
           ))}
@@ -403,6 +441,11 @@ export function RightsizingPage({
           ))}
           {resourcesPreview && <DiffReview before={resourcesPreview.before} after={resourcesPreview.after} />}
         </section>
+      )}
+            </div>
+          </section>
+        </div>,
+        document.body,
       )}
     </div>
   );
