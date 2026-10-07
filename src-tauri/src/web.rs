@@ -720,7 +720,9 @@ fn required_permission(cmd: &str) -> &'static str {
         "set_kyverno_policy_action" => "manage-kyverno",
         "set_node_schedulable" | "delete_node" | "drain_node" => "manage-nodes",
         "list_rightsizing_workloads" | "get_rightsizing_workload" | "get_collector_coverage" | "get_hpa_status"
-        | "preview_hpa" | "apply_hpa" | "undo_hpa" => "admin",
+        | "preview_hpa" | "apply_hpa" | "undo_hpa"
+        | "get_resources_status" | "preview_resources" | "apply_resources" | "undo_resources"
+        | "apply_recommended_resources" => "admin",
         _ => "view",
     }
 }
@@ -1092,6 +1094,39 @@ async fn dispatch(state: &WebState, user: &UserRecord, cmd: &str, a: &Value) -> 
             &state.db,
             &arg::<String>(a, "namespace")?,
             &arg::<String>(a, "name")?,
+            &user.email,
+        ).await?),
+        "get_resources_status" => val(crate::resources::status(
+            &state.db,
+            &arg::<String>(a, "namespace")?,
+            &arg::<String>(a, "kind")?,
+            &arg::<String>(a, "name")?,
+            &arg::<String>(a, "container")?,
+        ).await?),
+        "preview_resources" => {
+            let form: crate::resources::ResourcesForm =
+                serde_json::from_value(a.clone()).map_err(|e| format!("invalid resources form: {e}"))?;
+            val(crate::resources::preview(&form).await?)
+        }
+        "apply_resources" => {
+            let form: crate::resources::ResourcesForm =
+                serde_json::from_value(a.clone()).map_err(|e| format!("invalid resources form: {e}"))?;
+            val(crate::resources::apply(&state.db, &form, &user.email).await?)
+        }
+        "apply_recommended_resources" => val(crate::resources::apply_recommendation(
+            &state.db,
+            &arg::<String>(a, "namespace")?,
+            &arg::<String>(a, "kind")?,
+            &arg::<String>(a, "name")?,
+            &arg::<String>(a, "container")?,
+            &user.email,
+        ).await?),
+        "undo_resources" => val(crate::resources::undo(
+            &state.db,
+            &arg::<String>(a, "namespace")?,
+            &arg::<String>(a, "kind")?,
+            &arg::<String>(a, "name")?,
+            &arg::<String>(a, "container")?,
             &user.email,
         ).await?),
         "list_namespaces" => val(list_namespaces(arg(a, "context")?).await?),

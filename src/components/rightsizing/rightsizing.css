@@ -112,3 +112,26 @@
   gap: 3px;
   font-size: 12.5px;
 }
+
+/* Current vs recommended, side by side — same cards as .rs-rec, its own
+ * class so tests and styles can address the editor on its own. */
+.rs-compare {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 10px;
+  padding: 0 16px 10px;
+}
+
+.rs-compare > div {
+  border: 1px solid #272d37;
+  background: #171b22;
+  border-radius: 7px;
+  padding: 12px;
+}
+
+.rs-compare span {
+  display: block;
+  color: #737d8b;
+  font-size: 11px;
+  margin-bottom: 6px;
+}

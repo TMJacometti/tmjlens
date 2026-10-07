@@ -74,3 +74,8 @@ hpaManager:
   enabled: false
   maxReplicasCeiling: 50
   gitopsGuard: warn
+
+# Admin-only: edit a container's requests/limits straight from the Rightsizing
+# recommendation — no HPA. Dry-run preview, server-side apply, undo. Off by default.
+resourceEditor:
+  enabled: false

@@ -84,6 +84,8 @@ spec:
               value: {{ .Values.hpaManager.maxReplicasCeiling | quote }}
             - name: TMJLENS_HPA_GITOPS_GUARD
               value: {{ .Values.hpaManager.gitopsGuard | quote }}
+            - name: TMJLENS_RESOURCE_EDITOR
+              value: {{ ternary "on" "off" .Values.resourceEditor.enabled | quote }}
             - name: TMJLENS_PRICING_PROVIDER
               value: {{ .Values.pricing.provider | quote }}
             {{- if .Values.pricing.instanceType }}

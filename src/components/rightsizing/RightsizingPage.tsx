@@ -1,11 +1,13 @@
-import { useState } from 'react';
+import { useEffect, useState } from 'react';
 import { RefreshCw, ShieldAlert, SlidersHorizontal } from 'lucide-react';
 import { DiffReview } from '../DiffReview';
 import { StatTile } from '../cluster/charts';
 import { formatBytes, formatCpu } from '../../lib/format';
 import {
   confidenceLabel, workloadKey,
-  type CollectorCoverage, type HpaPreview, type HpaStatus, type WorkloadDetail, type WorkloadRow,
+  resourcesInputFrom, resourcesInputToRequest,
+  type CollectorCoverage, type HpaPreview, type HpaStatus, type ResourcesInput, type ResourcesPreview,
+  type ResourcesStatus, type WorkloadDetail, type WorkloadRow,
 } from '../../types/rightsizing';
 import './rightsizing.css';
 import '../yaml-editor.css';
@@ -20,6 +22,9 @@ type Props = {
   detail: WorkloadDetail | null;
   hpa: HpaStatus | null;
   preview: HpaPreview | null;
+  /** The container's requests/limits today, the recommendation, and the guards. */
+  resources: ResourcesStatus | null;
+  resourcesPreview: ResourcesPreview | null;
   applying: boolean;
   onRefresh: () => void;
   onSelect: (row: WorkloadRow) => void;
@@ -38,6 +43,9 @@ type Props = {
     importExisting: boolean;
   }) => void;
   onUndo: () => void;
+  onResourcesPreview: (input: ResourcesInput) => void;
+  onResourcesApply: (input: ResourcesInput) => void;
+  onResourcesUndo: () => void;
 };
 
 /**
@@ -46,7 +54,9 @@ type Props = {
  */
 export function RightsizingPage({
   rows, coverage, loading, error, selected, detail, hpa, preview, applying,
+  resources, resourcesPreview,
   onRefresh, onSelect, onPreview, onApply, onUndo,
+  onResourcesPreview, onResourcesApply, onResourcesUndo,
 }: Props) {
   const [filter, setFilter] = useState('');
   const [minReplicas, setMinReplicas] = useState(1);
@@ -76,6 +86,20 @@ export function RightsizingPage({
   const usd = rows.reduce((sum, row) => sum + (row.waste_usd_month ?? 0), 0);
   const limited = rows.filter((row) => row.limited_data).length;
   const low = rows.filter((row) => row.confidence === 'low' || row.confidence === 'none').length;
+
+  // Edited in millicores and MiB. Blank keeps a field unset — a limit that
+  // was never there is not invented, and one that exists is kept unless typed.
+  const [resFields, setResFields] = useState({ cpuRequest: '', cpuLimit: '', memRequest: '', memLimit: '' });
+  useEffect(() => {
+    if (resources) setResFields(resourcesInputFrom(resources.recommended));
+  }, [resources]);
+  const useRecommendation = () => {
+    if (resources) setResFields(resourcesInputFrom(resources.recommended));
+  };
+  const useCurrent = () => {
+    if (resources) setResFields(resourcesInputFrom(resources.current));
+  };
+  const resourcesInput = () => resourcesInputToRequest(resFields);
 
   const useSuggestion = () => {
     if (!hpa) return;
@@ -287,6 +311,94 @@ export function RightsizingPage({
             )}
           </div>
           {preview && <DiffReview before={preview.before} after={preview.after} />}
+        </section>
+      )}
+
+      {resources && selected && (
+        <section className="panel rs-resources">
+          <div className="panel-head">
+            <span><SlidersHorizontal size={14} aria-hidden /> Resources</span>
+            <span className="muted">
+              {selected.kind}/{selected.name} · container {selected.container}
+              {resources.ours ? ' · set by tmjLens' : ''}
+            </span>
+          </div>
+          {!resources.editor_enabled && (
+            <div className="viz-callout viz-callout-warning">
+              <p>Resource editor is disabled on this install (resourceEditor.enabled=false). Preview and apply stay blocked.</p>
+            </div>
+          )}
+          {resources.blocks.map((item) => (
+            <div className="viz-callout viz-callout-critical" key={item}><p>{item}</p></div>
+          ))}
+          {resources.warnings.map((item) => (
+            <div className="viz-callout viz-callout-warning" key={item}><p>{item}</p></div>
+          ))}
+          <div className="rs-compare">
+            <div>
+              <span>Current CPU req / limit</span>
+              <strong>{formatCpu(resources.current.cpu_request_milli)} / {formatCpu(resources.current.cpu_limit_milli)}</strong>
+            </div>
+            <div>
+              <span>Current memory req / limit</span>
+              <strong>{formatBytes(resources.current.mem_request_bytes)} / {formatBytes(resources.current.mem_limit_bytes)}</strong>
+            </div>
+            <div>
+              <span>Recommended CPU request</span>
+              <strong>{formatCpu(resources.recommended.cpu_request_milli)}</strong>
+            </div>
+            <div>
+              <span>Recommended memory request</span>
+              <strong>{formatBytes(resources.recommended.mem_request_bytes)}</strong>
+            </div>
+          </div>
+          <div className="rs-form">
+            <label>CPU request (m)
+              <input type="number" min={1} value={resFields.cpuRequest} aria-label="CPU request millicores"
+                onChange={(e) => setResFields({ ...resFields, cpuRequest: e.target.value })} />
+            </label>
+            <label>CPU limit (m)
+              <input type="number" min={1} value={resFields.cpuLimit} aria-label="CPU limit millicores" placeholder="unset"
+                onChange={(e) => setResFields({ ...resFields, cpuLimit: e.target.value })} />
+            </label>
+            <label>Memory request (MiB)
+              <input type="number" min={1} value={resFields.memRequest} aria-label="Memory request MiB"
+                onChange={(e) => setResFields({ ...resFields, memRequest: e.target.value })} />
+            </label>
+            <label>Memory limit (MiB)
+              <input type="number" min={1} value={resFields.memLimit} aria-label="Memory limit MiB" placeholder="unset"
+                onChange={(e) => setResFields({ ...resFields, memLimit: e.target.value })} />
+            </label>
+          </div>
+          <p className="muted">
+            Applying changes the pod template, so the workload rolls ({resources.replicas} replica(s) restart).
+            Limits are kept as they are unless you type them; a request above its limit is refused before anything is sent.
+          </p>
+          <div className="rs-actions">
+            <button type="button" className="viz-toggle" onClick={useRecommendation}>Use recommendation</button>
+            <button type="button" className="viz-toggle" onClick={useCurrent}>Reset to current</button>
+            <button type="button" className="viz-toggle" onClick={() => onResourcesPreview(resourcesInput())}>
+              Preview resources
+            </button>
+            <button
+              type="button"
+              className="primary"
+              disabled={applying || !resourcesPreview || resourcesPreview.blocks.length > 0}
+              onClick={() => onResourcesApply(resourcesInput())}
+            >
+              Apply resources
+            </button>
+            {resources.ours && (
+              <button type="button" className="viz-toggle" onClick={onResourcesUndo}>Undo resources</button>
+            )}
+          </div>
+          {resourcesPreview && resourcesPreview.blocks.map((item) => (
+            <div className="viz-callout viz-callout-critical" key={`p-${item}`}><p>{item}</p></div>
+          ))}
+          {resourcesPreview && resourcesPreview.warnings.map((item) => (
+            <div className="viz-callout viz-callout-warning" key={`p-${item}`}><p>{item}</p></div>
+          ))}
+          {resourcesPreview && <DiffReview before={resourcesPreview.before} after={resourcesPreview.after} />}
         </section>
       )}
     </div>

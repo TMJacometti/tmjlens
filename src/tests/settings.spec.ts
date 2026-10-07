@@ -25,7 +25,7 @@ test.describe('settings about', () => {
   test('the release notes close the tab and name this release', async ({ page }) => {
     const dialog = page.getByRole('dialog', { name: 'Settings' });
     await expect(dialog).toContainText(`What's new in ${version}`);
-    await expect(dialog).toContainText('Rightsizing shows requests again');
+    await expect(dialog).toContainText('apply the recommendation without an HPA');
     await expect(dialog).toContainText('never a silent zero');
   });
 });

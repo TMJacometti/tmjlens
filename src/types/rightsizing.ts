@@ -74,6 +74,76 @@ export type HpaPreview = {
   blocks: string[];
 };
 
+/** Requests and limits for one container; null means not set, never zero. */
+export type ResourceSet = {
+  cpu_request_milli: number | null;
+  cpu_limit_milli: number | null;
+  mem_request_bytes: number | null;
+  mem_limit_bytes: number | null;
+};
+
+export type ResourcesStatus = {
+  current: ResourceSet;
+  recommended: ResourceSet;
+  replicas: number;
+  ours: boolean;
+  editor_enabled: boolean;
+  warnings: string[];
+  blocks: string[];
+};
+
+export type ResourcesPreview = {
+  before: string;
+  after: string;
+  warnings: string[];
+  blocks: string[];
+};
+
+/** What the editor form sends: the same four numbers, in the same units. */
+export type ResourcesInput = {
+  cpuRequestMilli: number | null;
+  cpuLimitMilli: number | null;
+  memRequestBytes: number | null;
+  memLimitBytes: number | null;
+};
+
+const MIB = 1024 * 1024;
+
+/** Inputs are edited in millicores and MiB; blank means "leave unset". */
+export function resourcesInputFrom(set: ResourceSet): {
+  cpuRequest: string; cpuLimit: string; memRequest: string; memLimit: string;
+} {
+  const milli = (v: number | null) => (v == null ? '' : String(Math.ceil(v)));
+  const mib = (v: number | null) => (v == null ? '' : String(Math.ceil(v / MIB)));
+  return {
+    cpuRequest: milli(set.cpu_request_milli),
+    cpuLimit: milli(set.cpu_limit_milli),
+    memRequest: mib(set.mem_request_bytes),
+    memLimit: mib(set.mem_limit_bytes),
+  };
+}
+
+export function resourcesInputToRequest(fields: {
+  cpuRequest: string; cpuLimit: string; memRequest: string; memLimit: string;
+}): ResourcesInput {
+  const num = (raw: string): number | null => {
+    const trimmed = raw.trim();
+    if (trimmed === '') return null;
+    const value = Number(trimmed);
+    return Number.isFinite(value) ? value : null;
+  };
+  const mibToBytes = (raw: string): number | null => {
+    const value = num(raw);
+    return value == null ? null : value * MIB;
+  };
+  return {
+    cpuRequestMilli: num(fields.cpuRequest),
+    cpuLimitMilli: num(fields.cpuLimit),
+    memRequestBytes: mibToBytes(fields.memRequest),
+    memLimitBytes: mibToBytes(fields.memLimit),
+  };
+}
+
 export function workloadKey(row: WorkloadRow): string {
   return `${row.namespace}/${row.kind}/${row.name}/${row.container}`;
 }

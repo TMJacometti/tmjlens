@@ -20,7 +20,7 @@ test.describe('rightsizing', () => {
 
   test('HPA apply stays blocked when the install flag is off', async ({ page }) => {
     await expect(page.locator('.rs-hpa')).toContainText('hpaManager.enabled=false');
-    await expect(page.getByRole('button', { name: 'Apply' })).toBeDisabled();
+    await expect(page.getByRole('button', { name: 'Apply', exact: true })).toBeDisabled();
   });
 
   test('the recommendation carries the numbers that produced it', async ({ page }) => {
@@ -41,5 +41,40 @@ test.describe('rightsizing coverage', () => {
     await expect(banner).toContainText('Too many pods');
     // The fix is spelled out next to the problem, not left to a search.
     await expect(banner).toContainText('collector.priorityClassName');
+  });
+});
+
+test.describe('resource editor', () => {
+  test.beforeEach(async ({ page }) => {
+    await page.setViewportSize({ width: 1500, height: 1000 });
+    await page.goto('/preview.html?view=rightsizing');
+    await page.waitForSelector('.rs-resources');
+  });
+
+  test('the form opens pre-filled with the recommendation, limits kept', async ({ page }) => {
+    await expect(page.getByLabel('CPU request millicores')).toHaveValue('110');
+    await expect(page.getByLabel('Memory request MiB')).toHaveValue('144');
+    // Limits are not part of the recommendation; the current ones stay.
+    await expect(page.getByLabel('CPU limit millicores')).toHaveValue('1000');
+    await expect(page.getByLabel('Memory limit MiB')).toHaveValue('1024');
+  });
+
+  test('current and recommended are both on screen, so the change is legible', async ({ page }) => {
+    const panel = page.locator('.rs-resources');
+    await expect(panel).toContainText('500m / 1.0 cores');
+    await expect(panel).toContainText('512 MiB / 1.0 GiB');
+    await expect(panel).toContainText('2 replica(s) restart');
+  });
+
+  test('apply stays blocked while the install flag is off', async ({ page }) => {
+    await expect(page.locator('.rs-resources')).toContainText('resourceEditor.enabled=false');
+    await expect(page.getByRole('button', { name: 'Apply resources' })).toBeDisabled();
+  });
+
+  test('reset to current puts the live numbers back in the form', async ({ page }) => {
+    await page.getByRole('button', { name: 'Reset to current' }).click();
+    await expect(page.getByLabel('CPU request millicores')).toHaveValue('500');
+    await page.getByRole('button', { name: 'Use recommendation' }).click();
+    await expect(page.getByLabel('CPU request millicores')).toHaveValue('110');
   });
 });

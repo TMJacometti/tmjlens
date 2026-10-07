@@ -92,7 +92,7 @@ pub fn sql_opt(value: Option<&str>) -> Result<String, String> {
 }
 
 const SCHEMA: &str = include_str!("../../tools/tmjlite/schema.sql");
-const SCHEMA_VERSION: i64 = 3;
+const SCHEMA_VERSION: i64 = 4;
 
 /// What upgrades an older database to each version. schema.sql always creates
 /// the CURRENT shape, so migrations only run on files born before the change.
@@ -121,6 +121,13 @@ const MIGRATIONS: &[(i64, &[&str])] = &[
             "CREATE UNIQUE INDEX idx_hpa_managed ON hpa_managed (namespace, name);",
             "CREATE TABLE collector_nodes (id PK, node_name STRING(253) NOT NULL, last_seen STRING(40) NOT NULL, limited_data BOOL DEFAULT(FALSE));",
             "CREATE UNIQUE INDEX idx_collector_nodes ON collector_nodes (node_name);",
+        ],
+    ),
+    (
+        4,
+        &[
+            "CREATE TABLE resources_managed (id PK, namespace STRING(253) NOT NULL, kind STRING(40) NOT NULL, name STRING(253) NOT NULL, container STRING(253) NOT NULL, applied_json TEXT NOT NULL, previous_json TEXT, applied_at STRING(40) NOT NULL, applied_by STRING(320) NOT NULL);",
+            "CREATE UNIQUE INDEX idx_resources_managed ON resources_managed (namespace, kind, name, container);",
         ],
     ),
 ];
@@ -450,7 +457,7 @@ mod tests {
         }
         let db = Db::open(&path).expect("reopen migrates");
         let meta = db.query("SELECT version FROM schema_meta;").expect("meta");
-        assert_eq!(meta.single(), Some("3"));
+        assert_eq!(meta.single().map(str::to_string), Some(SCHEMA_VERSION.to_string()));
         db.exec("INSERT INTO app_settings (name, value) VALUES ('probe', '{}');")
             .expect("app_settings usable after migration");
         db.exec("INSERT INTO collector_nodes (node_name, last_seen, limited_data) VALUES ('node-a', '2026-09-01T00:00:00Z', FALSE);")

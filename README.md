@@ -27,7 +27,8 @@ Health score with evidence, capacity the way the scheduler sees it (requests,
 not live usage), workloads, logs, rollout restart, network, storage,
 configuration, namespaces, Helm, Velero, Argo, Kyverno, reports. Admins also
 get **Rightsizing** (request vs real usage from a node DaemonSet) and, when
-`hpaManager.enabled` is on, applying HorizontalPodAutoscalers.
+`hpaManager.enabled` / `resourceEditor.enabled` are on, applying
+HorizontalPodAutoscalers or the recommended requests and limits directly.
 
 If something could not be collected, the overview says so instead of showing a
 quiet zero.
@@ -194,8 +195,11 @@ single web replica writes tmjLite. Fargate / virtual nodes have no kubelet the
 DaemonSet can reach — those workloads show as limited data.
 
 `hpaManager.enabled` defaults to false. Turning it on lets Admin preview and
-apply HPAs (`autoscaling/v2`, field manager `tmjlens`). Developer and Guest get
-`403` on those endpoints.
+apply HPAs (`autoscaling/v2`, field manager `tmjlens`). `resourceEditor.enabled`
+(also false by default) lets Admin set a container's requests and limits from
+the recommendation — dry-run preview, server-side apply, undo, and a warning
+naming whoever (Helm, kubectl, GitOps) owned those fields before. Developer and
+Guest get `403` on all of those endpoints.
 
 ## Security
 
