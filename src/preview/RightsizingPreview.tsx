@@ -1,3 +1,4 @@
+import { useState } from 'react';
 import { RightsizingPage } from '../components/rightsizing/RightsizingPage';
 import type { HpaStatus, ResourcesStatus, WorkloadDetail, WorkloadRow } from '../types/rightsizing';
 
@@ -47,6 +48,7 @@ const RESOURCES: ResourcesStatus = {
 };
 
 export function RightsizingPreview() {
+  const [selected, setSelected] = useState<WorkloadRow | null>(ROWS[0]);
   return (
     <>
       <div className="breadcrumbs">Cluster / in-cluster / Rightsizing</div>
@@ -71,7 +73,7 @@ export function RightsizingPreview() {
         }}
         loading={false}
         error=""
-        selected={ROWS[0]}
+        selected={selected}
         detail={DETAIL}
         hpa={HPA}
         preview={null}
@@ -82,7 +84,8 @@ export function RightsizingPreview() {
         onResourcesUndo={() => undefined}
         applying={false}
         onRefresh={() => undefined}
-        onSelect={() => undefined}
+        onSelect={setSelected}
+        onClose={() => setSelected(null)}
         onPreview={() => undefined}
         onApply={() => undefined}
         onUndo={() => undefined}
