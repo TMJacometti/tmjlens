@@ -328,9 +328,12 @@ export function RightsizingPage({
               <p>Resource editor is disabled on this install (resourceEditor.enabled=false). Preview and apply stay blocked.</p>
             </div>
           )}
-          {resources.blocks.map((item) => (
-            <div className="viz-callout viz-callout-critical" key={item}><p>{item}</p></div>
-          ))}
+          {resources.blocks
+            // The install-flag block is already the callout above; say it once.
+            .filter((item) => !item.startsWith('Resource editor is disabled'))
+            .map((item) => (
+              <div className="viz-callout viz-callout-critical" key={item}><p>{item}</p></div>
+            ))}
           {resources.warnings.map((item) => (
             <div className="viz-callout viz-callout-warning" key={item}><p>{item}</p></div>
           ))}
