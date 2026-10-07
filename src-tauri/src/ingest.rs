@@ -150,8 +150,13 @@ pub fn apply(db: &Db, prepared: PreparedBatch) -> Result<IngestResult, String> {
         }
         Err(error) => {
             // A half-applied batch is worse than a retried one: the collector
-            // keeps its buffer until it hears 200.
-            let _ = db.exec("ROLLBACK;");
+            // keeps its buffer until it hears 200. tmjLite 0.3.0 propagates
+            // ROLLBACK failures; if restore failed, this handle is spent.
+            if let Err(rollback) = db.exec("ROLLBACK;") {
+                return Err(format!(
+                    "{error} (and ROLLBACK failed: {rollback} — restart the process so the database is reopened)"
+                ));
+            }
             return Err(error);
         }
     };

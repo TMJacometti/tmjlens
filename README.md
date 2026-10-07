@@ -87,7 +87,7 @@ every field. Do not commit it — it holds the Azure secret.
 ```yaml
 image:
   repository: ghcr.io/tmjacometti/tmjlens
-  tag: "0.6.0"
+  tag: "0.6.5"
   pullPolicy: IfNotPresent
 
 environment:
@@ -135,11 +135,11 @@ have a certificate.
 ### 3. Helm
 
 A release is a `v*` tag; each publishes the image and the chart. After this
-version is tagged **v0.6.0**, install it:
+version is tagged **v0.6.5**, install it:
 
 ```bash
 helm upgrade --install tmjlens oci://ghcr.io/tmjacometti/tmjlens-chart \
-  --version 0.6.0 \
+  --version 0.6.5 \
   -n tmjlens --create-namespace \
   -f values.install.yaml
 ```
@@ -149,13 +149,13 @@ public, same file):
 
 ```bash
 helm upgrade --install tmjlens \
-  https://github.com/TMJacometti/tmjlens/releases/download/v0.6.0/tmjlens-chart-0.6.0.tgz \
+  https://github.com/TMJacometti/tmjlens/releases/download/v0.6.5/tmjlens-chart-0.6.5.tgz \
   -n tmjlens --create-namespace \
   -f values.install.yaml
 ```
 
 ```bash
-helm show values oci://ghcr.io/tmjacometti/tmjlens-chart --version 0.6.0
+helm show values oci://ghcr.io/tmjacometti/tmjlens-chart --version 0.6.5
 ```
 
 ### 4. What you get

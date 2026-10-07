@@ -13,7 +13,7 @@ describe('release version is one number everywhere', () => {
   const pkg = (JSON.parse(read('./package.json')) as { version: string }).version;
   const cargoToml = /^version\s*=\s*"([^"]+)"/m.exec(read('../src-tauri/Cargo.toml'))?.[1];
   const tauriConf = (JSON.parse(read('../src-tauri/tauri.conf.json')) as { version: string }).version;
-  const lock = /name = "tmjlens"\nversion = "([^"]+)"/.exec(read('../src-tauri/Cargo.lock'))?.[1];
+  const lock = /name = "tmjlens"\r?\nversion = "([^"]+)"/.exec(read('../src-tauri/Cargo.lock'))?.[1];
 
   it('package.json, Cargo.toml and tauri.conf.json agree', () => {
     expect(cargoToml).toBe(pkg);
