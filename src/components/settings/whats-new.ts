@@ -4,6 +4,7 @@
  * The version number itself comes from package.json; only the story lives here.
  */
 export const WHATS_NEW: string[] = [
+  'The Rightsizing detail — recommendation, HPA and the resource editor — opens as a popup over the table the moment you click a row, instead of rendering below the fold where it looked like nothing happened.',
   'Rightsizing can now apply the recommendation without an HPA: Admins set a container’s requests and limits from the screen — dry-run preview as a diff, server-side apply under field manager tmjlens, undo — and are told when Helm, kubectl or GitOps owned those fields first. Off until resourceEditor.enabled is set.',
   'tmjLite 0.3.0 under the hood: a failed WAL recovery no longer opens a stale main file, and COMMIT only finishes after a durable sync — the 0.6.2 Rightsizing ingest could leave the database unusable; this engine refuses that path.',
   'Rightsizing shows requests again: hourly and daily rollups were compacted with request/limit/replicas left NULL, and the screen reads those first. Compaction now carries the newest window’s values; existing rows heal on their next compaction.',
