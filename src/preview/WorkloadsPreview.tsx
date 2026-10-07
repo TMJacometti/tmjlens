@@ -61,7 +61,7 @@ export function WorkloadsPreview() {
   const [inventory, setInventory] = useState<WorkloadInventory | null>(null);
   useEffect(() => { void invoke<WorkloadInventory>('list_workloads').then(setInventory); }, []);
   const [pod, setPod] = useState('');
-  const [deployment, setDeployment] = useState('fraud-scoring');
+  const [deployment, setDeployment] = useState('');
   const [logPopupPod, setLogPopupPod] = useState('');
 
   return (
@@ -91,7 +91,7 @@ export function WorkloadsPreview() {
         usage={USAGE}
         usageAvailable
         usageReason=""
-        controllers={<WorkloadInventoryTable inventory={inventory} loading={false} error="" selected="" canDelete onSelect={() => undefined} onEditYaml={() => undefined} onDelete={() => undefined} onExportYaml={() => undefined} canPatch={() => true} onScale={() => undefined} onRestart={() => undefined} />}
+        controllers={<WorkloadInventoryTable inventory={inventory} loading={false} error="" selected={deployment ? `Deployment/${deployment}` : ''} canDelete onSelect={(row) => { if (row.kind === 'Deployment') setDeployment(row.name); }} onEditYaml={() => undefined} onDelete={() => undefined} onExportYaml={() => undefined} canPatch={() => true} onScale={() => undefined} onRestart={() => undefined} />}
       />
       {logPopupPod && (
         <LogPopup

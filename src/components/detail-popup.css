@@ -1,0 +1,35 @@
+.detail-popup {
+  width: min(1180px, 96vw);
+  max-height: 88vh;
+  display: flex;
+  flex-direction: column;
+  background: #0f1319;
+  border: 1px solid #272d37;
+  border-radius: 10px;
+  box-shadow: 0 22px 60px #000a;
+  overflow: auto;
+}
+
+/* The panels were built to sit in the page flow; inside the popup the shell
+ * owns the frame and the scrolling. */
+.detail-popup > .detail,
+.detail-popup > .wl-detail {
+  margin: 0;
+  border: 0;
+  border-radius: 0;
+  overflow: visible;
+  flex-shrink: 0;
+}
+
+.detail-popup .wl-yaml {
+  max-height: none;
+}
+
+@media (max-width: 720px) {
+  .detail-popup {
+    width: 100vw;
+    max-height: 100vh;
+    border-radius: 0;
+    border: 0;
+  }
+}
