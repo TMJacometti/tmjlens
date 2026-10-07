@@ -13,6 +13,7 @@ import { NetworkPage } from './components/network/NetworkPage';
 import { YamlEditor } from './components/YamlEditor';
 import { LogViewer } from './components/logs/LogViewer';
 import { LogPopup } from './components/logs/LogPopup';
+import { DetailPopup } from './components/DetailPopup';
 import { PortForwardPanel } from './components/portforward/PortForwardPanel';
 import { ExecTerminal } from './components/exec/ExecTerminal';
 import type { NetworkOverview } from './types/network';
@@ -1148,7 +1149,7 @@ function EventsPanel({ events, onRefresh }: { events: EventInfo[]; onRefresh?: (
 function PodDetail({ pod, usage, usageAvailable, usageReason, context, namespace, containers, events, selectedContainer, setSelectedContainer, onOpenYaml, onExport, onClose, canForward, canExec, environmentWarning, notify }: { pod?: PodRow; usage?: PodUsageRow; usageAvailable: boolean; usageReason: string; canForward: boolean; canExec: boolean; environmentWarning?: string; notify: (text: string, detail: string | undefined, tone: 'good' | 'bad') => void; context: string; namespace: string; containers: string[]; events: EventInfo[]; selectedContainer: string; setSelectedContainer: (name: string) => void; onOpenYaml: () => void; onExport: () => void; onClose: () => void }) {
   const [tab, setTab] = useState<'Logs' | 'Usage' | 'Shell' | 'Forward' | 'Overview' | 'Events'>('Logs');
   const podEvents = events.filter((event) => event.name === pod?.name);
-  return <div className="detail"><div className="detail-head"><div><h2>{pod?.name || 'Pod'}</h2><span className="muted">Pod · namespace {namespace}</span></div><button className="icon-btn" title="Close details" onClick={onClose}><X size={17}/></button></div>
+  return <DetailPopup label={`Pod ${pod?.name || ''}`} onClose={onClose}><div className="detail"><div className="detail-head"><div><h2>{pod?.name || 'Pod'}</h2><span className="muted">Pod · namespace {namespace}</span></div><button className="icon-btn" title="Close details" onClick={onClose}><X size={17}/></button></div>
     <div className="detail-tabs">
       <button className={`tab ${tab === 'Logs' ? 'active' : ''}`} onClick={() => setTab('Logs')}>Logs</button>
       <button className={`tab ${tab === 'Usage' ? 'active' : ''}`} onClick={() => setTab('Usage')}>Usage</button>
@@ -1165,7 +1166,7 @@ function PodDetail({ pod, usage, usageAvailable, usageReason, context, namespace
       : tab === 'Forward' ? <PortForwardPanel context={context} namespace={namespace} podName={pod?.name || ''} canForward={canForward} notify={notify}/>
       : tab === 'Overview' ? <PodOverview pod={pod} containers={containers}/>
       : <EventsPanel events={podEvents}/>}
-  </div>;
+  </div></DetailPopup>;
 }
 
 function PodOverview({ pod, containers }: { pod?: PodRow; containers: string[] }) { return <div className="overview-grid"><div><span>Status</span><strong>{pod?.status || 'Unknown'}</strong></div><div><span>Ready</span><strong>{pod?.ready || 'n/a'}</strong></div><div><span>Age</span><strong>{pod?.age || 'n/a'}</strong></div><div><span>Containers</span><strong>{containers.length}</strong></div></div>; }

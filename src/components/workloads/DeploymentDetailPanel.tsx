@@ -2,6 +2,7 @@ import { useEffect, useState } from 'react';
 import { invoke } from '../../lib/transport';
 import { Download, X } from 'lucide-react';
 import { DataTable, SeverityBadge } from '../cluster/charts';
+import { DetailPopup } from '../DetailPopup';
 import { RelationGraph, type RelationGraphData } from '../graph/RelationGraph';
 import type { DeploymentDetail } from '../../types/workloads';
 import type { Severity } from '../../types/cluster';
@@ -64,6 +65,7 @@ export function DeploymentDetailPanel({
   const warnings = detail?.events.filter((event) => event.severity !== 'good').length ?? 0;
 
   return (
+    <DetailPopup label={`Deployment ${deploymentName}`} onClose={onClose}>
     <section className="viz-card wl-detail">
       <header className="viz-card-head">
         <div>
@@ -104,6 +106,7 @@ export function DeploymentDetailPanel({
       {detail && tab === 'Containers' && <Containers detail={detail} onOpenLogs={onOpenLogs} />}
       {tab === 'YAML' && <Yaml body={yaml} />}
     </section>
+    </DetailPopup>
   );
 }
 

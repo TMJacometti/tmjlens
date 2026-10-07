@@ -4,6 +4,7 @@
  * The version number itself comes from package.json; only the story lives here.
  */
 export const WHATS_NEW: string[] = [
+  'Workloads: a pod’s or a Deployment’s detail opens as a popup over the list — same tabs, same content — instead of rendering below the fold where a click looked like it did nothing. Escape or the scrim closes it; a YAML editor or log viewer opened from inside stays on top.',
   'Rightsizing reads requests from the live workload, so an edit — yours, kubectl’s or Helm’s — shows on the next refresh; the history kept the FIRST request ever seen, which froze the screen on the original value. Workloads that left the cluster are marked as history.',
   'Rightsizing: sortable columns (waste biggest-first by default), a namespace filter, and the detail popup split into Overview / HPA / Resources tabs.',
   'Preview is the review: for HPA and resources alike, Preview opens the diff and Apply lives inside it — the same flow as Edit YAML.',

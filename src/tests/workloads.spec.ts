@@ -9,9 +9,6 @@ import { expect, test } from '@playwright/test';
 test.beforeEach(async ({ page }) => {
   await page.setViewportSize({ width: 1400, height: 1000 });
   await page.goto('/preview.html?view=workloads');
-  // The detail panel below also renders a .viz-table, so waiting for that selector
-  // can pass before the inventory arrives — and the late reflow closes any menu
-  // opened meanwhile (menus close on scroll by design). Wait for inventory content.
   await page.getByText('nightly-reconcile').waitFor();
 });
 
@@ -57,6 +54,22 @@ test('a job and a cron job offer neither', async ({ page }) => {
   const cron = await openMenu(page, 'nightly-reconcile');
   await expect(cron).not.toContainText('Scale…');
   await expect(cron).not.toContainText('Rollout restart');
+});
+
+test('a controller row opens its detail in a popup over the inventory, not below it', async ({ page }) => {
+  await page.getByRole('row').filter({ hasText: 'fraud-scoring' }).getByText('fraud-scoring', { exact: true }).click();
+  const dialog = page.getByRole('dialog', { name: 'Deployment fraud-scoring' });
+  await expect(dialog).toContainText('Deployment · namespace payments');
+  // The same panel as before: all five tabs, and the tabs still switch.
+  for (const tab of ['Overview', 'Relations', 'Events', 'Containers', 'YAML']) {
+    await expect(dialog.getByRole('button', { name: new RegExp(`^${tab}`) })).toBeVisible();
+  }
+  await dialog.getByRole('button', { name: /^Events/ }).click();
+  await expect(dialog).toContainText('exceeded quota');
+
+  await page.keyboard.press('Escape');
+  await expect(dialog).toBeHidden();
+  await expect(page.getByText('nightly-reconcile')).toBeVisible();
 });
 
 test('a pod row opens its log in a popup over the list', async ({ page }) => {
