@@ -184,3 +184,18 @@ CREATE TABLE collector_nodes (
     limited_data BOOL DEFAULT(FALSE)
 );
 CREATE UNIQUE INDEX idx_collector_nodes ON collector_nodes (node_name);
+
+-- Container resources applied by the Admin resource editor (v4): what tmjLens
+-- set, and what was there before, so undo means "before tmjLens touched it".
+CREATE TABLE resources_managed (
+    id PK,
+    namespace STRING(253) NOT NULL,
+    kind STRING(40) NOT NULL,
+    name STRING(253) NOT NULL,
+    container STRING(253) NOT NULL,
+    applied_json TEXT NOT NULL,
+    previous_json TEXT,
+    applied_at STRING(40) NOT NULL,
+    applied_by STRING(320) NOT NULL
+);
+CREATE UNIQUE INDEX idx_resources_managed ON resources_managed (namespace, kind, name, container);

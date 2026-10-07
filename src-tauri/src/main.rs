@@ -18,6 +18,7 @@ mod network;
 mod pricing;
 mod search;
 mod reports;
+mod resources;
 mod rightsizing;
 mod settings;
 mod storage;

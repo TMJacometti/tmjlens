@@ -1,5 +1,5 @@
 import { RightsizingPage } from '../components/rightsizing/RightsizingPage';
-import type { HpaStatus, WorkloadDetail, WorkloadRow } from '../types/rightsizing';
+import type { HpaStatus, ResourcesStatus, WorkloadDetail, WorkloadRow } from '../types/rightsizing';
 
 const ROWS: WorkloadRow[] = [
   {
@@ -36,6 +36,16 @@ const HPA: HpaStatus = {
   manager_enabled: false,
 };
 
+const RESOURCES: ResourcesStatus = {
+  current: { cpu_request_milli: 500, cpu_limit_milli: 1000, mem_request_bytes: 512 * 1024 * 1024, mem_limit_bytes: 1024 * 1024 * 1024 },
+  recommended: { cpu_request_milli: 110, cpu_limit_milli: 1000, mem_request_bytes: 144 * 1024 * 1024, mem_limit_bytes: 1024 * 1024 * 1024 },
+  replicas: 2,
+  ours: false,
+  editor_enabled: false,
+  warnings: [],
+  blocks: ['Resource editor is disabled on this install (resourceEditor.enabled=false).'],
+};
+
 export function RightsizingPreview() {
   return (
     <>
@@ -65,6 +75,11 @@ export function RightsizingPreview() {
         detail={DETAIL}
         hpa={HPA}
         preview={null}
+        resources={RESOURCES}
+        resourcesPreview={null}
+        onResourcesPreview={() => undefined}
+        onResourcesApply={() => undefined}
+        onResourcesUndo={() => undefined}
         applying={false}
         onRefresh={() => undefined}
         onSelect={() => undefined}

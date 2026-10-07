@@ -75,7 +75,7 @@ pub fn max_replicas_ceiling() -> i32 {
         .max(1)
 }
 
-fn gitops_guard() -> &'static str {
+pub(crate) fn gitops_guard() -> &'static str {
     match std::env::var("TMJLENS_HPA_GITOPS_GUARD").ok().as_deref() {
         Some("block") => "block",
         Some("off") => "off",
@@ -486,7 +486,7 @@ async fn metrics_present(client: Client) -> Result<bool, String> {
     }
 }
 
-async fn vpa_on_target(client: Client, namespace: &str, kind: &str, name: &str) -> Result<bool, String> {
+pub(crate) async fn vpa_on_target(client: Client, namespace: &str, kind: &str, name: &str) -> Result<bool, String> {
     let request = http::Request::get(format!(
         "/apis/autoscaling.k8s.io/v1/namespaces/{namespace}/verticalpodautoscalers"
     ))
@@ -530,22 +530,25 @@ async fn gitops_on_target(
     let Some((labels, annotations)) = labels else {
         return Ok(None);
     };
-    let mut keys: Vec<(String, String)> = Vec::new();
-    if let Some(m) = labels {
-        keys.extend(m);
-    }
-    if let Some(m) = annotations {
-        keys.extend(m);
-    }
-    for (k, v) in keys {
+    Ok(gitops_marker(labels.as_ref(), annotations.as_ref()))
+}
+
+/// The label or annotation that says a GitOps controller owns this object —
+/// shared by every writer in the app, because every one of them would be
+/// reverted by the next sync.
+pub(crate) fn gitops_marker(
+    labels: Option<&BTreeMap<String, String>>,
+    annotations: Option<&BTreeMap<String, String>>,
+) -> Option<String> {
+    for (k, v) in labels.into_iter().flatten().chain(annotations.into_iter().flatten()) {
         if k.starts_with("argocd.argoproj.io/") {
-            return Ok(Some(format!("Argo CD {k}={v}")));
+            return Some(format!("Argo CD {k}={v}"));
         }
         if k.starts_with("kustomize.toolkit.fluxcd.io/") || k.starts_with("helm.toolkit.fluxcd.io/") {
-            return Ok(Some(format!("Flux {k}={v}")));
+            return Some(format!("Flux {k}={v}"));
         }
     }
-    Ok(None)
+    None
 }
 
 async fn current_replicas(client: Client, namespace: &str, kind: &str, name: &str) -> Result<i32, String> {

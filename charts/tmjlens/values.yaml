@@ -110,6 +110,12 @@ hpaManager:
   maxReplicasCeiling: 50
   gitopsGuard: warn
 
+# Admin-only: set a container's requests/limits from the rightsizing
+# recommendation, without an HPA. Server-side apply under field manager
+# tmjlens, previewed as a dry-run, undoable. Shares hpaManager.gitopsGuard.
+resourceEditor:
+  enabled: false
+
 pricing:
   provider: auto
   instanceType: ""
