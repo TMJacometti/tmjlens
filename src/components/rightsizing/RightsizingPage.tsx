@@ -1,13 +1,13 @@
 import { useEffect, useState } from 'react';
 import { createPortal } from 'react-dom';
-import { RefreshCw, ShieldAlert, SlidersHorizontal, X } from 'lucide-react';
+import { ArrowDown, ArrowUp, RefreshCw, ShieldAlert, SlidersHorizontal, X } from 'lucide-react';
 import { DiffReview } from '../DiffReview';
 import { StatTile } from '../cluster/charts';
 import { formatBytes, formatCpu } from '../../lib/format';
 import {
   confidenceLabel, workloadKey,
-  resourcesInputFrom, resourcesInputToRequest,
-  type CollectorCoverage, type HpaPreview, type HpaStatus, type ResourcesInput, type ResourcesPreview,
+  DETAIL_TABS, namespacesOf, resourcesInputFrom, resourcesInputToRequest, sortRows,
+  type CollectorCoverage, type DetailTab, type SortDir, type SortKey, type HpaPreview, type HpaStatus, type ResourcesInput, type ResourcesPreview,
   type ResourcesStatus, type WorkloadDetail, type WorkloadRow,
 } from '../../types/rightsizing';
 import './rightsizing.css';
@@ -49,6 +49,9 @@ type Props = {
   onResourcesUndo: () => void;
   /** Closes the detail popup and clears the selection. */
   onClose: () => void;
+  /** Drops a preview without applying it. */
+  onDismissPreview: () => void;
+  onDismissResourcesPreview: () => void;
 };
 
 /**
@@ -60,6 +63,7 @@ export function RightsizingPage({
   resources, resourcesPreview,
   onRefresh, onSelect, onPreview, onApply, onUndo,
   onResourcesPreview, onResourcesApply, onResourcesUndo, onClose,
+  onDismissPreview, onDismissResourcesPreview,
 }: Props) {
   // The detail is a popup over the table: panels that lived below the fold
   // read as "nothing happened" to anyone who did not know to scroll.
@@ -77,6 +81,26 @@ export function RightsizingPage({
   const [target, setTarget] = useState(70);
   const [metric, setMetric] = useState('cpu');
   const [importExisting, setImportExisting] = useState(false);
+  const [namespaceFilter, setNamespaceFilter] = useState('');
+  const [sortKey, setSortKey] = useState<SortKey>('waste');
+  const [sortDir, setSortDir] = useState<SortDir>('desc');
+  const [tab, setTab] = useState<DetailTab>('Overview');
+  const selectedKey = selected ? workloadKey(selected) : '';
+  // A new workload opens on its Overview, whatever tab the last one was on.
+  useEffect(() => { setTab('Overview'); }, [selectedKey]);
+
+  const toggleSort = (key: SortKey) => {
+    if (key === sortKey) {
+      setSortDir(sortDir === 'desc' ? 'asc' : 'desc');
+    } else {
+      setSortKey(key);
+      setSortDir(key === 'name' ? 'asc' : 'desc');
+    }
+  };
+  const sortIcon = (key: SortKey) =>
+    key !== sortKey ? null : sortDir === 'desc' ? <ArrowDown size={12} aria-hidden /> : <ArrowUp size={12} aria-hidden />;
+  const ariaSort = (key: SortKey): 'ascending' | 'descending' | 'none' =>
+    key !== sortKey ? 'none' : sortDir === 'asc' ? 'ascending' : 'descending';
 
   if (error && rows.length === 0) {
     return (
@@ -92,9 +116,11 @@ export function RightsizingPage({
   }
 
   const needle = filter.trim().toLowerCase();
-  const shown = needle
-    ? rows.filter((row) => workloadKey(row).toLowerCase().includes(needle))
-    : rows;
+  const narrowed = rows.filter((row) =>
+    (!namespaceFilter || row.namespace === namespaceFilter)
+    && (!needle || workloadKey(row).toLowerCase().includes(needle)));
+  const shown = sortRows(narrowed, sortKey, sortDir);
+  const namespaces = namespacesOf(rows);
   const wasted = rows.filter((row) => (row.cpu_waste_milli ?? 0) > 0 || (row.mem_waste_bytes ?? 0) > 0).length;
   const usd = rows.reduce((sum, row) => sum + (row.waste_usd_month ?? 0), 0);
   const limited = rows.filter((row) => row.limited_data).length;
@@ -190,9 +216,20 @@ export function RightsizingPage({
       </div>
 
       <div className="rs-toolbar">
+        <select
+          className="rs-namespace"
+          aria-label="Namespace"
+          value={namespaceFilter}
+          onChange={(event) => setNamespaceFilter(event.target.value)}
+        >
+          <option value="">All namespaces ({rows.length})</option>
+          {namespaces.map((ns) => (
+            <option key={ns} value={ns}>{ns} ({rows.filter((row) => row.namespace === ns).length})</option>
+          ))}
+        </select>
         <input
           className="rs-filter"
-          placeholder="Filter namespace, kind, name…"
+          placeholder="Filter kind, name, container…"
           value={filter}
           onChange={(event) => setFilter(event.target.value)}
         />
@@ -210,11 +247,11 @@ export function RightsizingPage({
           <table>
             <thead>
               <tr>
-                <th>Workload</th>
-                <th>CPU req / p95</th>
-                <th>Mem req / peak</th>
-                <th>Waste</th>
-                <th>Confidence</th>
+                <th aria-sort={ariaSort('name')}><button type="button" className="rs-sort" onClick={() => toggleSort('name')}>Workload {sortIcon('name')}</button></th>
+                <th aria-sort={ariaSort('cpu')}><button type="button" className="rs-sort" onClick={() => toggleSort('cpu')}>CPU req / p95 {sortIcon('cpu')}</button></th>
+                <th aria-sort={ariaSort('mem')}><button type="button" className="rs-sort" onClick={() => toggleSort('mem')}>Mem req / peak {sortIcon('mem')}</button></th>
+                <th aria-sort={ariaSort('waste')}><button type="button" className="rs-sort" onClick={() => toggleSort('waste')}>Waste {sortIcon('waste')}</button></th>
+                <th aria-sort={ariaSort('confidence')}><button type="button" className="rs-sort" onClick={() => toggleSort('confidence')}>Confidence {sortIcon('confidence')}</button></th>
               </tr>
             </thead>
             <tbody>
@@ -226,7 +263,10 @@ export function RightsizingPage({
                 >
                   <td>
                     <strong>{row.name}</strong>
-                    <div className="muted">{row.namespace} · {row.kind} · {row.container}</div>
+                    <div className="muted">
+                      {row.namespace} · {row.kind} · {row.container}
+                      {!row.live_spec && <span className="rs-gone"> · no longer in the cluster — history only</span>}
+                    </div>
                   </td>
                   <td className="mono">{formatCpu(row.cpu_request_milli)} / {formatCpu(row.cpu_p95_milli)}</td>
                   <td className="mono">{formatBytes(row.mem_request_bytes)} / {formatBytes(row.mem_max_bytes)}</td>
@@ -267,9 +307,23 @@ export function RightsizingPage({
                 <X size={14} aria-hidden />
               </button>
             </header>
+            <div className="wl-switch rs-tabs" role="tablist" aria-label="Workload detail">
+              {DETAIL_TABS.map((entry) => (
+                <button
+                  key={entry}
+                  type="button"
+                  role="tab"
+                  aria-selected={tab === entry}
+                  className={tab === entry ? 'is-active' : ''}
+                  onClick={() => setTab(entry)}
+                >
+                  {entry}
+                </button>
+              ))}
+            </div>
             <div className="rs-modal-body">
-      {!detail && <div className="viz-empty">Reading the recommendation…</div>}
-      {detail && (
+      {tab === 'Overview' && !detail && <div className="viz-empty">Reading the recommendation…</div>}
+      {tab === 'Overview' && detail && (
         <section className="panel rs-detail">
           <div className="panel-head">
             <span>{detail.row.kind}/{detail.row.name} · {detail.row.container}</span>
@@ -290,7 +344,8 @@ export function RightsizingPage({
         </section>
       )}
 
-      {hpa && selected && (
+      {tab === 'HPA' && !hpa && <div className="viz-empty">Reading the HPA…</div>}
+      {tab === 'HPA' && hpa && (
         <section className="panel rs-hpa">
           <div className="panel-head">
             <span><SlidersHorizontal size={14} aria-hidden /> HPA</span>
@@ -330,27 +385,50 @@ export function RightsizingPage({
               Import the existing HPA (required before tmjLens will edit it)
             </label>
           )}
-          <div className="rs-actions">
-            <button type="button" className="viz-toggle" onClick={useSuggestion}>Use suggestion</button>
-            <button
-              type="button"
-              className="viz-toggle"
-              onClick={() => onPreview({ minReplicas, maxReplicas, targetUtilization: target, metric, importExisting })}
-            >
-              Preview
-            </button>
-            <button type="button" className="primary" disabled={applying || !preview || preview.blocks.length > 0} onClick={() => onApply({ minReplicas, maxReplicas, targetUtilization: target, metric, importExisting })}>
-              Apply
-            </button>
-            {hpa.ours && (
-              <button type="button" className="viz-toggle" onClick={onUndo}>Undo</button>
-            )}
-          </div>
-          {preview && <DiffReview before={preview.before} after={preview.after} />}
+          {!preview && (
+            <div className="rs-actions">
+              <button type="button" className="viz-toggle" onClick={useSuggestion}>Use suggestion</button>
+              <button
+                type="button"
+                className="primary"
+                onClick={() => onPreview({ minReplicas, maxReplicas, targetUtilization: target, metric, importExisting })}
+              >
+                Preview
+              </button>
+              {hpa.ours && (
+                <button type="button" className="viz-toggle" onClick={onUndo}>Undo</button>
+              )}
+            </div>
+          )}
+          {preview && (
+            <div className="rs-review" role="region" aria-label="HPA change under review">
+              {preview.blocks.map((item) => (
+                <div className="viz-callout viz-callout-critical" key={`p-${item}`}><p>{item}</p></div>
+              ))}
+              {preview.warnings.map((item) => (
+                <div className="viz-callout viz-callout-warning" key={`p-${item}`}><p>{item}</p></div>
+              ))}
+              <DiffReview before={preview.before} after={preview.after} />
+              <div className="rs-actions">
+                <button
+                  type="button"
+                  className="primary"
+                  disabled={applying || preview.blocks.length > 0}
+                  onClick={() => onApply({ minReplicas, maxReplicas, targetUtilization: target, metric, importExisting })}
+                >
+                  Apply
+                </button>
+                <button type="button" className="viz-toggle" onClick={onDismissPreview}>Back to the form</button>
+              </div>
+            </div>
+          )}
         </section>
       )}
 
-      {resources && selected && (
+      {tab === 'Resources' && !resources && (
+        <div className="viz-empty">This workload has no pod template tmjLens edits (Jobs and CronJobs), or it could not be read.</div>
+      )}
+      {tab === 'Resources' && resources && (
         <section className="panel rs-resources">
           <div className="panel-head">
             <span><SlidersHorizontal size={14} aria-hidden /> Resources</span>
@@ -413,31 +491,40 @@ export function RightsizingPage({
             Applying changes the pod template, so the workload rolls ({resources.replicas} replica(s) restart).
             Limits are kept as they are unless you type them; a request above its limit is refused before anything is sent.
           </p>
-          <div className="rs-actions">
-            <button type="button" className="viz-toggle" onClick={useRecommendation}>Use recommendation</button>
-            <button type="button" className="viz-toggle" onClick={useCurrent}>Reset to current</button>
-            <button type="button" className="viz-toggle" onClick={() => onResourcesPreview(resourcesInput())}>
-              Preview resources
-            </button>
-            <button
-              type="button"
-              className="primary"
-              disabled={applying || !resourcesPreview || resourcesPreview.blocks.length > 0}
-              onClick={() => onResourcesApply(resourcesInput())}
-            >
-              Apply resources
-            </button>
-            {resources.ours && (
-              <button type="button" className="viz-toggle" onClick={onResourcesUndo}>Undo resources</button>
-            )}
-          </div>
-          {resourcesPreview && resourcesPreview.blocks.map((item) => (
-            <div className="viz-callout viz-callout-critical" key={`p-${item}`}><p>{item}</p></div>
-          ))}
-          {resourcesPreview && resourcesPreview.warnings.map((item) => (
-            <div className="viz-callout viz-callout-warning" key={`p-${item}`}><p>{item}</p></div>
-          ))}
-          {resourcesPreview && <DiffReview before={resourcesPreview.before} after={resourcesPreview.after} />}
+          {!resourcesPreview && (
+            <div className="rs-actions">
+              <button type="button" className="viz-toggle" onClick={useRecommendation}>Use recommendation</button>
+              <button type="button" className="viz-toggle" onClick={useCurrent}>Reset to current</button>
+              <button type="button" className="primary" onClick={() => onResourcesPreview(resourcesInput())}>
+                Preview resources
+              </button>
+              {resources.ours && (
+                <button type="button" className="viz-toggle" onClick={onResourcesUndo}>Undo resources</button>
+              )}
+            </div>
+          )}
+          {resourcesPreview && (
+            <div className="rs-review" role="region" aria-label="Resources change under review">
+              {resourcesPreview.blocks.map((item) => (
+                <div className="viz-callout viz-callout-critical" key={`p-${item}`}><p>{item}</p></div>
+              ))}
+              {resourcesPreview.warnings.map((item) => (
+                <div className="viz-callout viz-callout-warning" key={`p-${item}`}><p>{item}</p></div>
+              ))}
+              <DiffReview before={resourcesPreview.before} after={resourcesPreview.after} />
+              <div className="rs-actions">
+                <button
+                  type="button"
+                  className="primary"
+                  disabled={applying || resourcesPreview.blocks.length > 0}
+                  onClick={() => onResourcesApply(resourcesInput())}
+                >
+                  Apply resources
+                </button>
+                <button type="button" className="viz-toggle" onClick={onDismissResourcesPreview}>Back to the form</button>
+              </div>
+            </div>
+          )}
         </section>
       )}
             </div>

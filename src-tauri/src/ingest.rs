@@ -633,11 +633,14 @@ fn fold_rows(rows: &[Vec<Option<String>>]) -> MergedUsage {
             thr_sum += t;
             thr_n += 1;
         }
-        if cpu_request.is_none() {
-            cpu_request = row[6].as_deref().and_then(|s| s.parse::<f64>().ok());
+        // Rows arrive oldest first; the last one with a value is what the
+        // workload asked for most recently. Keeping the FIRST value — as this
+        // once did — froze the screen on the original request forever.
+        if let Some(v) = row[6].as_deref().and_then(|s| s.parse::<f64>().ok()) {
+            cpu_request = Some(v);
         }
-        if mem_request.is_none() {
-            mem_request = row[7].as_deref().and_then(|s| s.parse::<f64>().ok());
+        if let Some(v) = row[7].as_deref().and_then(|s| s.parse::<f64>().ok()) {
+            mem_request = Some(v);
         }
         if first_window.is_none() {
             first_window = row[8].clone();
@@ -749,6 +752,24 @@ mod tests {
         assert_eq!(cells[2], "500", "{cells:?}");
         assert_eq!(cells[3], "3", "{cells:?}");
         assert_eq!(cells[4], "6", "samples are summed: {cells:?}");
+    }
+
+    #[test]
+    fn folding_history_keeps_the_newest_request() {
+        let row = |window: &str, cpu: &str, mem: &str| -> Vec<Option<String>> {
+            vec![
+                Some("[]".into()), Some("[]".into()), Some("0".into()), Some("1".into()), Some("0".into()),
+                None, Some(cpu.into()), Some(mem.into()), Some(window.into()), Some("false".into()),
+            ]
+        };
+        let usage = fold_rows(&[
+            row("2026-10-07T10:00:00+00:00", "500", "1073741824"),
+            row("2026-10-07T10:05:00+00:00", "250", "536870912"),
+        ]);
+        assert_eq!(usage.cpu_request_milli, Some(250.0), "the request was lowered at 10:05");
+        assert_eq!(usage.mem_request_bytes, Some(536870912.0));
+        assert_eq!(usage.first_window.as_deref(), Some("2026-10-07T10:00:00+00:00"));
+        assert_eq!(usage.last_window.as_deref(), Some("2026-10-07T10:05:00+00:00"));
     }
 
     #[test]

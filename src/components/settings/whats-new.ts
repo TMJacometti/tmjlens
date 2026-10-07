@@ -4,6 +4,9 @@
  * The version number itself comes from package.json; only the story lives here.
  */
 export const WHATS_NEW: string[] = [
+  'Rightsizing reads requests from the live workload, so an edit — yours, kubectl’s or Helm’s — shows on the next refresh; the history kept the FIRST request ever seen, which froze the screen on the original value. Workloads that left the cluster are marked as history.',
+  'Rightsizing: sortable columns (waste biggest-first by default), a namespace filter, and the detail popup split into Overview / HPA / Resources tabs.',
+  'Preview is the review: for HPA and resources alike, Preview opens the diff and Apply lives inside it — the same flow as Edit YAML.',
   'The Rightsizing detail — recommendation, HPA and the resource editor — opens as a popup over the table the moment you click a row, instead of rendering below the fold where it looked like nothing happened.',
   'Rightsizing can now apply the recommendation without an HPA: Admins set a container’s requests and limits from the screen — dry-run preview as a diff, server-side apply under field manager tmjlens, undo — and are told when Helm, kubectl or GitOps owned those fields first. Off until resourceEditor.enabled is set.',
   'tmjLite 0.3.0 under the hood: a failed WAL recovery no longer opens a stale main file, and COMMIT only finishes after a durable sync — the 0.6.2 Rightsizing ingest could leave the database unusable; this engine refuses that path.',
