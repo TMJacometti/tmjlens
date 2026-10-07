@@ -1,6 +1,6 @@
 import { useState } from 'react';
 import { RightsizingPage } from '../components/rightsizing/RightsizingPage';
-import type { HpaStatus, ResourcesStatus, WorkloadDetail, WorkloadRow } from '../types/rightsizing';
+import type { HpaPreview, HpaStatus, ResourcesPreview, ResourcesStatus, WorkloadDetail, WorkloadRow } from '../types/rightsizing';
 
 const ROWS: WorkloadRow[] = [
   {
@@ -8,14 +8,21 @@ const ROWS: WorkloadRow[] = [
     cpu_request_milli: 500, cpu_p95_milli: 80, mem_request_bytes: 512 * 1024 * 1024,
     mem_max_bytes: 120 * 1024 * 1024, cpu_waste_milli: 390, mem_waste_bytes: 300 * 1024 * 1024,
     waste_usd_month: 42, confidence: 'high', days_of_data: 9, limited_data: false,
-    oom_kills: 0, throttle_ratio: 0.01, recommended_cpu_milli: 110, recommended_mem_bytes: 144 * 1024 * 1024,
+    oom_kills: 0, throttle_ratio: 0.01, recommended_cpu_milli: 110, recommended_mem_bytes: 144 * 1024 * 1024, live_spec: true,
   },
   {
     namespace: 'shop', kind: 'Deployment', name: 'payments', container: 'api',
     cpu_request_milli: 200, cpu_p95_milli: 190, mem_request_bytes: 256 * 1024 * 1024,
     mem_max_bytes: 240 * 1024 * 1024, cpu_waste_milli: null, mem_waste_bytes: null,
     waste_usd_month: null, confidence: 'low', days_of_data: 0.5, limited_data: true,
-    oom_kills: 1, throttle_ratio: 0.2, recommended_cpu_milli: 200, recommended_mem_bytes: 256 * 1024 * 1024,
+    oom_kills: 1, throttle_ratio: 0.2, recommended_cpu_milli: 200, recommended_mem_bytes: 256 * 1024 * 1024, live_spec: true,
+  },
+  {
+    namespace: 'ledger', kind: 'StatefulSet', name: 'ledger-db', container: 'postgres',
+    cpu_request_milli: 2000, cpu_p95_milli: 400, mem_request_bytes: 4 * 1024 * 1024 * 1024,
+    mem_max_bytes: 1.5 * 1024 * 1024 * 1024, cpu_waste_milli: 1560, mem_waste_bytes: 2 * 1024 * 1024 * 1024,
+    waste_usd_month: 61, confidence: 'medium', days_of_data: 5, limited_data: false,
+    oom_kills: 0, throttle_ratio: 0, recommended_cpu_milli: 440, recommended_mem_bytes: 1.8 * 1024 * 1024 * 1024, live_spec: false,
   },
 ];
 
@@ -49,6 +56,8 @@ const RESOURCES: ResourcesStatus = {
 
 export function RightsizingPreview() {
   const [selected, setSelected] = useState<WorkloadRow | null>(ROWS[0]);
+  const [preview, setPreview] = useState<HpaPreview | null>(null);
+  const [resourcesPreview, setResourcesPreview] = useState<ResourcesPreview | null>(null);
   return (
     <>
       <div className="breadcrumbs">Cluster / in-cluster / Rightsizing</div>
@@ -76,17 +85,27 @@ export function RightsizingPreview() {
         selected={selected}
         detail={DETAIL}
         hpa={HPA}
-        preview={null}
+        preview={preview}
         resources={RESOURCES}
-        resourcesPreview={null}
-        onResourcesPreview={() => undefined}
+        resourcesPreview={resourcesPreview}
+        onResourcesPreview={() => setResourcesPreview({
+          before: 'requests:\n  cpu: 500m\n  memory: 512Mi\nlimits:\n  cpu: 1\n  memory: 1024Mi\n',
+          after: 'requests:\n  cpu: 110m\n  memory: 144Mi\nlimits:\n  cpu: 1\n  memory: 1024Mi\n',
+          warnings: ['Changing the pod template rolls the workload: 2 replica(s) restart.'],
+          blocks: RESOURCES.blocks,
+        })}
+        onDismissResourcesPreview={() => setResourcesPreview(null)}
         onResourcesApply={() => undefined}
         onResourcesUndo={() => undefined}
         applying={false}
         onRefresh={() => undefined}
         onSelect={setSelected}
         onClose={() => setSelected(null)}
-        onPreview={() => undefined}
+        onPreview={() => setPreview({
+          yaml: '', before: '', after: 'kind: HorizontalPodAutoscaler\nspec:\n  minReplicas: 1\n  maxReplicas: 4\n',
+          warnings: [], blocks: HPA.blocks,
+        })}
+        onDismissPreview={() => setPreview(null)}
         onApply={() => undefined}
         onUndo={() => undefined}
       />

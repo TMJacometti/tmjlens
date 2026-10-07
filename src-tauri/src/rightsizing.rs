@@ -31,7 +31,9 @@ pub struct WorkloadRow {
     pub oom_kills: i64,
     pub throttle_ratio: Option<f64>,
     pub recommended_cpu_milli: Option<f64>,
-    pub recommended_mem_bytes: Option<f64>,
+    pub recommended_mem_bytes: Option<f64>,    /// False when the workload no longer exists in the cluster — the numbers
+    /// are what the rollups remember, not what is running.
+    pub live_spec: bool,
 }
 
 #[derive(Serialize)]
@@ -52,12 +54,78 @@ pub struct Recommendation {
     pub would_reduce_mem: bool,
 }
 
+/// Requests and limits as the API server holds them right now, for every
+/// container of every Deployment, StatefulSet and DaemonSet — three list
+/// calls. The rollups remember what a workload ASKED for during each window;
+/// the screen's "request" column must say what it asks for TODAY, or an edit
+/// (ours, kubectl's, Helm's) never shows up.
+pub async fn live_resources(
+    client: kube::Client,
+) -> Result<std::collections::HashMap<(String, String, String, String), crate::resources::ResourceSet>, String> {
+    use kube::api::{Api, ListParams};
+    use kube::core::{ApiResource, DynamicObject, GroupVersionKind};
+    let mut map = std::collections::HashMap::new();
+    for kind in ["Deployment", "StatefulSet", "DaemonSet"] {
+        let resource = ApiResource::from_gvk(&GroupVersionKind::gvk("apps", "v1", kind));
+        let api: Api<DynamicObject> = Api::all_with(client.clone(), &resource);
+        let list = api
+            .list(&ListParams::default())
+            .await
+            .map_err(|e| crate::errors::humanize(&e.to_string()))?;
+        for object in list.items {
+            let (Some(ns), Some(name)) = (object.metadata.namespace.clone(), object.metadata.name.clone()) else {
+                continue;
+            };
+            let containers: Vec<String> = object
+                .data
+                .pointer("/spec/template/spec/containers")
+                .and_then(|c| c.as_array())
+                .map(|items| {
+                    items
+                        .iter()
+                        .filter_map(|c| c.get("name").and_then(|n| n.as_str()).map(str::to_string))
+                        .collect()
+                })
+                .unwrap_or_default();
+            for container in containers {
+                if let Some(set) = crate::resources::container_resources(&object, &container) {
+                    map.insert((ns.clone(), kind.to_string(), name.clone(), container), set);
+                }
+            }
+        }
+    }
+    Ok(map)
+}
+
+/// The live spec wins over the rollup's remembered request. Returns whether
+/// a live object was found — a row without one describes a workload that no
+/// longer exists, and the screen says so instead of showing stale numbers.
+pub fn with_live(usage: &mut MergedUsage, live: Option<&crate::resources::ResourceSet>) -> bool {
+    let Some(live) = live else {
+        return false;
+    };
+    if live.cpu_request_milli.is_some() {
+        usage.cpu_request_milli = live.cpu_request_milli;
+    }
+    if live.mem_request_bytes.is_some() {
+        usage.mem_request_bytes = live.mem_request_bytes;
+    }
+    true
+}
+
 pub async fn list_workloads(db: &Db) -> Result<Vec<WorkloadRow>, String> {
     let keys = list_containers(db)?;
     let price = pricing::unit_prices().await;
+    // One read of the cluster for the whole list; a failure here is reported
+    // as stale-but-honest rows (live_spec = false), not as an empty screen.
+    let live = match crate::client_for_context("").await {
+        Ok(client) => live_resources(client).await.unwrap_or_default(),
+        Err(_) => std::collections::HashMap::new(),
+    };
     let mut out = Vec::with_capacity(keys.len());
     for (ns, kind, name, container) in keys {
-        if let Some(row) = row_for(db, &ns, &kind, &name, &container, price.as_ref())? {
+        let key = (ns.clone(), kind.clone(), name.clone(), container.clone());
+        if let Some(row) = row_for(db, &ns, &kind, &name, &container, price.as_ref(), live.get(&key))? {
             out.push(row);
         }
     }
@@ -87,10 +155,21 @@ pub async fn workload_detail(
             .ok_or_else(|| format!("no rightsizing data for {kind}/{name} in {namespace}"))?,
     };
     let price = pricing::unit_prices().await;
-    let row = row_for(db, namespace, kind, name, &container, price.as_ref())?
+    let live = match crate::client_for_context("").await {
+        Ok(client) => crate::resources::workload_api(client, namespace, kind)
+            .ok()
+            .map(|api| async move { api.get(name).await.ok() }),
+        Err(_) => None,
+    };
+    let live_set = match live {
+        Some(fut) => fut.await.and_then(|object| crate::resources::container_resources(&object, &container)),
+        None => None,
+    };
+    let row = row_for(db, namespace, kind, name, &container, price.as_ref(), live_set.as_ref())?
         .ok_or_else(|| format!("no rightsizing data for {kind}/{name}/{container}"))?;
-    let usage = merged_usage(db, namespace, kind, name, &container)?
+    let mut usage = merged_usage(db, namespace, kind, name, &container)?
         .ok_or_else(|| "usage could not be collected for this container".to_string())?;
+    with_live(&mut usage, live_set.as_ref());
     let recommendation = recommend(&usage, kind);
     Ok(WorkloadDetail {
         row,
@@ -108,10 +187,12 @@ fn row_for(
     name: &str,
     container: &str,
     price: Option<&pricing::UnitPrices>,
+    live: Option<&crate::resources::ResourceSet>,
 ) -> Result<Option<WorkloadRow>, String> {
-    let Some(usage) = merged_usage(db, namespace, kind, name, container)? else {
+    let Some(mut usage) = merged_usage(db, namespace, kind, name, container)? else {
         return Ok(None);
     };
+    let live_spec = with_live(&mut usage, live);
     let rec = recommend(&usage, kind);
     let cpu_p95 = usage.cpu.percentile(0.95);
     let cpu_waste = match (usage.cpu_request_milli, rec.cpu_request_milli) {
@@ -149,6 +230,7 @@ fn row_for(
         throttle_ratio: usage.throttle_ratio,
         recommended_cpu_milli: rec.cpu_request_milli,
         recommended_mem_bytes: rec.mem_request_bytes,
+        live_spec,
     }))
 }
 
@@ -493,6 +575,44 @@ pub async fn collector_coverage(client: kube::Client) -> Result<CollectorCoverag
         missing,
         collector_found: !pod_list.items.is_empty(),
     })
+}
+
+#[cfg(test)]
+mod live_tests {
+    use super::*;
+    use crate::resources::ResourceSet;
+
+    #[test]
+    fn the_live_spec_overrides_the_remembered_request() {
+        let mut usage = empty_usage();
+        usage.cpu_request_milli = Some(500.0);
+        usage.mem_request_bytes = Some(1_073_741_824.0);
+        let live = ResourceSet {
+            cpu_request_milli: Some(250.0),
+            mem_request_bytes: Some(536_870_912.0),
+            cpu_limit_milli: None,
+            mem_limit_bytes: None,
+        };
+        assert!(with_live(&mut usage, Some(&live)));
+        assert_eq!(usage.cpu_request_milli, Some(250.0));
+        assert_eq!(usage.mem_request_bytes, Some(536_870_912.0));
+    }
+
+    #[test]
+    fn a_vanished_workload_keeps_its_history_and_is_flagged() {
+        let mut usage = empty_usage();
+        usage.cpu_request_milli = Some(500.0);
+        assert!(!with_live(&mut usage, None));
+        assert_eq!(usage.cpu_request_milli, Some(500.0));
+    }
+
+    #[test]
+    fn a_live_object_without_a_request_set_does_not_erase_history() {
+        let mut usage = empty_usage();
+        usage.cpu_request_milli = Some(500.0);
+        assert!(with_live(&mut usage, Some(&ResourceSet::default())));
+        assert_eq!(usage.cpu_request_milli, Some(500.0), "no request live means 'unset', not zero");
+    }
 }
 
 #[cfg(test)]

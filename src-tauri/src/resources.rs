@@ -85,7 +85,7 @@ pub struct ResourcesPreview {
     pub blocks: Vec<String>,
 }
 
-fn workload_api(client: Client, namespace: &str, kind: &str) -> Result<Api<DynamicObject>, String> {
+pub(crate) fn workload_api(client: Client, namespace: &str, kind: &str) -> Result<Api<DynamicObject>, String> {
     match kind {
         "Deployment" | "StatefulSet" | "DaemonSet" => {
             let resource = ApiResource::from_gvk(&GroupVersionKind::gvk("apps", "v1", kind));

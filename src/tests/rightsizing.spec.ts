@@ -18,9 +18,39 @@ test.describe('rightsizing', () => {
     await expect(row).toContainText('low');
   });
 
-  test('HPA apply stays blocked when the install flag is off', async ({ page }) => {
+  test('HPA apply lives inside the preview and stays blocked when the install flag is off', async ({ page }) => {
+    await page.getByRole('tab', { name: 'HPA' }).click();
     await expect(page.locator('.rs-hpa')).toContainText('hpaManager.enabled=false');
+    // No Apply until there is something to review — the preview is the review.
+    await expect(page.getByRole('button', { name: 'Apply', exact: true })).toHaveCount(0);
+    await page.getByRole('button', { name: 'Preview', exact: true }).click();
+    await expect(page.getByRole('region', { name: 'HPA change under review' })).toBeVisible();
     await expect(page.getByRole('button', { name: 'Apply', exact: true })).toBeDisabled();
+    await page.getByRole('button', { name: 'Back to the form' }).click();
+    await expect(page.getByRole('button', { name: 'Preview', exact: true })).toBeVisible();
+  });
+
+  test('columns sort, and waste comes biggest-first by default', async ({ page }) => {
+    await page.keyboard.press('Escape');
+    const first = page.locator('tbody tr').first();
+    await expect(first).toContainText('ledger-db');
+    await page.getByRole('button', { name: /^Waste/ }).click();
+    await expect(first).toContainText('payments');
+    await page.getByRole('button', { name: /^Workload/ }).click();
+    await expect(first).toContainText('ledger-db');
+    await page.getByRole('button', { name: /^Workload/ }).click();
+    await expect(first).toContainText('payments');
+  });
+
+  test('the namespace filter narrows the list and says how many it holds', async ({ page }) => {
+    await expect(page.getByLabel('Namespace')).toContainText('All namespaces (3)');
+    await page.getByLabel('Namespace').selectOption('shop');
+    await expect(page.locator('tbody tr')).toHaveCount(2);
+    await expect(page.locator('tbody')).not.toContainText('ledger-db');
+  });
+
+  test('a workload that left the cluster is marked as history', async ({ page }) => {
+    await expect(page.getByRole('row').filter({ hasText: 'ledger-db' })).toContainText('no longer in the cluster');
   });
 
   test('the recommendation carries the numbers that produced it', async ({ page }) => {
@@ -48,6 +78,7 @@ test.describe('resource editor', () => {
   test.beforeEach(async ({ page }) => {
     await page.setViewportSize({ width: 1500, height: 1000 });
     await page.goto('/preview.html?view=rightsizing');
+    await page.getByRole('tab', { name: 'Resources' }).click();
     await page.waitForSelector('.rs-resources');
   });
 
@@ -66,8 +97,13 @@ test.describe('resource editor', () => {
     await expect(panel).toContainText('2 replica(s) restart');
   });
 
-  test('apply stays blocked while the install flag is off', async ({ page }) => {
+  test('apply lives inside the preview and stays blocked while the install flag is off', async ({ page }) => {
     await expect(page.locator('.rs-resources')).toContainText('resourceEditor.enabled=false');
+    await expect(page.getByRole('button', { name: 'Apply resources' })).toHaveCount(0);
+    await page.getByRole('button', { name: 'Preview resources' }).click();
+    const review = page.getByRole('region', { name: 'Resources change under review' });
+    await expect(review).toContainText('110m');
+    await expect(review).toContainText('2 replica(s) restart');
     await expect(page.getByRole('button', { name: 'Apply resources' })).toBeDisabled();
   });
 
@@ -90,7 +126,11 @@ test.describe('rightsizing detail popup', () => {
     const dialog = page.getByRole('dialog', { name: /Rightsizing Deployment\/checkout/ });
     await expect(dialog).toBeVisible();
     await expect(dialog).toContainText('Recommended CPU');
+    // One tab at a time: Overview first, the others a click away.
+    await expect(dialog.locator('.rs-hpa')).toHaveCount(0);
+    await dialog.getByRole('tab', { name: 'HPA' }).click();
     await expect(dialog.locator('.rs-hpa')).toBeVisible();
+    await dialog.getByRole('tab', { name: 'Resources' }).click();
     await expect(dialog.locator('.rs-resources')).toBeVisible();
   });
 

@@ -28,7 +28,48 @@ export type WorkloadRow = {
   throttle_ratio: number | null;
   recommended_cpu_milli: number | null;
   recommended_mem_bytes: number | null;
+  /** False when the workload no longer exists live; the row is history. */
+  live_spec: boolean;
 };
+
+export type SortKey = 'name' | 'cpu' | 'mem' | 'waste' | 'confidence';
+export type SortDir = 'asc' | 'desc';
+export const DETAIL_TABS = ['Overview', 'HPA', 'Resources'] as const;
+export type DetailTab = (typeof DETAIL_TABS)[number];
+
+/** One number for "how much is over-requested", so rows compare even without a price. */
+export function wasteScore(row: WorkloadRow): number {
+  if (row.waste_usd_month != null) return row.waste_usd_month;
+  const cpu = (row.cpu_waste_milli ?? 0) / 1000;
+  const mem = (row.mem_waste_bytes ?? 0) / (1024 * 1024 * 1024);
+  return cpu + mem;
+}
+
+const CONFIDENCE_RANK: Record<string, number> = { none: 0, low: 1, medium: 2, high: 3 };
+
+export function sortRows(rows: WorkloadRow[], key: SortKey, dir: SortDir): WorkloadRow[] {
+  const value = (row: WorkloadRow): number | string => {
+    switch (key) {
+      case 'name': return `${row.namespace}/${row.name}/${row.container}`;
+      case 'cpu': return row.cpu_request_milli ?? -1;
+      case 'mem': return row.mem_request_bytes ?? -1;
+      case 'confidence': return CONFIDENCE_RANK[row.confidence] ?? 0;
+      default: return wasteScore(row);
+    }
+  };
+  const sign = dir === 'asc' ? 1 : -1;
+  return [...rows].sort((a, b) => {
+    const va = value(a); const vb = value(b);
+    const cmp = typeof va === 'string' && typeof vb === 'string'
+      ? va.localeCompare(vb)
+      : (va as number) - (vb as number);
+    return cmp * sign || `${a.namespace}/${a.name}`.localeCompare(`${b.namespace}/${b.name}`);
+  });
+}
+
+export function namespacesOf(rows: WorkloadRow[]): string[] {
+  return [...new Set(rows.map((row) => row.namespace))].sort();
+}
 
 export type Recommendation = {
   cpu_request_milli: number | null;

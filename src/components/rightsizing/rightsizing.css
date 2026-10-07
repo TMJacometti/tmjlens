@@ -168,3 +168,41 @@
 .rs-modal-body > * {
   flex-shrink: 0;
 }
+
+.rs-namespace {
+  height: 32px;
+  padding: 0 8px;
+  border: 1px solid #303641;
+  border-radius: 6px;
+  background: #181c23;
+  color: inherit;
+}
+
+.rs-sort {
+  all: unset;
+  cursor: pointer;
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  font: inherit;
+  color: inherit;
+}
+
+.rs-sort:hover {
+  color: #fff;
+}
+
+.rs-gone {
+  color: #e8b45c;
+}
+
+.rs-tabs {
+  margin: 10px 16px 0;
+}
+
+.rs-review {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  padding: 0 16px 14px;
+}
