@@ -6,7 +6,7 @@
 
 image:
   repository: ghcr.io/tmjacometti/tmjlens
-  tag: "0.6.0"
+  tag: "0.6.5"
   pullPolicy: IfNotPresent
 
 environment:

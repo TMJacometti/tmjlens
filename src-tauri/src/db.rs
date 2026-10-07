@@ -368,6 +368,17 @@ mod tests {
     }
 
     #[test]
+    fn the_vendored_engine_is_the_published_030() {
+        // tmjlite_version() still says 0.1.0-capivara; the drop-in we ship is
+        // identified by VERSION.txt next to the FFI library.
+        let version = include_str!("../../tools/tmjlite/VERSION.txt");
+        assert!(
+            version.starts_with("TMJLite 0.3.0"),
+            "expected the 0.3.0 engine, got {version}"
+        );
+    }
+
+    #[test]
     fn open_creates_schema_and_round_trips_values() {
         let path = temp_db("roundtrip");
         let db = Db::open(&path).expect("open");
