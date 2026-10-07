@@ -163,3 +163,8 @@
   flex-direction: column;
   gap: 12px;
 }
+
+/* The body scrolls; its panels must never shrink to fit it. */
+.rs-modal-body > * {
+  flex-shrink: 0;
+}

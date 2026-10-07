@@ -303,9 +303,12 @@ export function RightsizingPage({
               <p>HPA manager is disabled on this install (hpaManager.enabled=false). Preview and apply stay blocked.</p>
             </div>
           )}
-          {hpa.blocks.map((item) => (
-            <div className="viz-callout viz-callout-critical" key={item}><p>{item}</p></div>
-          ))}
+          {hpa.blocks
+            // The install-flag block is already the callout above; say it once.
+            .filter((item) => !item.startsWith('HPA manager is disabled'))
+            .map((item) => (
+              <div className="viz-callout viz-callout-critical" key={item}><p>{item}</p></div>
+            ))}
           {hpa.warnings.map((item) => (
             <div className="viz-callout viz-callout-warning" key={item}><p>{item}</p></div>
           ))}
