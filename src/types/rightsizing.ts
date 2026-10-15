@@ -85,6 +85,8 @@ export type CollectedData = {
   retention_raw: string;
   retention_rollup: string;
   last_purge_minutes_ago: number | null;
+  /** Why the last retention run failed, if it did. */
+  last_purge_error: string | null;
 };
 
 export type PurgeMode = 'retention' | 'all';

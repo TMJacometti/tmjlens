@@ -34,6 +34,7 @@ type CursorIsNullFn = unsafe extern "C" fn(*const std::ffi::c_void, c_int) -> c_
 type CursorI64Fn = unsafe extern "C" fn(*const std::ffi::c_void, c_int, *mut i64) -> c_int;
 type CursorF64Fn = unsafe extern "C" fn(*const std::ffi::c_void, c_int, *mut f64) -> c_int;
 type CursorBoolFn = unsafe extern "C" fn(*const std::ffi::c_void, c_int, *mut c_int) -> c_int;
+type CursorIsStreamingFn = unsafe extern "C" fn(*const std::ffi::c_void) -> c_int;
 type CursorErrmsgFn = unsafe extern "C" fn(*const std::ffi::c_void) -> *const c_char;
 type CursorCloseFn = unsafe extern "C" fn(*mut std::ffi::c_void);
 
@@ -56,6 +57,7 @@ struct Api {
     cursor_i64: CursorI64Fn,
     cursor_f64: CursorF64Fn,
     cursor_bool: CursorBoolFn,
+    cursor_is_streaming: CursorIsStreamingFn,
     cursor_errmsg: CursorErrmsgFn,
     cursor_close: CursorCloseFn,
 }
@@ -259,6 +261,7 @@ impl Db {
                 cursor_i64: *lib.get(b"tmjlite_cursor_i64\0").map_err(err_sym)?,
                 cursor_f64: *lib.get(b"tmjlite_cursor_f64\0").map_err(err_sym)?,
                 cursor_bool: *lib.get(b"tmjlite_cursor_bool\0").map_err(err_sym)?,
+                cursor_is_streaming: *lib.get(b"tmjlite_cursor_is_streaming\0").map_err(err_sym)?,
                 cursor_errmsg: *lib.get(b"tmjlite_cursor_errmsg\0").map_err(err_sym)?,
                 cursor_close: *lib.get(b"tmjlite_cursor_close\0").map_err(err_sym)?,
             }
@@ -314,6 +317,18 @@ impl Db {
         let cursor = unsafe { (self.api.cursor_open)(self.handle, c_sql.as_ptr()) };
         if cursor.is_null() {
             return Err(self.last_error());
+        }
+        // Shapes the engine cannot stream (joins, subqueries, DISTINCT,
+        // ORDER BY or LIMIT over aggregates) silently fall back to a
+        // materialised result behind the same cursor API. That is the memory
+        // profile this function exists to forbid, so refuse instead of
+        // letting a future query bring the OOM back without a sign.
+        if unsafe { (self.api.cursor_is_streaming)(cursor) } != 1 {
+            unsafe { (self.api.cursor_close)(cursor) };
+            return Err(format!(
+                "this query does not stream through the cursor (joins, subqueries, DISTINCT, \
+                 ORDER BY or LIMIT over aggregates are materialised); rewrite it or use query(): {sql}"
+            ));
         }
         let mut acc = init;
         let outcome = loop {
@@ -541,6 +556,28 @@ mod tests {
                 (Some("2026-10-15T10:00:00+00:00".into()), Some(3), Some(250.0), Some("250".into())),
                 (Some("2026-10-15T10:05:00+00:00".into()), Some(4), None, None),
             ]
+        );
+
+        // The shape merged_usage uses — equality on the index's leading
+        // columns plus ORDER BY on its last one — must stream.
+        let ordered = db
+            .fold(
+                "SELECT window_start FROM rs_rollup_5m WHERE namespace = 'shop' AND kind = 'Deployment' \
+                 AND workload = 'checkout' AND container = 'api' ORDER BY window_start;",
+                0usize,
+                |n, _| Ok(n + 1),
+            )
+            .expect("ORDER BY on the indexed column streams");
+        assert_eq!(ordered, 2);
+        // A join is materialised behind the same API; fold must refuse it.
+        let joined = db.fold(
+            "SELECT a.samples FROM rs_rollup_5m a JOIN rs_rollup_1h b ON a.namespace = b.namespace;",
+            0usize,
+            |n, _| Ok(n + 1),
+        );
+        assert!(
+            joined.as_ref().err().map_or(false, |e| e.contains("does not stream")),
+            "a join must be refused, got {joined:?}"
         );
 
         let stopped = db.fold("SELECT samples FROM rs_rollup_5m;", 0, |_, _| Err::<i32, _>("stop here".to_string()));

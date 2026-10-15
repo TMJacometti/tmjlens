@@ -99,6 +99,12 @@ export function CollectedDataPopup({ load, purge, onPurged, onClose }: Props) {
                 </div>
               </div>
 
+              {data.last_purge_error && (
+                <div className="viz-callout viz-callout-critical">
+                  <p>The last retention run failed and will be retried in five minutes: {data.last_purge_error}</p>
+                </div>
+              )}
+
               {outcome && (
                 <div className="viz-callout viz-callout-good">
                   <p>

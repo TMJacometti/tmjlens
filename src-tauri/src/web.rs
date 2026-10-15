@@ -12,7 +12,7 @@
 use crate::auth::{AuthStore, UserRecord, PERMISSIONS};
 use crate::db::Db;
 use axum::body::Body;
-use axum::extract::{Path as UrlPath, Query, State};
+use axum::extract::{DefaultBodyLimit, Path as UrlPath, Query, State};
 use axum::http::{header, HeaderMap, StatusCode};
 use axum::response::{IntoResponse, Response};
 use axum::routing::{get, post};
@@ -122,7 +122,10 @@ pub async fn serve() -> Result<(), String> {
         .route("/auth/callback", get(callback))
         .route("/auth/logout", post(logout))
         .route("/api/me", get(me))
-        .route("/api/ingest/rollups", post(ingest_rollups))
+        // MAX_SAMPLES_PER_BATCH is checked after the body is parsed; this is
+        // the cap that holds before it, and it must not depend on a default
+        // someone can disable elsewhere.
+        .route("/api/ingest/rollups", post(ingest_rollups).layer(DefaultBodyLimit::max(INGEST_BODY_LIMIT)))
         .route("/api/logs/stream", get(log_stream))
         .route("/api/invoke/{command}", post(invoke))
         .fallback_service(files)
@@ -591,6 +594,10 @@ fn tokens_equal(got: &str, want: &str) -> bool {
 /// flushing a day of buffered windows together used to hold sixteen prepared
 /// batches each and climb to the memory limit — now the rest wait at the door.
 static INGEST_SLOTS: tokio::sync::Semaphore = tokio::sync::Semaphore::const_new(4);
+
+/// A node's window is a few hundred containers with two 200-bucket
+/// histograms each — well under a megabyte. Two is generous.
+const INGEST_BODY_LIMIT: usize = 2 * 1024 * 1024;
 
 /// DaemonSet ingest — not a user session. The shared secret is the only gate.
 async fn ingest_rollups(

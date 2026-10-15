@@ -71,6 +71,7 @@ export function RightsizingPreview() {
     retention_raw: '48h',
     retention_rollup: '90d',
     last_purge_minutes_ago: 41,
+    last_purge_error: 'DELETE FROM rs_rollup_1d: no space left on device',
   });
   const purgeCollected = async (mode: PurgeMode) => {
     const deleted = collected.tables.map((t) => ({ table: t.table, rows: mode === 'all' ? t.rows : t.table === 'rs_rollup_5m' ? 1200 : 0 }));
@@ -84,6 +85,7 @@ export function RightsizingPreview() {
       })),
       collector_nodes: mode === 'all' ? 0 : collected.collector_nodes,
       last_purge_minutes_ago: 0,
+      last_purge_error: null,
     });
     return { mode, deleted: [...deleted, { table: 'collector_nodes', rows: mode === 'all' ? 16 : 0 }] };
   };
