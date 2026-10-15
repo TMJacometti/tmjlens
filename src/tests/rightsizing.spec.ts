@@ -115,6 +115,49 @@ test.describe('resource editor', () => {
   });
 });
 
+test.describe('collected data', () => {
+  test.beforeEach(async ({ page }) => {
+    await page.goto('/preview.html?view=rightsizing');
+    // The fixture opens with a workload selected; close it before using the toolbar.
+    await page.getByRole('dialog').first().waitFor();
+    await page.keyboard.press('Escape');
+    await expect(page.getByRole('dialog')).toHaveCount(0);
+    await page.getByRole('button', { name: 'Collected data' }).click();
+  });
+
+  test('shows each tier with its bounds, and the file behind it', async ({ page }) => {
+    const dialog = page.getByRole('dialog', { name: 'Collected data' });
+    const five = dialog.getByRole('row').filter({ hasText: '5-minute windows' });
+    await expect(five).toContainText('38,400');
+    await expect(five).toContainText('2026-10-12 00:00 UTC');
+    await expect(five).toContainText('2026-10-14 17:05 UTC');
+    await expect(dialog).toContainText('79 MiB');
+    await expect(dialog).toContainText('WAL 488 KiB');
+    await expect(dialog).toContainText('48h raw · 90d rollups');
+    await expect(dialog).toContainText('41 min ago');
+  });
+
+  test('retention runs on one click; deleting everything takes a second one', async ({ page }) => {
+    const dialog = page.getByRole('dialog', { name: 'Collected data' });
+    await dialog.getByRole('button', { name: 'Run retention now' }).click();
+    await expect(dialog).toContainText('Deleted 1,200 row(s) past the retention cut');
+    await expect(dialog.getByRole('row').filter({ hasText: '5-minute windows' })).toContainText('37,200');
+
+    await expect(dialog.getByRole('button', { name: 'Yes, delete everything' })).toHaveCount(0);
+    await dialog.getByRole('button', { name: 'Delete all collected data' }).click();
+    await dialog.getByRole('button', { name: 'Keep it' }).click();
+    await expect(dialog.getByRole('button', { name: 'Yes, delete everything' })).toHaveCount(0);
+
+    await dialog.getByRole('button', { name: 'Delete all collected data' }).click();
+    await dialog.getByRole('button', { name: 'Yes, delete everything' }).click();
+    await expect(dialog).toContainText('Deleted 37,528 row(s) — the collector starts over');
+    await expect(dialog.getByRole('row').filter({ hasText: '5-minute windows' })).toContainText('nothing yet');
+
+    await page.keyboard.press('Escape');
+    await expect(dialog).toBeHidden();
+  });
+});
+
 test.describe('rightsizing detail popup', () => {
   test.beforeEach(async ({ page }) => {
     await page.setViewportSize({ width: 1500, height: 1000 });

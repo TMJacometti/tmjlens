@@ -79,7 +79,7 @@ pub async fn prepare(batch: IngestBatch) -> Result<PreparedBatch, String> {
     }
     let mut prepared = PreparedBatch {
         node: batch.node.clone(),
-        window_start: batch.window_start.clone(),
+        window_start: align_5m(&batch.window_start),
         rows: Vec::new(),
         skipped: 0,
     };
@@ -340,22 +340,56 @@ fn upsert_5m(
     }
 }
 
+/// Every window stamp this module writes: fixed-width RFC 3339 in UTC, so the
+/// string order IS the time order and `window_start >= a AND window_start < b`
+/// is a range the engine can walk on the index.
+const STAMP: &str = "%Y-%m-%dT%H:%M:%S+00:00";
+
+fn stamp(t: chrono::DateTime<chrono::Utc>) -> String {
+    t.format(STAMP).to_string()
+}
+
+/// The collector stamps a batch with the wall clock at the start of its
+/// window, nanoseconds and all. The 5m table keys on that stamp, so two
+/// batches of the same five minutes — a buffered flush landing beside a live
+/// one — became two rows instead of one merge. Floor it to the bucket.
+pub fn align_5m(raw: &str) -> String {
+    use chrono::Timelike;
+    let Ok(parsed) = chrono::DateTime::parse_from_rfc3339(raw) else {
+        return raw.to_string();
+    };
+    let t = parsed.with_timezone(&chrono::Utc);
+    t.with_minute(t.minute() - t.minute() % 5)
+        .and_then(|t| t.with_second(0))
+        .and_then(|t| t.with_nanosecond(0))
+        .map(stamp)
+        .unwrap_or_else(|| raw.to_string())
+}
+
 fn merge_up(db: &Db, owner: &WorkloadKey, container: &str, window_start: &str) -> Result<(), String> {
+    use chrono::Timelike;
     let ts = chrono::DateTime::parse_from_rfc3339(window_start)
         .map(|t| t.with_timezone(&chrono::Utc))
         .unwrap_or_else(|_| chrono::Utc::now());
-    let hour = ts.format("%Y-%m-%dT%H:00:00+00:00").to_string();
-    let day = ts.format("%Y-%m-%dT00:00:00+00:00").to_string();
-    compact_into(db, "rs_rollup_5m", "rs_rollup_1h", owner, container, &hour, |stamp| {
-        stamp.starts_with(&ts.format("%Y-%m-%dT%H:").to_string())
-    })?;
-    compact_into(db, "rs_rollup_1h", "rs_rollup_1d", owner, container, &day, |stamp| {
-        stamp.starts_with(&ts.format("%Y-%m-%dT").to_string())
-    })?;
+    let hour = ts
+        .with_minute(0)
+        .and_then(|t| t.with_second(0))
+        .and_then(|t| t.with_nanosecond(0))
+        .unwrap_or(ts);
+    let day = hour.with_hour(0).unwrap_or(hour);
+    compact_into(db, "rs_rollup_5m", "rs_rollup_1h", owner, container,
+        &stamp(hour), &stamp(hour + chrono::Duration::hours(1)))?;
+    compact_into(db, "rs_rollup_1h", "rs_rollup_1d", owner, container,
+        &stamp(day), &stamp(day + chrono::Duration::days(1)))?;
     Ok(())
 }
 
-/// Rebuild the coarser window from every finer row that belongs to it.
+/// Rebuild the coarser window `[window_start, window_end)` from the finer rows
+/// inside it. The range is in the WHERE on purpose: the index is (namespace,
+/// kind, workload, container, window_start), so this is a walk over ~12 rows.
+/// Without the bound it read the container's whole retained history — twice
+/// per sample, growing with retention — and that is what OOM-killed the web
+/// pod in production once the history was a day old.
 fn compact_into(
     db: &Db,
     from: &str,
@@ -363,22 +397,21 @@ fn compact_into(
     owner: &WorkloadKey,
     container: &str,
     window_start: &str,
-    belongs: impl Fn(&str) -> bool,
+    window_end: &str,
 ) -> Result<(), String> {
     let rows = db.query(&format!(
         "SELECT cpu_hist, mem_hist, mem_max_bytes, samples, oom_kills, throttle_ratio, window_start, \
          cpu_request_milli, cpu_limit_milli, mem_request_bytes, mem_limit_bytes, replicas, limited_data FROM {from} \
-         WHERE namespace = {} AND kind = {} AND workload = {} AND container = {};",
+         WHERE namespace = {} AND kind = {} AND workload = {} AND container = {} \
+         AND window_start >= {} AND window_start < {};",
         sql_str(&owner.namespace)?,
         sql_str(&owner.kind)?,
         sql_str(&owner.name)?,
         sql_str(container)?,
+        sql_str(window_start)?,
+        sql_str(window_end)?,
     ))?;
-    let matched: Vec<&Vec<Option<String>>> = rows
-        .rows
-        .iter()
-        .filter(|row| row.get(6).and_then(|v| v.as_deref()).map(&belongs).unwrap_or(false))
-        .collect();
+    let matched: Vec<&Vec<Option<String>>> = rows.rows.iter().collect();
     if matched.is_empty() {
         return Ok(());
     }
@@ -550,6 +583,136 @@ pub fn purge(db: &Db) -> Result<(), String> {
         sql_str(&roll_cut)?
     ));
     Ok(())
+}
+
+const TIERS: [(&str, &str); 3] = [
+    ("rs_rollup_5m", "5-minute windows"),
+    ("rs_rollup_1h", "Hourly windows"),
+    ("rs_rollup_1d", "Daily windows"),
+];
+
+#[derive(Serialize, Clone, Debug, PartialEq)]
+pub struct CollectedTable {
+    pub table: String,
+    pub label: String,
+    pub rows: u64,
+    pub oldest: Option<String>,
+    pub newest: Option<String>,
+}
+
+/// What the collector has written, for the Admin popup on Rightsizing.
+#[derive(Serialize, Clone, Debug)]
+pub struct CollectedData {
+    pub tables: Vec<CollectedTable>,
+    pub collector_nodes: u64,
+    pub database_path: String,
+    /// None when the file could not be stat'ed — said so, not shown as 0.
+    pub database_bytes: Option<u64>,
+    pub wal_bytes: Option<u64>,
+    pub retention_raw: String,
+    pub retention_rollup: String,
+    pub last_purge_minutes_ago: Option<u64>,
+}
+
+#[derive(Serialize, Clone, Debug)]
+pub struct PurgedTable {
+    pub table: String,
+    pub rows: u64,
+}
+
+#[derive(Serialize, Clone, Debug)]
+pub struct PurgeOutcome {
+    pub mode: String,
+    pub deleted: Vec<PurgedTable>,
+}
+
+fn cell(row: &[Option<String>], index: usize) -> Option<String> {
+    match row.get(index).and_then(|v| v.as_deref()) {
+        Some(raw) if raw != "NULL" && !raw.is_empty() => Some(raw.to_string()),
+        _ => None,
+    }
+}
+
+fn table_stats(db: &Db, table: &str, label: &str) -> Result<CollectedTable, String> {
+    let result = db.query(&format!(
+        "SELECT COUNT(*), MIN(window_start), MAX(window_start) FROM {table};"
+    ))?;
+    let row = result
+        .rows
+        .first()
+        .ok_or_else(|| format!("the engine returned no aggregate row for {table}"))?;
+    Ok(CollectedTable {
+        table: table.to_string(),
+        label: label.to_string(),
+        rows: cell(row, 0).and_then(|s| s.parse().ok()).unwrap_or(0),
+        oldest: cell(row, 1),
+        newest: cell(row, 2),
+    })
+}
+
+fn count_rows(db: &Db, table: &str) -> Result<u64, String> {
+    let result = db.query(&format!("SELECT COUNT(*) FROM {table};"))?;
+    Ok(result
+        .rows
+        .first()
+        .and_then(|row| cell(row, 0))
+        .and_then(|s| s.parse().ok())
+        .unwrap_or(0))
+}
+
+/// Blocking: three aggregate queries plus a stat. Call from `block_in_place`.
+pub fn collected_data(db: &Db) -> Result<CollectedData, String> {
+    let mut tables = Vec::with_capacity(TIERS.len());
+    for (table, label) in TIERS {
+        tables.push(table_stats(db, table, label)?);
+    }
+    let database_path = crate::db::configured_path();
+    let database_bytes = std::fs::metadata(&database_path).ok().map(|m| m.len());
+    let wal_bytes = [format!("{database_path}.pwal"), database_path.replace(".tmjp", ".pwal")]
+        .iter()
+        .find_map(|candidate| std::fs::metadata(candidate).ok().map(|m| m.len()));
+    let last = LAST_PURGE.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+    let last_purge_minutes_ago = last.map(|at| at.elapsed().as_secs() / 60);
+    Ok(CollectedData {
+        tables,
+        collector_nodes: count_rows(db, "collector_nodes")?,
+        database_path,
+        database_bytes,
+        wal_bytes,
+        retention_raw: format!("{}h", retention_raw().num_hours()),
+        retention_rollup: format!("{}d", retention_rollup().num_days()),
+        last_purge_minutes_ago,
+    })
+}
+
+/// `retention` runs the hourly purge now; `all` empties every rollup table and
+/// the collector heartbeats so the next window starts from nothing. Under the
+/// same lock as ingest — a batch must not land between the count and the delete.
+pub fn purge_collected(db: &Db, mode: &str) -> Result<PurgeOutcome, String> {
+    if mode != "retention" && mode != "all" {
+        return Err(format!("unknown purge mode '{mode}': use 'retention' or 'all'"));
+    }
+    let _serial = APPLY_LOCK.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+    let tables: Vec<&str> = TIERS.iter().map(|(table, _)| *table).chain(["collector_nodes"]).collect();
+    let mut before = Vec::with_capacity(tables.len());
+    for table in &tables {
+        before.push(count_rows(db, table)?);
+    }
+    if mode == "all" {
+        for table in &tables {
+            db.exec(&format!("DELETE FROM {table};"))?;
+        }
+    } else {
+        purge(db)?;
+        let mut last = LAST_PURGE.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+        *last = Some(std::time::Instant::now());
+    }
+    let mut deleted = Vec::with_capacity(tables.len());
+    for (index, table) in tables.iter().enumerate() {
+        let after = count_rows(db, table)?;
+        deleted.push(PurgedTable { table: table.to_string(), rows: before[index].saturating_sub(after) });
+    }
+    Ok(PurgeOutcome { mode: mode.to_string(), deleted })
 }
 
 /// Load every 1d (falling back to 1h, then 5m) histogram for a container and merge.
@@ -737,9 +900,8 @@ mod tests {
             kind: "Deployment".into(),
             name: "checkout-api".into(),
         };
-        compact_into(&db, "rs_rollup_5m", "rs_rollup_1h", &owner, "app", "2026-09-29T10:00:00+00:00", |stamp| {
-            stamp.starts_with("2026-09-29T10:")
-        })
+        compact_into(&db, "rs_rollup_5m", "rs_rollup_1h", &owner, "app",
+            "2026-09-29T10:00:00+00:00", "2026-09-29T11:00:00+00:00")
         .expect("compact");
 
         let row = db
@@ -752,6 +914,86 @@ mod tests {
         assert_eq!(cells[2], "500", "{cells:?}");
         assert_eq!(cells[3], "3", "{cells:?}");
         assert_eq!(cells[4], "6", "samples are summed: {cells:?}");
+    }
+
+    fn scratch_db(tag: &str) -> crate::db::Db {
+        let dir = std::env::temp_dir().join("tmjlens-db-tests");
+        std::fs::create_dir_all(&dir).expect("temp dir");
+        let path = dir.join(format!(
+            "ingest-{tag}-{}-{}.tmjp",
+            std::process::id(),
+            std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos()
+        ));
+        crate::db::Db::open(&path).expect("open")
+    }
+
+    fn seed_5m(db: &crate::db::Db, window: &str, samples: u32) {
+        db.exec(&format!(
+            "INSERT INTO rs_rollup_5m (namespace, kind, workload, container, window_start, cpu_hist, mem_hist, \
+             samples, oom_kills, cpu_request_milli) VALUES ('payments', 'Deployment', 'checkout-api', 'app', \
+             '{window}', '[]', '[]', {samples}, 0, '250');"
+        ))
+        .expect("seed");
+    }
+
+    /// Production OOM: compaction read the container's WHOLE history to
+    /// rebuild one hour. The query must be bounded to the window — this test
+    /// seeds three hours and expects the hour to see only its own rows.
+    #[test]
+    fn compaction_reads_only_the_window_it_rebuilds() {
+        let db = scratch_db("bounded");
+        seed_5m(&db, "2026-10-14T09:55:00+00:00", 100);
+        seed_5m(&db, "2026-10-14T10:00:00+00:00", 1);
+        seed_5m(&db, "2026-10-14T10:55:00+00:00", 2);
+        seed_5m(&db, "2026-10-14T11:00:00+00:00", 100);
+        let owner = WorkloadKey {
+            namespace: "payments".into(),
+            kind: "Deployment".into(),
+            name: "checkout-api".into(),
+        };
+        merge_up(&db, &owner, "app", "2026-10-14T10:35:00+00:00").expect("merge");
+        let hours = db.query("SELECT window_start, samples FROM rs_rollup_1h;").expect("query");
+        assert_eq!(hours.rows.len(), 1, "one hour rebuilt: {:?}", hours.rows);
+        assert_eq!(hours.rows[0][0].as_deref(), Some("2026-10-14T10:00:00+00:00"));
+        assert_eq!(hours.rows[0][1].as_deref(), Some("3"), "09:55 and 11:00 must not leak in");
+        let days = db.query("SELECT window_start, samples FROM rs_rollup_1d;").expect("query");
+        assert_eq!(days.rows.len(), 1);
+        assert_eq!(days.rows[0][0].as_deref(), Some("2026-10-14T00:00:00+00:00"));
+        assert_eq!(days.rows[0][1].as_deref(), Some("3"), "the day is built from the 1h rows, not the 5m ones");
+    }
+
+    #[test]
+    fn batch_windows_are_floored_to_their_five_minute_bucket() {
+        assert_eq!(align_5m("2026-10-14T17:09:12.123456789+00:00"), "2026-10-14T17:05:00+00:00");
+        assert_eq!(align_5m("2026-10-14T17:09:12Z"), "2026-10-14T17:05:00+00:00", "Z is normalised to +00:00");
+        assert_eq!(align_5m("2026-10-14T14:09:12-03:00"), "2026-10-14T17:05:00+00:00", "offsets land in UTC");
+        assert_eq!(align_5m("2026-10-14T17:00:00+00:00"), "2026-10-14T17:00:00+00:00");
+        assert_eq!(align_5m("not a stamp"), "not a stamp", "garbage passes through for the engine to reject");
+    }
+
+    #[test]
+    fn collected_data_counts_each_tier_and_purge_all_empties_them() {
+        let db = scratch_db("collected");
+        seed_5m(&db, "2026-10-12T00:00:00+00:00", 1);
+        seed_5m(&db, "2026-10-14T17:05:00+00:00", 1);
+        touch_node(&db, "node-a").expect("node");
+        let data = collected_data(&db).expect("collected");
+        let five = &data.tables[0];
+        assert_eq!((five.table.as_str(), five.rows), ("rs_rollup_5m", 2));
+        assert_eq!(five.oldest.as_deref(), Some("2026-10-12T00:00:00+00:00"));
+        assert_eq!(five.newest.as_deref(), Some("2026-10-14T17:05:00+00:00"));
+        let hour = &data.tables[1];
+        assert_eq!((hour.rows, hour.oldest.clone(), hour.newest.clone()), (0, None, None), "empty is None, never a fake stamp");
+        assert_eq!(data.collector_nodes, 1);
+        assert_eq!(data.retention_raw, "48h");
+
+        assert!(purge_collected(&db, "everything").is_err(), "unknown modes are refused");
+        let outcome = purge_collected(&db, "all").expect("purge");
+        let by_table: Vec<(&str, u64)> = outcome.deleted.iter().map(|d| (d.table.as_str(), d.rows)).collect();
+        assert_eq!(by_table, [("rs_rollup_5m", 2), ("rs_rollup_1h", 0), ("rs_rollup_1d", 0), ("collector_nodes", 1)]);
+        let after = collected_data(&db).expect("collected");
+        assert_eq!(after.tables[0].rows, 0);
+        assert_eq!(after.collector_nodes, 0);
     }
 
     #[test]

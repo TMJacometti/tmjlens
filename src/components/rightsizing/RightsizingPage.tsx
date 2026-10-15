@@ -1,13 +1,14 @@
 import { useEffect, useState } from 'react';
 import { createPortal } from 'react-dom';
-import { ArrowDown, ArrowUp, RefreshCw, ShieldAlert, SlidersHorizontal, X } from 'lucide-react';
+import { ArrowDown, ArrowUp, Database, RefreshCw, ShieldAlert, SlidersHorizontal, X } from 'lucide-react';
+import { CollectedDataPopup } from './CollectedDataPopup';
 import { DiffReview } from '../DiffReview';
 import { StatTile } from '../cluster/charts';
 import { formatBytes, formatCpu } from '../../lib/format';
 import {
   confidenceLabel, workloadKey,
   DETAIL_TABS, namespacesOf, resourcesInputFrom, resourcesInputToRequest, sortRows,
-  type CollectorCoverage, type DetailTab, type SortDir, type SortKey, type HpaPreview, type HpaStatus, type ResourcesInput, type ResourcesPreview,
+  type CollectedData, type CollectorCoverage, type DetailTab, type PurgeMode, type PurgeOutcome, type SortDir, type SortKey, type HpaPreview, type HpaStatus, type ResourcesInput, type ResourcesPreview,
   type ResourcesStatus, type WorkloadDetail, type WorkloadRow,
 } from '../../types/rightsizing';
 import './rightsizing.css';
@@ -52,6 +53,9 @@ type Props = {
   /** Drops a preview without applying it. */
   onDismissPreview: () => void;
   onDismissResourcesPreview: () => void;
+  /** The Admin popup behind the database icon: what was collected, and purge. */
+  onLoadCollected: () => Promise<CollectedData>;
+  onPurgeCollected: (mode: PurgeMode) => Promise<PurgeOutcome>;
 };
 
 /**
@@ -63,8 +67,9 @@ export function RightsizingPage({
   resources, resourcesPreview,
   onRefresh, onSelect, onPreview, onApply, onUndo,
   onResourcesPreview, onResourcesApply, onResourcesUndo, onClose,
-  onDismissPreview, onDismissResourcesPreview,
+  onDismissPreview, onDismissResourcesPreview, onLoadCollected, onPurgeCollected,
 }: Props) {
+  const [collectedOpen, setCollectedOpen] = useState(false);
   // The detail is a popup over the table: panels that lived below the fold
   // read as "nothing happened" to anyone who did not know to scroll.
   useEffect(() => {
@@ -236,7 +241,18 @@ export function RightsizingPage({
         <button type="button" className="viz-toggle" onClick={onRefresh}>
           <RefreshCw size={14} aria-hidden /> Refresh
         </button>
+        <button type="button" className="viz-toggle" aria-label="Collected data" title="Collected data and purge" onClick={() => setCollectedOpen(true)}>
+          <Database size={14} aria-hidden />
+        </button>
       </div>
+      {collectedOpen && (
+        <CollectedDataPopup
+          load={onLoadCollected}
+          purge={onPurgeCollected}
+          onPurged={onRefresh}
+          onClose={() => setCollectedOpen(false)}
+        />
+      )}
 
       {rows.length === 0 ? (
         <div className="viz-empty viz-empty-page">
