@@ -87,9 +87,13 @@ pub async fn prepare(batch: IngestBatch) -> Result<PreparedBatch, String> {
         return Ok(prepared);
     }
     let client = crate::client_for_context("").await?;
+    // Only this node's pods. The unscoped list pulled EVERY pod in the
+    // cluster — managedFields and all — once per batch, with up to four
+    // batches in flight: a transient peak the allocator never gives back,
+    // which is where the web pod's 2 GiB baseline in production came from.
     let pods: Api<Pod> = Api::all(client.clone());
     let listed = pods
-        .list(&ListParams::default())
+        .list(&node_scope(&batch.node))
         .await
         .map_err(|e| crate::errors::humanize(&e.to_string()))?;
     let mut by_ns_name: HashMap<(String, String), Pod> = HashMap::new();
@@ -113,6 +117,12 @@ pub async fn prepare(batch: IngestBatch) -> Result<PreparedBatch, String> {
         prepared.rows.push((owner, sample, res));
     }
     Ok(prepared)
+}
+
+/// The collector's NODE_NAME comes from the Downward API (spec.nodeName),
+/// so the same string selects exactly the pods the kubelet it scraped runs.
+fn node_scope(node: &str) -> ListParams {
+    ListParams::default().fields(&format!("spec.nodeName={node}"))
 }
 
 /// Every tmjLite call is synchronous FFI with an fsync behind it. Batches
@@ -186,8 +196,8 @@ pub fn apply(db: &Db, prepared: PreparedBatch) -> Result<IngestResult, String> {
     purge_if_due(db);
     let skip_reason = if prepared.skipped > 0 {
         Some(format!(
-            "{} sample(s) had no resolvable workload owner (pod gone, or no controller)",
-            prepared.skipped
+            "{} sample(s) had no resolvable workload owner (pod gone, not scheduled on node {}, or no controller)",
+            prepared.skipped, prepared.node
         ))
     } else {
         None
@@ -684,6 +694,28 @@ pub struct CollectedData {
     pub last_purge_minutes_ago: Option<u64>,
     /// Why the last retention run failed, if it did — shown, not swallowed.
     pub last_purge_error: Option<String>,
+    /// The web process's resident memory now and at its peak (Linux /proc;
+    /// None elsewhere). The two apart tell a transient peak from a leak.
+    pub process_rss_bytes: Option<u64>,
+    pub process_peak_rss_bytes: Option<u64>,
+}
+
+/// VmRSS and VmHWM from a /proc/<pid>/status body, in bytes.
+fn parse_proc_status(text: &str) -> (Option<u64>, Option<u64>) {
+    let kib = |key: &str| -> Option<u64> {
+        text.lines()
+            .find(|line| line.starts_with(key))
+            .and_then(|line| line.split_whitespace().nth(1))
+            .and_then(|n| n.parse::<u64>().ok())
+            .map(|k| k * 1024)
+    };
+    (kib("VmRSS:"), kib("VmHWM:"))
+}
+
+fn process_memory() -> (Option<u64>, Option<u64>) {
+    std::fs::read_to_string("/proc/self/status")
+        .map(|text| parse_proc_status(&text))
+        .unwrap_or((None, None))
 }
 
 #[derive(Serialize, Clone, Debug)]
@@ -757,6 +789,8 @@ pub fn collected_data(db: &Db) -> Result<CollectedData, String> {
         retention_rollup: format!("{}d", retention_rollup().num_days()),
         last_purge_minutes_ago,
         last_purge_error,
+        process_rss_bytes: process_memory().0,
+        process_peak_rss_bytes: process_memory().1,
     })
 }
 
@@ -1034,6 +1068,20 @@ mod tests {
         assert!(result.skip_reason.as_deref().unwrap_or("").contains("older than TMJLENS_RETENTION_RAW"));
         assert_eq!(count_rows(&db, "rs_rollup_5m").unwrap(), 0, "nothing was written");
         assert_eq!(count_rows(&db, "collector_nodes").unwrap(), 0, "a dropped batch is not a heartbeat");
+    }
+
+    #[test]
+    fn the_pod_list_is_scoped_to_the_collectors_node() {
+        let params = node_scope("ip-10-42-7-11.sa-east-1.compute.internal");
+        assert_eq!(params.field_selector.as_deref(), Some("spec.nodeName=ip-10-42-7-11.sa-east-1.compute.internal"));
+        assert!(params.label_selector.is_none());
+    }
+
+    #[test]
+    fn process_memory_is_read_from_proc_status_or_honestly_absent() {
+        let text = "Name:\ttmjlens\nVmPeak:\t 3000000 kB\nVmSize:\t 2500000 kB\nVmHWM:\t 2191360 kB\nVmRSS:\t 2165760 kB\nThreads:\t3\n";
+        assert_eq!(parse_proc_status(text), (Some(2165760 * 1024), Some(2191360 * 1024)));
+        assert_eq!(parse_proc_status("Name:\tx\n"), (None, None), "missing lines are None, never zero");
     }
 
     #[test]

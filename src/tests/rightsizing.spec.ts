@@ -138,6 +138,8 @@ test.describe('collected data', () => {
     // A failed retention run is said out loud, never a quiet "41 min ago".
     await expect(dialog).toContainText('The last retention run failed');
     await expect(dialog).toContainText('no space left on device');
+    await expect(dialog).toContainText('Web process memory');
+    await expect(dialog).toContainText(/2\.\d+ GiB now · peak 2\.\d+ GiB/);
   });
 
   test('retention runs on one click; deleting everything takes a second one', async ({ page }) => {

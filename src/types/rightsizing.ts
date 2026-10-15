@@ -87,6 +87,9 @@ export type CollectedData = {
   last_purge_minutes_ago: number | null;
   /** Why the last retention run failed, if it did. */
   last_purge_error: string | null;
+  /** Resident memory of the web process now and at its peak; null off Linux. */
+  process_rss_bytes: number | null;
+  process_peak_rss_bytes: number | null;
 };
 
 export type PurgeMode = 'retention' | 'all';

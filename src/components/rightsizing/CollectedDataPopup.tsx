@@ -97,6 +97,15 @@ export function CollectedDataPopup({ load, purge, onPurged, onClose }: Props) {
                   <span>Last retention run</span>
                   <strong>{data.last_purge_minutes_ago == null ? 'not yet in this process' : `${data.last_purge_minutes_ago} min ago`}</strong>
                 </div>
+                <div>
+                  <span>Web process memory</span>
+                  <strong>
+                    {data.process_rss_bytes == null
+                      ? 'not readable on this platform'
+                      : `${formatBytes(data.process_rss_bytes)} now · peak ${formatBytes(data.process_peak_rss_bytes)}`}
+                  </strong>
+                  <small>Peak far above now means a transient spike the allocator kept; both climbing together means a leak.</small>
+                </div>
               </div>
 
               {data.last_purge_error && (
