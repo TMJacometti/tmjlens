@@ -1,6 +1,6 @@
 import { useState } from 'react';
 import { RightsizingPage } from '../components/rightsizing/RightsizingPage';
-import type { HpaPreview, HpaStatus, ResourcesPreview, ResourcesStatus, WorkloadDetail, WorkloadRow } from '../types/rightsizing';
+import type { CollectedData, HpaPreview, HpaStatus, PurgeMode, ResourcesPreview, ResourcesStatus, WorkloadDetail, WorkloadRow } from '../types/rightsizing';
 
 const ROWS: WorkloadRow[] = [
   {
@@ -58,6 +58,35 @@ export function RightsizingPreview() {
   const [selected, setSelected] = useState<WorkloadRow | null>(ROWS[0]);
   const [preview, setPreview] = useState<HpaPreview | null>(null);
   const [resourcesPreview, setResourcesPreview] = useState<ResourcesPreview | null>(null);
+  const [collected, setCollected] = useState<CollectedData>({
+    tables: [
+      { table: 'rs_rollup_5m', label: '5-minute windows', rows: 38400, oldest: '2026-10-12T00:00:00+00:00', newest: '2026-10-14T17:05:00+00:00' },
+      { table: 'rs_rollup_1h', label: 'Hourly windows', rows: 288, oldest: '2026-10-12T00:00:00+00:00', newest: '2026-10-14T17:00:00+00:00' },
+      { table: 'rs_rollup_1d', label: 'Daily windows', rows: 24, oldest: '2026-10-12T00:00:00+00:00', newest: '2026-10-14T00:00:00+00:00' },
+    ],
+    collector_nodes: 16,
+    database_path: '/var/lib/tmjlens/tmjlens.tmjp',
+    database_bytes: 79 * 1024 * 1024,
+    wal_bytes: 488 * 1024,
+    retention_raw: '48h',
+    retention_rollup: '90d',
+    last_purge_minutes_ago: 41,
+  });
+  const purgeCollected = async (mode: PurgeMode) => {
+    const deleted = collected.tables.map((t) => ({ table: t.table, rows: mode === 'all' ? t.rows : t.table === 'rs_rollup_5m' ? 1200 : 0 }));
+    setCollected({
+      ...collected,
+      tables: collected.tables.map((t, i) => ({
+        ...t,
+        rows: t.rows - deleted[i].rows,
+        oldest: mode === 'all' ? null : t.oldest,
+        newest: mode === 'all' ? null : t.newest,
+      })),
+      collector_nodes: mode === 'all' ? 0 : collected.collector_nodes,
+      last_purge_minutes_ago: 0,
+    });
+    return { mode, deleted: [...deleted, { table: 'collector_nodes', rows: mode === 'all' ? 16 : 0 }] };
+  };
   return (
     <>
       <div className="breadcrumbs">Cluster / in-cluster / Rightsizing</div>
@@ -108,6 +137,8 @@ export function RightsizingPreview() {
         onDismissPreview={() => setPreview(null)}
         onApply={() => undefined}
         onUndo={() => undefined}
+        onLoadCollected={async () => collected}
+        onPurgeCollected={purgeCollected}
       />
     </>
   );

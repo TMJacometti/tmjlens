@@ -59,6 +59,11 @@ impl Drop for Db {
     }
 }
 
+/// Where the server keeps the database: TMJLENS_DB_PATH, or the dev default.
+pub fn configured_path() -> String {
+    std::env::var("TMJLENS_DB_PATH").unwrap_or_else(|_| "data/tmjlens.tmjp".into())
+}
+
 #[derive(Debug, Clone, serde::Serialize)]
 pub struct QueryResult {
     pub columns: Vec<String>,

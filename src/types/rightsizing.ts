@@ -67,6 +67,29 @@ export function sortRows(rows: WorkloadRow[], key: SortKey, dir: SortDir): Workl
   });
 }
 
+export type CollectedTable = {
+  table: string;
+  label: string;
+  rows: number;
+  oldest: string | null;
+  newest: string | null;
+};
+
+export type CollectedData = {
+  tables: CollectedTable[];
+  collector_nodes: number;
+  database_path: string;
+  /** null when the file could not be read — shown as such, never as 0. */
+  database_bytes: number | null;
+  wal_bytes: number | null;
+  retention_raw: string;
+  retention_rollup: string;
+  last_purge_minutes_ago: number | null;
+};
+
+export type PurgeMode = 'retention' | 'all';
+export type PurgeOutcome = { mode: PurgeMode; deleted: { table: string; rows: number }[] };
+
 export function namespacesOf(rows: WorkloadRow[]): string[] {
   return [...new Set(rows.map((row) => row.namespace))].sort();
 }

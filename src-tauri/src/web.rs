@@ -65,7 +65,7 @@ pub struct WebState {
 }
 
 pub async fn serve() -> Result<(), String> {
-    let db_path = std::env::var("TMJLENS_DB_PATH").unwrap_or_else(|_| "data/tmjlens.tmjp".into());
+    let db_path = crate::db::configured_path();
     if let Some(parent) = std::path::Path::new(&db_path).parent() {
         if !parent.as_os_str().is_empty() {
             std::fs::create_dir_all(parent)
@@ -586,6 +586,12 @@ fn tokens_equal(got: &str, want: &str) -> bool {
     got.bytes().zip(want.bytes()).fold(0u8, |acc, (a, b)| acc | (a ^ b)) == 0
 }
 
+/// How many collector batches may be in flight at once. apply() already
+/// serialises the writes; this bounds what waits for it. Sixteen collectors
+/// flushing a day of buffered windows together used to hold sixteen prepared
+/// batches each and climb to the memory limit — now the rest wait at the door.
+static INGEST_SLOTS: tokio::sync::Semaphore = tokio::sync::Semaphore::const_new(4);
+
 /// DaemonSet ingest — not a user session. The shared secret is the only gate.
 async fn ingest_rollups(
     State(state): State<std::sync::Arc<WebState>>,
@@ -601,6 +607,10 @@ async fn ingest_rollups(
     if !tokens_equal(got, expected) {
         return plain(StatusCode::UNAUTHORIZED, "ingest token is not valid");
     }
+    let _slot = match INGEST_SLOTS.acquire().await {
+        Ok(slot) => slot,
+        Err(_) => return plain(StatusCode::SERVICE_UNAVAILABLE, "ingest is shutting down"),
+    };
     let prepared = match crate::ingest::prepare(body.0).await {
         Ok(prepared) => prepared,
         Err(error) => return plain(StatusCode::BAD_REQUEST, &error),
@@ -722,7 +732,7 @@ fn required_permission(cmd: &str) -> &'static str {
         "list_rightsizing_workloads" | "get_rightsizing_workload" | "get_collector_coverage" | "get_hpa_status"
         | "preview_hpa" | "apply_hpa" | "undo_hpa"
         | "get_resources_status" | "preview_resources" | "apply_resources" | "undo_resources"
-        | "apply_recommended_resources" => "admin",
+        | "apply_recommended_resources" | "get_collected_data" | "purge_collected_data" => "admin",
         _ => "view",
     }
 }
@@ -1121,6 +1131,13 @@ async fn dispatch(state: &WebState, user: &UserRecord, cmd: &str, a: &Value) -> 
             &arg::<String>(a, "container")?,
             &user.email,
         ).await?),
+        // Aggregates over the rollup tables are synchronous FFI; block_in_place
+        // moves this worker off the runtime so /healthz keeps answering.
+        "get_collected_data" => val(tokio::task::block_in_place(|| crate::ingest::collected_data(&state.db))?),
+        "purge_collected_data" => {
+            let mode = arg::<String>(a, "mode")?;
+            val(tokio::task::block_in_place(|| crate::ingest::purge_collected(&state.db, &mode))?)
+        }
         "undo_resources" => val(crate::resources::undo(
             &state.db,
             &arg::<String>(a, "namespace")?,
@@ -1389,6 +1406,8 @@ mod tests {
             "preview_hpa",
             "apply_hpa",
             "undo_hpa",
+            "get_collected_data",
+            "purge_collected_data",
         ] {
             assert_eq!(required_permission(cmd), "admin", "{cmd} must 403 a developer or guest");
         }
