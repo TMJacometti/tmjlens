@@ -1,4 +1,4 @@
-TMJLite 0.3.0
+TMJLite 0.3.1
 windows-x64 + linux-x64 FFI and CLI
-source=https://github.com/TMJacometti/TMJPlatform/releases/tag/v0.3.0
-built=2026-10-07T14:09:56Z
+source=https://github.com/TMJacometti/tmjlite/releases/tag/v0.3.1
+built=2026-10-15T19:46:20Z

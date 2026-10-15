@@ -4,6 +4,7 @@
  * The version number itself comes from package.json; only the story lives here.
  */
 export const WHATS_NEW: string[] = [
+  'tmjLite 0.3.1 under the hood, and every read over the Rightsizing history now streams through its new cursor — one row in memory at a time instead of the whole table three times over. Compaction, the recommendation screen and the container list all go this way; memory per query no longer grows with retention.',
   'The web pod no longer OOM-kills under a day of Rightsizing history: compaction read a container’s whole retained history to rebuild one hour — twice per sample, growing with retention. It now reads only the window it rebuilds, batch windows are floored to their 5-minute bucket, and at most four collector batches are in flight at once.',
   'Rightsizing has a database icon for Admins: what the collector has written per tier (rows, oldest and newest window), the file size, the retention policy — and two purges: run retention now, or delete everything and start over (asks twice).',
   'Workloads: a pod’s or a Deployment’s detail opens as a popup over the list — same tabs, same content — instead of rendering below the fold where a click looked like it did nothing. Escape or the scrim closes it; a YAML editor or log viewer opened from inside stays on top.',

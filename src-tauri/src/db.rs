@@ -26,6 +26,16 @@ type ResultNameFn = unsafe extern "C" fn(*const std::ffi::c_void, c_int) -> *con
 type ResultValueFn = unsafe extern "C" fn(*const std::ffi::c_void, c_int, c_int) -> *const c_char;
 type ResultFreeFn = unsafe extern "C" fn(*mut std::ffi::c_void);
 type VersionFn = unsafe extern "C" fn() -> *const c_char;
+type CursorOpenFn =
+    unsafe extern "C" fn(*const std::ffi::c_void, *const c_char) -> *mut std::ffi::c_void;
+type CursorStepFn = unsafe extern "C" fn(*mut std::ffi::c_void) -> c_int;
+type CursorTextFn = unsafe extern "C" fn(*const std::ffi::c_void, c_int) -> *const c_char;
+type CursorIsNullFn = unsafe extern "C" fn(*const std::ffi::c_void, c_int) -> c_int;
+type CursorI64Fn = unsafe extern "C" fn(*const std::ffi::c_void, c_int, *mut i64) -> c_int;
+type CursorF64Fn = unsafe extern "C" fn(*const std::ffi::c_void, c_int, *mut f64) -> c_int;
+type CursorBoolFn = unsafe extern "C" fn(*const std::ffi::c_void, c_int, *mut c_int) -> c_int;
+type CursorErrmsgFn = unsafe extern "C" fn(*const std::ffi::c_void) -> *const c_char;
+type CursorCloseFn = unsafe extern "C" fn(*mut std::ffi::c_void);
 
 struct Api {
     open_shared: OpenSharedFn,
@@ -39,6 +49,56 @@ struct Api {
     value: ResultValueFn,
     result_free: ResultFreeFn,
     version: VersionFn,
+    cursor_open: CursorOpenFn,
+    cursor_step: CursorStepFn,
+    cursor_text: CursorTextFn,
+    cursor_is_null: CursorIsNullFn,
+    cursor_i64: CursorI64Fn,
+    cursor_f64: CursorF64Fn,
+    cursor_bool: CursorBoolFn,
+    cursor_errmsg: CursorErrmsgFn,
+    cursor_close: CursorCloseFn,
+}
+
+/// The current row of a streaming cursor. Everything here is borrowed from
+/// the engine and dies with the step — copy what you keep.
+pub struct Row<'c> {
+    api: &'c Api,
+    cursor: *const std::ffi::c_void,
+}
+
+impl Row<'_> {
+    /// `None` for SQL NULL (the engine's own flag, not the "NULL" string).
+    pub fn text(&self, col: usize) -> Option<&str> {
+        unsafe {
+            if (self.api.cursor_is_null)(self.cursor, col as c_int) != 0 {
+                return None;
+            }
+            let ptr = (self.api.cursor_text)(self.cursor, col as c_int);
+            if ptr.is_null() {
+                return None;
+            }
+            CStr::from_ptr(ptr).to_str().ok()
+        }
+    }
+
+    pub fn i64(&self, col: usize) -> Option<i64> {
+        let mut out = 0i64;
+        let rc = unsafe { (self.api.cursor_i64)(self.cursor, col as c_int, &mut out) };
+        (rc == 0).then_some(out)
+    }
+
+    pub fn f64(&self, col: usize) -> Option<f64> {
+        let mut out = 0f64;
+        let rc = unsafe { (self.api.cursor_f64)(self.cursor, col as c_int, &mut out) };
+        (rc == 0).then_some(out)
+    }
+
+    pub fn bool(&self, col: usize) -> Option<bool> {
+        let mut out: c_int = 0;
+        let rc = unsafe { (self.api.cursor_bool)(self.cursor, col as c_int, &mut out) };
+        (rc == 0).then_some(out != 0)
+    }
 }
 
 pub struct Db {
@@ -192,6 +252,15 @@ impl Db {
                 value: *lib.get(b"tmjlite_result_value\0").map_err(err_sym)?,
                 result_free: *lib.get(b"tmjlite_result_free\0").map_err(err_sym)?,
                 version: *lib.get(b"tmjlite_version\0").map_err(err_sym)?,
+                cursor_open: *lib.get(b"tmjlite_cursor_open_shared\0").map_err(err_sym)?,
+                cursor_step: *lib.get(b"tmjlite_cursor_step\0").map_err(err_sym)?,
+                cursor_text: *lib.get(b"tmjlite_cursor_text\0").map_err(err_sym)?,
+                cursor_is_null: *lib.get(b"tmjlite_cursor_is_null\0").map_err(err_sym)?,
+                cursor_i64: *lib.get(b"tmjlite_cursor_i64\0").map_err(err_sym)?,
+                cursor_f64: *lib.get(b"tmjlite_cursor_f64\0").map_err(err_sym)?,
+                cursor_bool: *lib.get(b"tmjlite_cursor_bool\0").map_err(err_sym)?,
+                cursor_errmsg: *lib.get(b"tmjlite_cursor_errmsg\0").map_err(err_sym)?,
+                cursor_close: *lib.get(b"tmjlite_cursor_close\0").map_err(err_sym)?,
             }
         };
         let c_path = CString::new(path.to_string_lossy().as_bytes())
@@ -228,7 +297,47 @@ impl Db {
         if rc == 0 { Ok(()) } else { Err(self.last_error()) }
     }
 
-    /// Run one SELECT and copy the whole result out.
+    /// Run one SELECT through a streaming cursor, one row in memory at a
+    /// time. This is how every read over the rollup tables must go: the
+    /// materialised `query` below holds the engine's copy AND ours, and on a
+    /// day of history that was the production OOM. Inside a BEGIN on this
+    /// thread the cursor sees the transaction's own writes; the cursor is
+    /// closed before this returns, so WAL checkpoints are never held up.
+    pub fn fold<T>(
+        &self,
+        sql: &str,
+        init: T,
+        mut step: impl FnMut(T, &Row<'_>) -> Result<T, String>,
+    ) -> Result<T, String> {
+        let c_sql =
+            CString::new(sql).map_err(|_| "statement contains a NUL byte".to_string())?;
+        let cursor = unsafe { (self.api.cursor_open)(self.handle, c_sql.as_ptr()) };
+        if cursor.is_null() {
+            return Err(self.last_error());
+        }
+        let mut acc = init;
+        let outcome = loop {
+            match unsafe { (self.api.cursor_step)(cursor) } {
+                1 => {
+                    let row = Row { api: &self.api, cursor };
+                    match step(acc, &row) {
+                        Ok(next) => acc = next,
+                        Err(error) => break Err(error),
+                    }
+                }
+                0 => break Ok(acc),
+                _ => {
+                    let ptr = unsafe { (self.api.cursor_errmsg)(cursor) };
+                    break Err(read_str(ptr).unwrap_or_else(|| "cursor step failed".into()));
+                }
+            }
+        };
+        unsafe { (self.api.cursor_close)(cursor) };
+        outcome
+    }
+
+    /// Run one SELECT and copy the whole result out. Fine for a screen of
+    /// users or an audit page; never for the rollup tables — use `fold`.
     pub fn query(&self, sql: &str) -> Result<QueryResult, String> {
         let c_sql =
             CString::new(sql).map_err(|_| "statement contains a NUL byte".to_string())?;
@@ -380,14 +489,63 @@ mod tests {
     }
 
     #[test]
-    fn the_vendored_engine_is_the_published_030() {
-        // tmjlite_version() still says 0.1.0-capivara; the drop-in we ship is
-        // identified by VERSION.txt next to the FFI library.
+    fn the_vendored_engine_is_the_published_031() {
         let version = include_str!("../../tools/tmjlite/VERSION.txt");
         assert!(
-            version.starts_with("TMJLite 0.3.0"),
-            "expected the 0.3.0 engine, got {version}"
+            version.starts_with("TMJLite 0.3.1"),
+            "expected the 0.3.1 engine, got {version}"
         );
+        // 0.3.1 is the first engine whose tmjlite_version() tells the truth;
+        // the binary and VERSION.txt must agree or the drop-in is mixed.
+        let db = Db::open(&temp_db("engine-version")).expect("open");
+        assert!(
+            db.engine_version().starts_with("0.3.1"),
+            "the FFI library says {}, VERSION.txt says 0.3.1",
+            db.engine_version()
+        );
+    }
+
+    /// The cursor is the only read path allowed over the rollup tables.
+    /// This pins its contract: rows arrive in order, NULL is None (not the
+    /// string "NULL"), typed accessors read INT/TEXT columns, and a closure
+    /// error stops the walk with that error.
+    #[test]
+    fn fold_streams_rows_with_real_nulls_and_typed_cells() {
+        let db = Db::open(&temp_db("fold")).expect("open");
+        for (window, samples, req) in [
+            ("2026-10-15T10:00:00+00:00", 3, "'250'"),
+            ("2026-10-15T10:05:00+00:00", 4, "NULL"),
+        ] {
+            db.exec(&format!(
+                "INSERT INTO rs_rollup_5m (namespace, kind, workload, container, window_start, cpu_hist, mem_hist, \
+                 samples, oom_kills, cpu_request_milli) VALUES ('shop', 'Deployment', 'checkout', 'api', \
+                 '{window}', '[]', '[]', {samples}, 0, {req});"
+            ))
+            .expect("seed");
+        }
+        let seen = db
+            .fold(
+                "SELECT window_start, samples, cpu_request_milli FROM rs_rollup_5m \
+                 WHERE namespace = 'shop' AND kind = 'Deployment' AND workload = 'checkout' AND container = 'api' \
+                 AND window_start >= '2026-10-15T10:00:00+00:00' AND window_start < '2026-10-15T11:00:00+00:00';",
+                Vec::new(),
+                |mut acc, row| {
+                    acc.push((row.text(0).map(str::to_string), row.i64(1), row.f64(2), row.text(2).map(str::to_string)));
+                    Ok(acc)
+                },
+            )
+            .expect("fold");
+        assert_eq!(
+            seen,
+            vec![
+                (Some("2026-10-15T10:00:00+00:00".into()), Some(3), Some(250.0), Some("250".into())),
+                (Some("2026-10-15T10:05:00+00:00".into()), Some(4), None, None),
+            ]
+        );
+
+        let stopped = db.fold("SELECT samples FROM rs_rollup_5m;", 0, |_, _| Err::<i32, _>("stop here".to_string()));
+        assert_eq!(stopped, Err("stop here".to_string()));
+        assert!(db.fold("SELECT nope FROM rs_rollup_5m;", 0, |a, _| Ok(a)).is_err(), "a bad column is an error, not zero rows");
     }
 
     #[test]

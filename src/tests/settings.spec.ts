@@ -25,7 +25,7 @@ test.describe('settings about', () => {
   test('the release notes close the tab and name this release', async ({ page }) => {
     const dialog = page.getByRole('dialog', { name: 'Settings' });
     await expect(dialog).toContainText(`What's new in ${version}`);
-    await expect(dialog).toContainText('reads only the window it rebuilds');
+    await expect(dialog).toContainText('streams through its new cursor');
     await expect(dialog).toContainText('never a silent zero');
   });
 });

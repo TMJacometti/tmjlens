@@ -14,6 +14,8 @@
 #ifndef TMJLITE_H
 #define TMJLITE_H
 
+#include <stdint.h>
+
 #ifdef __cplusplus
 extern "C" {
 #endif
@@ -64,9 +66,21 @@ const char *tmjlite_result_column_name(const TmjResult *result, int index);
 int tmjlite_result_row_count(const TmjResult *result);
 
 /* Value at (row, col) as a string. Returns NULL if out of bounds.
- * NULL values are returned as the string "NULL".
- * The returned pointer is valid until tmjlite_result_free(). */
+ * NULL values are returned as the string "NULL" (use tmjlite_result_is_null
+ * to tell them apart). The returned pointer is BORROWED: it stays valid until
+ * tmjlite_result_free(), so callers may keep `const char*` views instead of
+ * copying every cell. The text is built lazily on first access; typed
+ * accessors below never build it. */
 const char *tmjlite_result_value(const TmjResult *result, int row, int col);
+
+/* Typed accessors (0.3.1+): no string, no parse on the caller side.
+ * is_null: 1 = SQL NULL, 0 = value, -1 = out of bounds.
+ * i64/f64/bool: 0 = ok (written to *out), -1 = not convertible / out of
+ * bounds. INT/FLOAT/BOOL columns convert directly; TEXT is parsed. */
+int tmjlite_result_is_null(const TmjResult *result, int row, int col);
+int tmjlite_result_i64(const TmjResult *result, int row, int col, int64_t *out);
+int tmjlite_result_f64(const TmjResult *result, int row, int col, double *out);
+int tmjlite_result_bool(const TmjResult *result, int row, int col, int *out);
 
 /* Message for non-SELECT results (e.g. "Table 'users' created.").
  * Returns NULL if the result is a SELECT query.
@@ -143,6 +157,47 @@ int tmjlite_stmt_exec(TmjDb *db, const TmjStmt *stmt, const char *params_json);
 TmjResult *tmjlite_stmt_query(TmjDb *db, const TmjStmt *stmt, const char *params_json);
 int tmjlite_stmt_exec_shared(const TmjSharedDb *db, const TmjStmt *stmt, const char *params_json);
 TmjResult *tmjlite_stmt_query_shared(const TmjSharedDb *db, const TmjStmt *stmt, const char *params_json);
+
+/* ---- Cursor: one row at a time (0.3.1+) ----
+ *
+ * Reads straight from an MVCC snapshot of the shared handle without
+ * materializing the table OR the result set: memory is O(1 row) for scans
+ * and index seeks, O(k) for LIMIT k, O(groups) for GROUP BY. ORDER BY on a
+ * non-indexed column sorts (spilling to disk past 32k rows). Shapes that
+ * cannot stream (joins, subqueries, window functions, DISTINCT, ORDER BY or
+ * LIMIT over aggregates) fall back to a materialized result behind the SAME
+ * API — tmjlite_cursor_is_streaming() tells which.
+ *
+ * Inside a BEGIN transaction on the calling thread the cursor sees that
+ * transaction's writes. Outside, it holds a consistent snapshot: rows
+ * committed by other threads after open are NOT visible. While a cursor is
+ * open, WAL checkpoints are deferred — close it as soon as you are done.
+ *
+ *   TmjCursor *c = tmjlite_cursor_open_shared(db, "SELECT samples, cpu_hist FROM rs WHERE ...");
+ *   while (tmjlite_cursor_step(c) == 1) {
+ *       int64_t samples; tmjlite_cursor_i64(c, 0, &samples);
+ *       const char *hist = tmjlite_cursor_text(c, 1);   // borrowed until next step
+ *   }
+ *   tmjlite_cursor_close(c);
+ */
+typedef struct TmjCursor TmjCursor;
+
+TmjCursor *tmjlite_cursor_open_shared(const TmjSharedDb *db, const char *sql);
+TmjCursor *tmjlite_stmt_cursor_shared(const TmjSharedDb *db, const TmjStmt *stmt, const char *params_json);
+/* 1 = row available, 0 = end, -1 = error (see tmjlite_cursor_errmsg). */
+int tmjlite_cursor_step(TmjCursor *c);
+int tmjlite_cursor_column_count(const TmjCursor *c);
+const char *tmjlite_cursor_column_name(const TmjCursor *c, int col);
+/* Current row, borrowed: valid until the next step/close. SQL NULL is the
+ * string "NULL" — use tmjlite_cursor_is_null. */
+const char *tmjlite_cursor_text(const TmjCursor *c, int col);
+int tmjlite_cursor_is_null(const TmjCursor *c, int col);
+int tmjlite_cursor_i64(const TmjCursor *c, int col, int64_t *out);
+int tmjlite_cursor_f64(const TmjCursor *c, int col, double *out);
+int tmjlite_cursor_bool(const TmjCursor *c, int col, int *out);
+int tmjlite_cursor_is_streaming(const TmjCursor *c);
+const char *tmjlite_cursor_errmsg(const TmjCursor *c);
+void tmjlite_cursor_close(TmjCursor *c);
 
 /* Last error message for the calling thread, or NULL.
  * The pointer stays valid for this thread until its next call. */

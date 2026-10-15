@@ -399,63 +399,78 @@ fn compact_into(
     window_start: &str,
     window_end: &str,
 ) -> Result<(), String> {
-    let rows = db.query(&format!(
-        "SELECT cpu_hist, mem_hist, mem_max_bytes, samples, oom_kills, throttle_ratio, window_start, \
-         cpu_request_milli, cpu_limit_milli, mem_request_bytes, mem_limit_bytes, replicas, limited_data FROM {from} \
-         WHERE namespace = {} AND kind = {} AND workload = {} AND container = {} \
-         AND window_start >= {} AND window_start < {};",
-        sql_str(&owner.namespace)?,
-        sql_str(&owner.kind)?,
-        sql_str(&owner.name)?,
-        sql_str(container)?,
-        sql_str(window_start)?,
-        sql_str(window_end)?,
-    ))?;
-    let matched: Vec<&Vec<Option<String>>> = rows.rows.iter().collect();
-    if matched.is_empty() {
+    // One row in memory at a time (tmjLite 0.3.1 cursor): the window's
+    // ~12 rows stream through this fold and only the merged result survives.
+    #[derive(Default)]
+    struct Fold {
+        rows: usize,
+        cpu: Histogram,
+        mem: Histogram,
+        mem_max: f64,
+        samples: u64,
+        ooms: i64,
+        thr_sum: f64,
+        thr_n: u64,
+        newest_stamp: String,
+        // cpu_request, cpu_limit, mem_request, mem_limit, replicas of the newest row
+        newest: [Option<String>; 5],
+        limited: bool,
+    }
+    let f = db.fold(
+        &format!(
+            "SELECT cpu_hist, mem_hist, mem_max_bytes, samples, oom_kills, throttle_ratio, window_start, \
+             cpu_request_milli, cpu_limit_milli, mem_request_bytes, mem_limit_bytes, replicas, limited_data FROM {from} \
+             WHERE namespace = {} AND kind = {} AND workload = {} AND container = {} \
+             AND window_start >= {} AND window_start < {};",
+            sql_str(&owner.namespace)?,
+            sql_str(&owner.kind)?,
+            sql_str(&owner.name)?,
+            sql_str(container)?,
+            sql_str(window_start)?,
+            sql_str(window_end)?,
+        ),
+        Fold::default(),
+        |mut f, row| {
+            f.rows += 1;
+            f.cpu.merge(&parse_hist(row.text(0).unwrap_or("[]")));
+            f.mem.merge(&parse_hist(row.text(1).unwrap_or("[]")));
+            f.mem_max = f.mem_max.max(row.f64(2).unwrap_or(0.0));
+            f.samples += row.i64(3).unwrap_or(0).max(0) as u64;
+            f.ooms += row.i64(4).unwrap_or(0);
+            if let Some(t) = row.f64(5) {
+                f.thr_sum += t;
+                f.thr_n += 1;
+            }
+            // Requests, limits and replicas are not aggregates: the newest
+            // window says what the workload asks for today. They used to be
+            // left NULL here, so every 1h/1d row rendered "—".
+            let stamp = row.text(6).unwrap_or("");
+            if f.rows == 1 || stamp > f.newest_stamp.as_str() {
+                f.newest_stamp = stamp.to_string();
+                f.newest = [7, 8, 9, 10, 11].map(|col| row.text(col).filter(|v| !v.is_empty()).map(str::to_string));
+            }
+            if row.bool(12) == Some(true) {
+                f.limited = true;
+            }
+            Ok(f)
+        },
+    )?;
+    if f.rows == 0 {
         return Ok(());
     }
-    let mut cpu = Histogram::default();
-    let mut mem = Histogram::default();
-    let mut mem_max = 0.0f64;
-    let mut samples = 0u64;
-    let mut ooms = 0i64;
-    let mut thr_sum = 0.0f64;
-    let mut thr_n = 0u64;
-    for row in &matched {
-        cpu.merge(&parse_hist(row[0].as_deref().unwrap_or("[]")));
-        mem.merge(&parse_hist(row[1].as_deref().unwrap_or("[]")));
-        let mx: f64 = row[2].as_deref().and_then(|s| s.parse().ok()).unwrap_or(0.0);
-        mem_max = mem_max.max(mx);
-        samples += row[3].as_deref().and_then(|s| s.parse().ok()).unwrap_or(0);
-        ooms += row[4].as_deref().and_then(|s| s.parse().ok()).unwrap_or(0);
-        if let Some(t) = row[5].as_deref().and_then(|s| s.parse::<f64>().ok()) {
-            thr_sum += t;
-            thr_n += 1;
-        }
-    }
+    let Fold { cpu, mem, mem_max, samples, ooms, thr_sum, thr_n, newest, limited, .. } = f;
     let throttle = if thr_n == 0 { None } else { Some(thr_sum / thr_n as f64) };
-    // Requests, limits and replicas are not aggregates: the newest window says
-    // what the workload asks for today. They used to be left NULL here, so
-    // every 1h/1d row — the ones the screen reads first — rendered "—".
-    let newest = matched
-        .iter()
-        .max_by(|a, b| a[6].cmp(&b[6]))
-        .expect("matched is non-empty");
     let carry = |index: usize| -> Result<String, String> {
-        match newest.get(index).and_then(|v| v.as_deref()) {
-            Some(raw) if raw != "NULL" && !raw.is_empty() => sql_str(raw),
-            _ => Ok("NULL".to_string()),
+        match newest[index].as_deref() {
+            Some(raw) => sql_str(raw),
+            None => Ok("NULL".to_string()),
         }
     };
-    let (cpu_req, cpu_lim, mem_req, mem_lim) = (carry(7)?, carry(8)?, carry(9)?, carry(10)?);
-    let replicas = match newest.get(11).and_then(|v| v.as_deref()) {
+    let (cpu_req, cpu_lim, mem_req, mem_lim) = (carry(0)?, carry(1)?, carry(2)?, carry(3)?);
+    let replicas = match newest[4].as_deref() {
         Some(raw) if raw.parse::<i64>().is_ok() => raw.to_string(),
         _ => "NULL".to_string(),
     };
-    let limited = matched
-        .iter()
-        .any(|row| row.get(12).and_then(|v| v.as_deref()) == Some("true"));
     let exists = db.query(&format!(
         "SELECT id FROM {into} WHERE namespace = {} AND kind = {} AND workload = {} AND container = {} AND window_start = {};",
         sql_str(&owner.namespace)?,
@@ -724,20 +739,29 @@ pub fn merged_usage(
     container: &str,
 ) -> Result<Option<MergedUsage>, String> {
     for table in ["rs_rollup_1d", "rs_rollup_1h", "rs_rollup_5m"] {
-        let rows = db.query(&format!(
-            "SELECT cpu_hist, mem_hist, mem_max_bytes, samples, oom_kills, throttle_ratio, \
-             cpu_request_milli, mem_request_bytes, window_start, limited_data FROM {table} \
-             WHERE namespace = {} AND kind = {} AND workload = {} AND container = {} \
-             ORDER BY window_start;",
-            sql_str(namespace)?,
-            sql_str(kind)?,
-            sql_str(workload)?,
-            sql_str(container)?,
-        ))?;
-        if rows.rows.is_empty() {
+        // Streams the container's whole history for this tier — which is
+        // why it must be a cursor fold and never a materialised query.
+        let folder = db.fold(
+            &format!(
+                "SELECT cpu_hist, mem_hist, mem_max_bytes, samples, oom_kills, throttle_ratio, \
+                 cpu_request_milli, mem_request_bytes, window_start, limited_data FROM {table} \
+                 WHERE namespace = {} AND kind = {} AND workload = {} AND container = {} \
+                 ORDER BY window_start;",
+                sql_str(namespace)?,
+                sql_str(kind)?,
+                sql_str(workload)?,
+                sql_str(container)?,
+            ),
+            UsageFolder::default(),
+            |mut folder, row| {
+                folder.push(|col| row.text(col));
+                Ok(folder)
+            },
+        )?;
+        if folder.rows == 0 {
             continue;
         }
-        return Ok(Some(fold_rows(&rows.rows)));
+        return Ok(Some(folder.finish()));
     }
     Ok(None)
 }
@@ -745,15 +769,18 @@ pub fn merged_usage(
 pub fn list_containers(db: &Db) -> Result<Vec<(String, String, String, String)>, String> {
     let mut seen = std::collections::BTreeSet::new();
     for table in ["rs_rollup_5m", "rs_rollup_1h", "rs_rollup_1d"] {
-        // No DISTINCT: tmjLite does not parse it. The BTreeSet below is the dedup.
-        let rows = db.query(&format!(
-            "SELECT namespace, kind, workload, container FROM {table};"
-        ))?;
-        for r in rows.rows {
-            if let (Some(ns), Some(kind), Some(name), Some(ctr)) = (r[0].clone(), r[1].clone(), r[2].clone(), r[3].clone()) {
-                seen.insert((ns, kind, name, ctr));
-            }
-        }
+        // No DISTINCT: the BTreeSet is the dedup, fed one row at a time so
+        // the whole table never sits in memory as strings.
+        seen = db.fold(
+            &format!("SELECT namespace, kind, workload, container FROM {table};"),
+            seen,
+            |mut seen, row| {
+                if let (Some(ns), Some(kind), Some(name), Some(ctr)) = (row.text(0), row.text(1), row.text(2), row.text(3)) {
+                    seen.insert((ns.to_string(), kind.to_string(), name.to_string(), ctr.to_string()));
+                }
+                Ok(seen)
+            },
+        )?;
     }
     Ok(seen.into_iter().collect())
 }
@@ -773,59 +800,81 @@ pub struct MergedUsage {
     pub limited_data: bool,
 }
 
-fn fold_rows(rows: &[Vec<Option<String>>]) -> MergedUsage {
-    let mut cpu = Histogram::default();
-    let mut mem = Histogram::default();
-    let mut memory_max: f64 = 0.0;
-    let mut samples = 0u64;
-    let mut oom_kills = 0i64;
-    let mut thr_sum = 0.0;
-    let mut thr_n = 0u64;
-    let mut cpu_request = None;
-    let mut mem_request = None;
-    let mut first_window = None;
-    let mut last_window = None;
-    let mut limited_data = false;
-    for row in rows {
-        cpu.merge(&parse_hist(row[0].as_deref().unwrap_or("[]")));
-        mem.merge(&parse_hist(row[1].as_deref().unwrap_or("[]")));
-        memory_max = memory_max.max(row[2].as_deref().and_then(|s| s.parse::<f64>().ok()).unwrap_or(0.0));
-        samples += row[3].as_deref().and_then(|s| s.parse::<u64>().ok()).unwrap_or(0);
-        oom_kills += row[4].as_deref().and_then(|s| s.parse::<i64>().ok()).unwrap_or(0);
-        if let Some(t) = row[5].as_deref().and_then(|s| s.parse::<f64>().ok()) {
-            thr_sum += t;
-            thr_n += 1;
+/// Accumulates one tier's history into a MergedUsage, one row at a time, in
+/// `ORDER BY window_start` order. Columns: cpu_hist, mem_hist, mem_max_bytes,
+/// samples, oom_kills, throttle_ratio, cpu_request_milli, mem_request_bytes,
+/// window_start, limited_data.
+#[derive(Default)]
+struct UsageFolder {
+    rows: usize,
+    cpu: Histogram,
+    mem: Histogram,
+    memory_max: f64,
+    samples: u64,
+    oom_kills: i64,
+    thr_sum: f64,
+    thr_n: u64,
+    cpu_request: Option<f64>,
+    mem_request: Option<f64>,
+    first_window: Option<String>,
+    last_window: Option<String>,
+    limited_data: bool,
+}
+
+impl UsageFolder {
+    fn push<'a>(&mut self, cell: impl Fn(usize) -> Option<&'a str>) {
+        self.rows += 1;
+        self.cpu.merge(&parse_hist(cell(0).unwrap_or("[]")));
+        self.mem.merge(&parse_hist(cell(1).unwrap_or("[]")));
+        self.memory_max = self.memory_max.max(cell(2).and_then(|s| s.parse::<f64>().ok()).unwrap_or(0.0));
+        self.samples += cell(3).and_then(|s| s.parse::<u64>().ok()).unwrap_or(0);
+        self.oom_kills += cell(4).and_then(|s| s.parse::<i64>().ok()).unwrap_or(0);
+        if let Some(t) = cell(5).and_then(|s| s.parse::<f64>().ok()) {
+            self.thr_sum += t;
+            self.thr_n += 1;
         }
         // Rows arrive oldest first; the last one with a value is what the
         // workload asked for most recently. Keeping the FIRST value — as this
         // once did — froze the screen on the original request forever.
-        if let Some(v) = row[6].as_deref().and_then(|s| s.parse::<f64>().ok()) {
-            cpu_request = Some(v);
+        if let Some(v) = cell(6).and_then(|s| s.parse::<f64>().ok()) {
+            self.cpu_request = Some(v);
         }
-        if let Some(v) = row[7].as_deref().and_then(|s| s.parse::<f64>().ok()) {
-            mem_request = Some(v);
+        if let Some(v) = cell(7).and_then(|s| s.parse::<f64>().ok()) {
+            self.mem_request = Some(v);
         }
-        if first_window.is_none() {
-            first_window = row[8].clone();
+        if self.first_window.is_none() {
+            self.first_window = cell(8).map(str::to_string);
         }
-        last_window = row[8].clone();
-        if row.get(9).and_then(|v| v.as_deref()) == Some("true") {
-            limited_data = true;
+        self.last_window = cell(8).map(str::to_string);
+        if cell(9) == Some("true") {
+            self.limited_data = true;
         }
     }
-    MergedUsage {
-        cpu,
-        memory: mem,
-        memory_max,
-        samples,
-        oom_kills,
-        throttle_ratio: if thr_n == 0 { None } else { Some(thr_sum / thr_n as f64) },
-        cpu_request_milli: cpu_request,
-        mem_request_bytes: mem_request,
-        first_window,
-        last_window,
-        limited_data,
+
+    fn finish(self) -> MergedUsage {
+        MergedUsage {
+            cpu: self.cpu,
+            memory: self.mem,
+            memory_max: self.memory_max,
+            samples: self.samples,
+            oom_kills: self.oom_kills,
+            throttle_ratio: if self.thr_n == 0 { None } else { Some(self.thr_sum / self.thr_n as f64) },
+            cpu_request_milli: self.cpu_request,
+            mem_request_bytes: self.mem_request,
+            first_window: self.first_window,
+            last_window: self.last_window,
+            limited_data: self.limited_data,
+        }
     }
+}
+
+#[cfg(test)]
+fn fold_rows(rows: &[Vec<Option<String>>]) -> MergedUsage {
+    let mut folder = UsageFolder::default();
+    for row in rows {
+        folder.push(|col| row.get(col).and_then(|v| v.as_deref()));
+    }
+    folder.finish()
 }
 
 #[cfg(test)]
