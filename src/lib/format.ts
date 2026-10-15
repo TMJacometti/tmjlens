@@ -23,6 +23,34 @@ export function formatBytes(bytes: number | null | undefined): string {
   return `${value.toFixed(digits)} ${units[unit]}`;
 }
 
+const MI = 1024 * 1024;
+const GI = MI * 1024;
+
+/**
+ * Memory the way kubectl prints a quantity: a whole number of Gi is "4Gi", a
+ * whole number of Mi is "3000Mi" — never "2.9 GiB" for what the manifest
+ * says is 3000Mi. Anything that is not a whole binary unit falls back to
+ * formatBytes.
+ */
+export function formatMemoryQuantity(bytes: number | null | undefined): string {
+  if (bytes == null || Number.isNaN(bytes)) return '—';
+  if (bytes >= GI && Number.isInteger(bytes / GI)) return `${bytes / GI}Gi`;
+  if (bytes >= MI && Number.isInteger(bytes / MI)) return `${bytes / MI}Mi`;
+  return formatBytes(bytes);
+}
+
+/**
+ * A request beside a measurement, e.g. "3000Mi / 2252Mi": the measurement is
+ * printed in the request's unit so the two compare at a glance.
+ */
+export function formatMemoryPair(request: number | null | undefined, measured: number | null | undefined): string {
+  const left = formatMemoryQuantity(request);
+  if (measured == null || Number.isNaN(measured)) return `${left} / —`;
+  if (left.endsWith('Gi')) return `${left} / ${(measured / GI).toFixed(measured / GI < 10 ? 1 : 0)}Gi`;
+  if (left.endsWith('Mi')) return `${left} / ${Math.round(measured / MI)}Mi`;
+  return `${left} / ${formatBytes(measured)}`;
+}
+
 export function formatCount(value: number): string {
   if (value < 1000) return String(value);
   if (value < 1_000_000) return `${(value / 1000).toFixed(value < 10_000 ? 1 : 0)}K`;

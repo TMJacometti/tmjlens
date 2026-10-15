@@ -49,6 +49,11 @@ test.describe('rightsizing', () => {
     await expect(page.locator('tbody')).not.toContainText('ledger-db');
   });
 
+  test('memory in the table reads like the manifest, measurement in the same unit', async ({ page }) => {
+    await expect(page.getByRole('row').filter({ hasText: 'checkout' })).toContainText('512Mi / 120Mi');
+    await expect(page.getByRole('row').filter({ hasText: 'ledger-db' })).toContainText('4Gi / 1.5Gi');
+  });
+
   test('a workload that left the cluster is marked as history', async ({ page }) => {
     await expect(page.getByRole('row').filter({ hasText: 'ledger-db' })).toContainText('no longer in the cluster');
   });
@@ -93,7 +98,9 @@ test.describe('resource editor', () => {
   test('current and recommended are both on screen, so the change is legible', async ({ page }) => {
     const panel = page.locator('.rs-resources');
     await expect(panel).toContainText('500m / 1.0 cores');
-    await expect(panel).toContainText('512 MiB / 1.0 GiB');
+    // As kubectl prints it: the manifest says 512Mi and 1Gi, so does the screen.
+    await expect(panel).toContainText('512Mi / 1Gi');
+    await expect(panel).toContainText('144Mi');
     await expect(panel).toContainText('2 replica(s) restart');
   });
 
