@@ -87,9 +87,13 @@ pub async fn prepare(batch: IngestBatch) -> Result<PreparedBatch, String> {
         return Ok(prepared);
     }
     let client = crate::client_for_context("").await?;
+    // Only this node's pods. The unscoped list pulled EVERY pod in the
+    // cluster — managedFields and all — once per batch, with up to four
+    // batches in flight: a transient peak the allocator never gives back,
+    // which is where the web pod's 2 GiB baseline in production came from.
     let pods: Api<Pod> = Api::all(client.clone());
     let listed = pods
-        .list(&ListParams::default())
+        .list(&node_scope(&batch.node))
         .await
         .map_err(|e| crate::errors::humanize(&e.to_string()))?;
     let mut by_ns_name: HashMap<(String, String), Pod> = HashMap::new();
@@ -115,6 +119,12 @@ pub async fn prepare(batch: IngestBatch) -> Result<PreparedBatch, String> {
     Ok(prepared)
 }
 
+/// The collector's NODE_NAME comes from the Downward API (spec.nodeName),
+/// so the same string selects exactly the pods the kubelet it scraped runs.
+fn node_scope(node: &str) -> ListParams {
+    ListParams::default().fields(&format!("spec.nodeName={node}"))
+}
+
 /// Every tmjLite call is synchronous FFI with an fsync behind it. Batches
 /// apply one at a time: twelve collectors landing in the same minute would
 /// otherwise contend for the engine's write lock across as many threads, and
@@ -127,6 +137,25 @@ static APPLY_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
 /// liveness restart loop under twelve collectors.
 pub fn apply(db: &Db, prepared: PreparedBatch) -> Result<IngestResult, String> {
     let _serial = APPLY_LOCK.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+
+    // Compaction REBUILDS the hour from the 5m rows present. A batch older
+    // than the raw retention floor would rebuild it from whatever the purge
+    // left — a complete hourly row overwritten by a partial one. Such a
+    // batch (a collector flushing days of buffer) is dropped, and the
+    // collector hears why instead of retrying it forever.
+    let floor = stamp(raw_retention_floor(chrono::Utc::now()));
+    if prepared.window_start.as_str() < floor.as_str() {
+        return Ok(IngestResult {
+            accepted: 0,
+            skipped: prepared.rows.len() + prepared.skipped,
+            skip_reason: Some(format!(
+                "window {} is older than TMJLENS_RETENTION_RAW ({}h, floor {floor}); dropped rather than \
+                 rebuilding an hourly row from a partly purged day",
+                prepared.window_start,
+                retention_raw().num_hours()
+            )),
+        });
+    }
 
     // One transaction per batch. tmjLite binds a shared-handle transaction to
     // the calling thread, and this whole function runs on one spawn_blocking
@@ -161,12 +190,14 @@ pub fn apply(db: &Db, prepared: PreparedBatch) -> Result<IngestResult, String> {
         }
     };
     // Retention runs in its own commit — a purge that touches thousands of
-    // rows should not sit inside the batch's transaction.
-    purge_if_due(db)?;
+    // rows should not sit inside the batch's transaction. A failed purge is
+    // recorded and retried soon; it never makes the collector resend a batch
+    // that already landed.
+    purge_if_due(db);
     let skip_reason = if prepared.skipped > 0 {
         Some(format!(
-            "{} sample(s) had no resolvable workload owner (pod gone, or no controller)",
-            prepared.skipped
+            "{} sample(s) had no resolvable workload owner (pod gone, not scheduled on node {}, or no controller)",
+            prepared.skipped, prepared.node
         ))
     } else {
         None
@@ -366,16 +397,20 @@ pub fn align_5m(raw: &str) -> String {
         .unwrap_or_else(|| raw.to_string())
 }
 
+fn floor_hour(t: chrono::DateTime<chrono::Utc>) -> chrono::DateTime<chrono::Utc> {
+    use chrono::Timelike;
+    t.with_minute(0)
+        .and_then(|t| t.with_second(0))
+        .and_then(|t| t.with_nanosecond(0))
+        .unwrap_or(t)
+}
+
 fn merge_up(db: &Db, owner: &WorkloadKey, container: &str, window_start: &str) -> Result<(), String> {
     use chrono::Timelike;
     let ts = chrono::DateTime::parse_from_rfc3339(window_start)
         .map(|t| t.with_timezone(&chrono::Utc))
         .unwrap_or_else(|_| chrono::Utc::now());
-    let hour = ts
-        .with_minute(0)
-        .and_then(|t| t.with_second(0))
-        .and_then(|t| t.with_nanosecond(0))
-        .unwrap_or(ts);
+    let hour = floor_hour(ts);
     let day = hour.with_hour(0).unwrap_or(hour);
     compact_into(db, "rs_rollup_5m", "rs_rollup_1h", owner, container,
         &stamp(hour), &stamp(hour + chrono::Duration::hours(1)))?;
@@ -560,43 +595,73 @@ fn parse_retention_env(name: &str, default: chrono::Duration) -> chrono::Duratio
 
 /// Retention deletes scan whole tables (window_start is not the leading
 /// index column). Once an hour is plenty for a 48h/90d policy; once per
-/// batch — twelve times a minute under load — was most of the CPU.
+/// batch — twelve times a minute under load — was most of the CPU. A run
+/// that FAILS is retried in five minutes and shown in the Admin popup: a
+/// purge that silently never happens is how a 1Gi volume fills up.
 const PURGE_EVERY: std::time::Duration = std::time::Duration::from_secs(60 * 60);
-static LAST_PURGE: std::sync::Mutex<Option<std::time::Instant>> = std::sync::Mutex::new(None);
+const PURGE_RETRY: std::time::Duration = std::time::Duration::from_secs(5 * 60);
 
-pub fn purge_due(last: Option<std::time::Instant>, now: std::time::Instant) -> bool {
-    match last {
-        None => true,
-        Some(at) => now.duration_since(at) >= PURGE_EVERY,
+#[derive(Default)]
+struct PurgeState {
+    last_attempt: Option<std::time::Instant>,
+    last_error: Option<String>,
+    next_due: Option<std::time::Instant>,
+}
+
+static PURGE_STATE: std::sync::Mutex<PurgeState> = std::sync::Mutex::new(PurgeState {
+    last_attempt: None,
+    last_error: None,
+    next_due: None,
+});
+
+pub fn purge_due(next_due: Option<std::time::Instant>, now: std::time::Instant) -> bool {
+    next_due.map_or(true, |due| now >= due)
+}
+
+fn record_purge(state: &mut PurgeState, now: std::time::Instant, outcome: Result<(), String>) {
+    state.last_attempt = Some(now);
+    match outcome {
+        Ok(()) => {
+            state.last_error = None;
+            state.next_due = Some(now + PURGE_EVERY);
+        }
+        Err(error) => {
+            eprintln!("retention purge failed: {error} — retrying in {}s", PURGE_RETRY.as_secs());
+            state.last_error = Some(error);
+            state.next_due = Some(now + PURGE_RETRY);
+        }
     }
 }
 
-fn purge_if_due(db: &Db) -> Result<(), String> {
+fn purge_if_due(db: &Db) {
     let now = std::time::Instant::now();
-    let mut last = LAST_PURGE.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
-    if !purge_due(*last, now) {
-        return Ok(());
+    {
+        let state = PURGE_STATE.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+        if !purge_due(state.next_due, now) {
+            return;
+        }
     }
-    *last = Some(now);
-    drop(last);
-    purge(db)
+    let outcome = purge(db);
+    let mut state = PURGE_STATE.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+    record_purge(&mut state, now, outcome);
+}
+
+/// The oldest hour the 5m tier keeps, aligned to the hour so every hour at
+/// or after it is complete. Purge deletes below it; apply drops below it.
+pub fn raw_retention_floor(now: chrono::DateTime<chrono::Utc>) -> chrono::DateTime<chrono::Utc> {
+    floor_hour(now - retention_raw())
 }
 
 pub fn purge(db: &Db) -> Result<(), String> {
-    let raw_cut = (chrono::Utc::now() - retention_raw()).to_rfc3339();
-    let roll_cut = (chrono::Utc::now() - retention_rollup()).to_rfc3339();
-    let _ = db.exec(&format!(
-        "DELETE FROM rs_rollup_5m WHERE window_start < {};",
-        sql_str(&raw_cut)?
-    ));
-    let _ = db.exec(&format!(
-        "DELETE FROM rs_rollup_1h WHERE window_start < {};",
-        sql_str(&roll_cut)?
-    ));
-    let _ = db.exec(&format!(
-        "DELETE FROM rs_rollup_1d WHERE window_start < {};",
-        sql_str(&roll_cut)?
-    ));
+    use chrono::Timelike;
+    let now = chrono::Utc::now();
+    let raw_cut = stamp(raw_retention_floor(now));
+    let roll_hour = floor_hour(now - retention_rollup());
+    let roll_cut_1h = stamp(roll_hour);
+    let roll_cut_1d = stamp(roll_hour.with_hour(0).unwrap_or(roll_hour));
+    db.exec(&format!("DELETE FROM rs_rollup_5m WHERE window_start < {};", sql_str(&raw_cut)?))?;
+    db.exec(&format!("DELETE FROM rs_rollup_1h WHERE window_start < {};", sql_str(&roll_cut_1h)?))?;
+    db.exec(&format!("DELETE FROM rs_rollup_1d WHERE window_start < {};", sql_str(&roll_cut_1d)?))?;
     Ok(())
 }
 
@@ -627,6 +692,34 @@ pub struct CollectedData {
     pub retention_raw: String,
     pub retention_rollup: String,
     pub last_purge_minutes_ago: Option<u64>,
+    /// Why the last retention run failed, if it did — shown, not swallowed.
+    pub last_purge_error: Option<String>,
+    /// The web process's resident memory now and at its peak (Linux /proc;
+    /// None elsewhere). The two apart tell a transient peak from a leak.
+    pub process_rss_bytes: Option<u64>,
+    pub process_peak_rss_bytes: Option<u64>,
+    /// What tmjLite holds in RAM for the tables this server wrote. None while
+    /// another thread is inside a transaction — not a zero.
+    pub engine_cache_bytes: Option<u64>,
+    pub engine_cache_rows: Option<u64>,
+}
+
+/// VmRSS and VmHWM from a /proc/<pid>/status body, in bytes.
+fn parse_proc_status(text: &str) -> (Option<u64>, Option<u64>) {
+    let kib = |key: &str| -> Option<u64> {
+        text.lines()
+            .find(|line| line.starts_with(key))
+            .and_then(|line| line.split_whitespace().nth(1))
+            .and_then(|n| n.parse::<u64>().ok())
+            .map(|k| k * 1024)
+    };
+    (kib("VmRSS:"), kib("VmHWM:"))
+}
+
+fn process_memory() -> (Option<u64>, Option<u64>) {
+    std::fs::read_to_string("/proc/self/status")
+        .map(|text| parse_proc_status(&text))
+        .unwrap_or((None, None))
 }
 
 #[derive(Serialize, Clone, Debug)]
@@ -686,8 +779,11 @@ pub fn collected_data(db: &Db) -> Result<CollectedData, String> {
     let wal_bytes = [format!("{database_path}.pwal"), database_path.replace(".tmjp", ".pwal")]
         .iter()
         .find_map(|candidate| std::fs::metadata(candidate).ok().map(|m| m.len()));
-    let last = LAST_PURGE.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
-    let last_purge_minutes_ago = last.map(|at| at.elapsed().as_secs() / 60);
+    let engine = db.memory_stats();
+    let state = PURGE_STATE.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+    let last_purge_minutes_ago = state.last_attempt.map(|at| at.elapsed().as_secs() / 60);
+    let last_purge_error = state.last_error.clone();
+    drop(state);
     Ok(CollectedData {
         tables,
         collector_nodes: count_rows(db, "collector_nodes")?,
@@ -697,6 +793,11 @@ pub fn collected_data(db: &Db) -> Result<CollectedData, String> {
         retention_raw: format!("{}h", retention_raw().num_hours()),
         retention_rollup: format!("{}d", retention_rollup().num_days()),
         last_purge_minutes_ago,
+        last_purge_error,
+        process_rss_bytes: process_memory().0,
+        process_peak_rss_bytes: process_memory().1,
+        engine_cache_bytes: engine.as_ref().map(|s| s.total()),
+        engine_cache_rows: engine.as_ref().map(|s| s.rows),
     })
 }
 
@@ -718,9 +819,11 @@ pub fn purge_collected(db: &Db, mode: &str) -> Result<PurgeOutcome, String> {
             db.exec(&format!("DELETE FROM {table};"))?;
         }
     } else {
-        purge(db)?;
-        let mut last = LAST_PURGE.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
-        *last = Some(std::time::Instant::now());
+        let outcome = purge(db);
+        let mut state = PURGE_STATE.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+        record_purge(&mut state, std::time::Instant::now(), outcome.clone());
+        drop(state);
+        outcome?;
     }
     let mut deleted = Vec::with_capacity(tables.len());
     for (index, table) in tables.iter().enumerate() {
@@ -914,11 +1017,85 @@ mod tests {
     }
 
     #[test]
-    fn retention_runs_on_the_first_batch_then_at_most_hourly() {
+    fn retention_runs_on_the_first_batch_then_hourly_and_retries_a_failure_in_five_minutes() {
         let t0 = std::time::Instant::now();
-        assert!(purge_due(None, t0));
-        assert!(!purge_due(Some(t0), t0 + std::time::Duration::from_secs(59 * 60)));
-        assert!(purge_due(Some(t0), t0 + std::time::Duration::from_secs(61 * 60)));
+        let mut state = PurgeState::default();
+        assert!(purge_due(state.next_due, t0), "nothing scheduled yet: run now");
+
+        record_purge(&mut state, t0, Ok(()));
+        assert!(state.last_error.is_none());
+        assert!(!purge_due(state.next_due, t0 + std::time::Duration::from_secs(59 * 60)));
+        assert!(purge_due(state.next_due, t0 + std::time::Duration::from_secs(61 * 60)));
+
+        let t1 = t0 + std::time::Duration::from_secs(61 * 60);
+        record_purge(&mut state, t1, Err("disk is full".into()));
+        assert_eq!(state.last_error.as_deref(), Some("disk is full"), "the failure is kept, not swallowed");
+        assert!(!purge_due(state.next_due, t1 + std::time::Duration::from_secs(4 * 60)));
+        assert!(purge_due(state.next_due, t1 + std::time::Duration::from_secs(6 * 60)), "retry in five, not sixty");
+    }
+
+    /// `let _ = db.exec(DELETE …)` once hid every purge failure. Now the
+    /// error comes back — proven by taking a table away.
+    #[test]
+    fn a_failing_purge_reports_instead_of_pretending() {
+        let db = scratch_db("purge-fails");
+        assert!(purge(&db).is_ok());
+        db.exec("DROP TABLE rs_rollup_1d;").expect("drop");
+        let error = purge(&db).expect_err("deleting from a missing table must fail");
+        assert!(error.to_lowercase().contains("rs_rollup_1d"), "names the table: {error}");
+    }
+
+    /// A collector flushing days of buffer sends windows older than the raw
+    /// retention. Compacting those would rebuild complete hourly rows from
+    /// the few 5m rows the purge left. They are dropped, with the reason.
+    #[test]
+    fn a_batch_older_than_the_retention_floor_is_dropped_with_a_reason() {
+        let db = scratch_db("stale-batch");
+        let prepared = PreparedBatch {
+            node: "node-a".into(),
+            window_start: "2026-01-01T00:00:00+00:00".into(),
+            rows: vec![(
+                WorkloadKey { namespace: "shop".into(), kind: "Deployment".into(), name: "checkout".into() },
+                IngestSample {
+                    namespace: "shop".into(),
+                    pod: "checkout-1".into(),
+                    container: "api".into(),
+                    cpu: Histogram::default(),
+                    memory: Histogram::default(),
+                    memory_max: 0.0,
+                    samples: 1,
+                    throttle_ratio: None,
+                },
+                ContainerRes { cpu_request: None, cpu_limit: None, mem_request: None, mem_limit: None, oom: false },
+            )],
+            skipped: 0,
+        };
+        let result = apply(&db, prepared).expect("apply answers, it does not fail");
+        assert_eq!((result.accepted, result.skipped), (0, 1));
+        assert!(result.skip_reason.as_deref().unwrap_or("").contains("older than TMJLENS_RETENTION_RAW"));
+        assert_eq!(count_rows(&db, "rs_rollup_5m").unwrap(), 0, "nothing was written");
+        assert_eq!(count_rows(&db, "collector_nodes").unwrap(), 0, "a dropped batch is not a heartbeat");
+    }
+
+    #[test]
+    fn the_pod_list_is_scoped_to_the_collectors_node() {
+        let params = node_scope("ip-10-42-7-11.sa-east-1.compute.internal");
+        assert_eq!(params.field_selector.as_deref(), Some("spec.nodeName=ip-10-42-7-11.sa-east-1.compute.internal"));
+        assert!(params.label_selector.is_none());
+    }
+
+    #[test]
+    fn process_memory_is_read_from_proc_status_or_honestly_absent() {
+        let text = "Name:\ttmjlens\nVmPeak:\t 3000000 kB\nVmSize:\t 2500000 kB\nVmHWM:\t 2191360 kB\nVmRSS:\t 2165760 kB\nThreads:\t3\n";
+        assert_eq!(parse_proc_status(text), (Some(2165760 * 1024), Some(2191360 * 1024)));
+        assert_eq!(parse_proc_status("Name:\tx\n"), (None, None), "missing lines are None, never zero");
+    }
+
+    #[test]
+    fn the_retention_floor_is_a_whole_hour_in_the_fixed_stamp() {
+        let now = chrono::DateTime::parse_from_rfc3339("2026-10-15T17:42:09.5+00:00").unwrap().with_timezone(&chrono::Utc);
+        let floor = raw_retention_floor(now);
+        assert_eq!(stamp(floor), "2026-10-13T17:00:00+00:00", "48h back, minutes and seconds zeroed");
     }
 
     /// Production showed P95 and peak but "—" for every request: the 1h/1d

@@ -4,7 +4,7 @@ import { ArrowDown, ArrowUp, Database, RefreshCw, ShieldAlert, SlidersHorizontal
 import { CollectedDataPopup } from './CollectedDataPopup';
 import { DiffReview } from '../DiffReview';
 import { StatTile } from '../cluster/charts';
-import { formatBytes, formatCpu } from '../../lib/format';
+import { formatBytes, formatCpu, formatMemoryPair, formatMemoryQuantity } from '../../lib/format';
 import {
   confidenceLabel, workloadKey,
   DETAIL_TABS, namespacesOf, resourcesInputFrom, resourcesInputToRequest, sortRows,
@@ -285,7 +285,7 @@ export function RightsizingPage({
                     </div>
                   </td>
                   <td className="mono">{formatCpu(row.cpu_request_milli)} / {formatCpu(row.cpu_p95_milli)}</td>
-                  <td className="mono">{formatBytes(row.mem_request_bytes)} / {formatBytes(row.mem_max_bytes)}</td>
+                  <td className="mono">{formatMemoryPair(row.mem_request_bytes, row.mem_max_bytes)}</td>
                   <td>
                     {row.waste_usd_month != null
                       ? `$${row.waste_usd_month.toFixed(0)}/mo`
@@ -354,7 +354,7 @@ export function RightsizingPage({
             </div>
             <div>
               <span>Recommended memory</span>
-              <strong>{formatBytes(detail.recommendation.mem_request_bytes)}</strong>
+              <strong>{formatMemoryQuantity(detail.recommendation.mem_request_bytes)}</strong>
             </div>
           </div>
         </section>
@@ -474,7 +474,7 @@ export function RightsizingPage({
             </div>
             <div>
               <span>Current memory req / limit</span>
-              <strong>{formatBytes(resources.current.mem_request_bytes)} / {formatBytes(resources.current.mem_limit_bytes)}</strong>
+              <strong>{formatMemoryQuantity(resources.current.mem_request_bytes)} / {formatMemoryQuantity(resources.current.mem_limit_bytes)}</strong>
             </div>
             <div>
               <span>Recommended CPU request</span>
@@ -482,7 +482,7 @@ export function RightsizingPage({
             </div>
             <div>
               <span>Recommended memory request</span>
-              <strong>{formatBytes(resources.recommended.mem_request_bytes)}</strong>
+              <strong>{formatMemoryQuantity(resources.recommended.mem_request_bytes)}</strong>
             </div>
           </div>
           <div className="rs-form">

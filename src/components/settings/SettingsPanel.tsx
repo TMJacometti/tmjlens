@@ -1,9 +1,10 @@
 import { useEffect, useState } from 'react';
 import { createPortal } from 'react-dom';
 import { invoke } from '../../lib/transport';
-import { CheckCircle2, Info, Layers3, ShieldAlert, Sparkles, X } from 'lucide-react';
+import { CheckCircle2, Database, Info, Layers3, ShieldAlert, Sparkles, X } from 'lucide-react';
 import { version as APP_VERSION } from '../../package.json';
 import { WHATS_NEW } from './whats-new';
+import { DATABASE_ENGINE } from './database-engine';
 import { EnvironmentBadge } from './EnvironmentBadge';
 import { ENVIRONMENTS, type AppSettings, type EnvironmentId, type KubeconfigView } from '../../types/settings';
 import './settings.css';
@@ -210,6 +211,10 @@ function AboutTab() {
           <dt>Source</dt>
           <dd className="mono">github.com/TMJacometti/tmjlens</dd>
         </div>
+        <div>
+          <dt>Database</dt>
+          <dd>{DATABASE_ENGINE.name} {DATABASE_ENGINE.version} · {DATABASE_ENGINE.driver}</dd>
+        </div>
       </dl>
 
       <div className="settings-notice">
@@ -220,6 +225,20 @@ function AboutTab() {
             It stores none of them. You sign in with your company's identity provider; what you may do here is
             decided by the profiles an admin granted you, every sensitive action is recorded under your own name,
             and the instance's ServiceAccount is capped by Kubernetes RBAC.
+          </p>
+        </div>
+      </div>
+
+      <div className="settings-notice">
+        <Database size={15} aria-hidden />
+        <div>
+          <strong>Where your data lives</strong>
+          <p>
+            Users, profiles, the audit log and the Rightsizing history live in one {DATABASE_ENGINE.name} file on this
+            install's own volume — no external database, nothing leaves the cluster. The server talks to it through
+            the official Rust driver, the {DATABASE_ENGINE.driver.split(' ')[0]} crate, which ships the engine itself;
+            reads stream one row at a time, and the tables it writes stay in memory only up to a budget
+            (database.memoryBudgetMiB in the chart) before the engine hands the memory back.
           </p>
         </div>
       </div>

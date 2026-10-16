@@ -49,6 +49,11 @@ test.describe('rightsizing', () => {
     await expect(page.locator('tbody')).not.toContainText('ledger-db');
   });
 
+  test('memory in the table reads like the manifest, measurement in the same unit', async ({ page }) => {
+    await expect(page.getByRole('row').filter({ hasText: 'checkout' })).toContainText('512Mi / 120Mi');
+    await expect(page.getByRole('row').filter({ hasText: 'ledger-db' })).toContainText('4Gi / 1.5Gi');
+  });
+
   test('a workload that left the cluster is marked as history', async ({ page }) => {
     await expect(page.getByRole('row').filter({ hasText: 'ledger-db' })).toContainText('no longer in the cluster');
   });
@@ -93,7 +98,9 @@ test.describe('resource editor', () => {
   test('current and recommended are both on screen, so the change is legible', async ({ page }) => {
     const panel = page.locator('.rs-resources');
     await expect(panel).toContainText('500m / 1.0 cores');
-    await expect(panel).toContainText('512 MiB / 1.0 GiB');
+    // As kubectl prints it: the manifest says 512Mi and 1Gi, so does the screen.
+    await expect(panel).toContainText('512Mi / 1Gi');
+    await expect(panel).toContainText('144Mi');
     await expect(panel).toContainText('2 replica(s) restart');
   });
 
@@ -135,12 +142,19 @@ test.describe('collected data', () => {
     await expect(dialog).toContainText('WAL 488 KiB');
     await expect(dialog).toContainText('48h raw · 90d rollups');
     await expect(dialog).toContainText('41 min ago');
+    // A failed retention run is said out loud, never a quiet "41 min ago".
+    await expect(dialog).toContainText('The last retention run failed');
+    await expect(dialog).toContainText('no space left on device');
+    await expect(dialog).toContainText('Web process memory');
+    await expect(dialog).toContainText('182 MiB · 41,200 rows');
+    await expect(dialog).toContainText(/2\.\d+ GiB now · peak 2\.\d+ GiB/);
   });
 
   test('retention runs on one click; deleting everything takes a second one', async ({ page }) => {
     const dialog = page.getByRole('dialog', { name: 'Collected data' });
     await dialog.getByRole('button', { name: 'Run retention now' }).click();
     await expect(dialog).toContainText('Deleted 1,200 row(s) past the retention cut');
+    await expect(dialog).not.toContainText('The last retention run failed');
     await expect(dialog.getByRole('row').filter({ hasText: '5-minute windows' })).toContainText('37,200');
 
     await expect(dialog.getByRole('button', { name: 'Yes, delete everything' })).toHaveCount(0);

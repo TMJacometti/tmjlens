@@ -97,7 +97,31 @@ export function CollectedDataPopup({ load, purge, onPurged, onClose }: Props) {
                   <span>Last retention run</span>
                   <strong>{data.last_purge_minutes_ago == null ? 'not yet in this process' : `${data.last_purge_minutes_ago} min ago`}</strong>
                 </div>
+                <div>
+                  <span>Web process memory</span>
+                  <strong>
+                    {data.process_rss_bytes == null
+                      ? 'not readable on this platform'
+                      : `${formatBytes(data.process_rss_bytes)} now · peak ${formatBytes(data.process_peak_rss_bytes)}`}
+                  </strong>
+                  <small>Peak far above now means a transient spike the allocator kept; both climbing together means a leak.</small>
+                </div>
+                <div>
+                  <span>Database cache in RAM</span>
+                  <strong>
+                    {data.engine_cache_bytes == null
+                      ? 'busy — a write is in progress'
+                      : `${formatBytes(data.engine_cache_bytes)} · ${count(data.engine_cache_rows ?? 0)} rows`}
+                  </strong>
+                  <small>Tables the server wrote stay resident up to the budget, then the engine gives the memory back.</small>
+                </div>
               </div>
+
+              {data.last_purge_error && (
+                <div className="viz-callout viz-callout-critical">
+                  <p>The last retention run failed and will be retried in five minutes: {data.last_purge_error}</p>
+                </div>
+              )}
 
               {outcome && (
                 <div className="viz-callout viz-callout-good">

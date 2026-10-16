@@ -1,5 +1,6 @@
 import { readFileSync } from 'node:fs';
 import { describe, expect, it } from 'vitest';
+import { DATABASE_ENGINE } from './components/settings/database-engine';
 
 /**
  * v0.6.3 never built: Cargo.toml was bumped, Cargo.lock was not, and the
@@ -22,5 +23,11 @@ describe('release version is one number everywhere', () => {
 
   it('Cargo.lock was regenerated after the bump (cargo build --locked depends on it)', () => {
     expect(lock).toBe(cargoToml);
+  });
+
+  it('About names the tmjLite engine Cargo.lock actually pins', () => {
+    const engine = /name = "tmjlite"\r?\nversion = "([^"]+)"/.exec(read('../src-tauri/Cargo.lock'))?.[1];
+    expect(engine).toBeDefined();
+    expect(DATABASE_ENGINE.version).toBe(engine);
   });
 });

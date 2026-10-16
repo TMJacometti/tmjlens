@@ -1,6 +1,6 @@
 [package]
 name = "tmjlens"
-version = "0.7.3"
+version = "0.7.4"
 edition = "2021"
 
 [dependencies]
@@ -20,4 +20,4 @@ thiserror = "2"
 base64 = "0.22"
 flate2 = "1"
 futures = "0.3"
-libloading = "0.8"
+tmjlite = "=0.3.5"

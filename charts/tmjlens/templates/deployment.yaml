@@ -58,6 +58,8 @@ spec:
               value: /app/dist
             - name: TMJLENS_DB_PATH
               value: /var/lib/tmjlens/tmjlens.tmjp
+            - name: TMJLENS_DB_MEMORY_BUDGET
+              value: {{ .Values.database.memoryBudgetMiB | toString | quote }}
             - name: TMJLENS_ENVIRONMENT
               value: {{ include "tmjlens.environmentType" . | quote }}
             - name: TMJLENS_AUDIT

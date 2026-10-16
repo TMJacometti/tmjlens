@@ -85,6 +85,14 @@ export type CollectedData = {
   retention_raw: string;
   retention_rollup: string;
   last_purge_minutes_ago: number | null;
+  /** Why the last retention run failed, if it did. */
+  last_purge_error: string | null;
+  /** Resident memory of the web process now and at its peak; null off Linux. */
+  process_rss_bytes: number | null;
+  process_peak_rss_bytes: number | null;
+  /** tmjLite's in-RAM cache of the tables the server wrote; null while busy. */
+  engine_cache_bytes: number | null;
+  engine_cache_rows: number | null;
 };
 
 export type PurgeMode = 'retention' | 'all';

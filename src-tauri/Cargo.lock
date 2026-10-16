@@ -1988,7 +1988,7 @@ checksum = "1f3ccbac311fea05f86f61904b462b55fb3df8837a366dfc601a0161d0532f20"
 
 [[package]]
 name = "tmjlens"
-version = "0.7.3"
+version = "0.7.4"
 dependencies = [
  "axum",
  "base64",
@@ -1998,15 +1998,25 @@ dependencies = [
  "http",
  "k8s-openapi",
  "kube",
- "libloading",
  "rand 0.8.7",
  "reqwest",
  "serde",
  "serde_json",
  "serde_yaml",
  "thiserror 2.0.20",
+ "tmjlite",
  "tokio",
  "tower-http",
+]
+
+[[package]]
+name = "tmjlite"
+version = "0.3.5"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "dbc8189459f3f1eb4e21263feef7a5f0d5ef254470dacd61d41c82cefa5faf8a"
+dependencies = [
+ "libloading",
+ "serde_json",
 ]
 
 [[package]]
