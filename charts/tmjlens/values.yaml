@@ -57,6 +57,12 @@ ingress:
   annotations: {}
   tls: []
 
+# Ceiling (MiB) for tmjLite's in-RAM cache of the tables the server writes
+# — the Rightsizing rollups, all day long. Above it the engine drops the cache
+# after a durable write and returns the memory to the OS. 0 turns it off.
+database:
+  memoryBudgetMiB: 256
+
 persistence:
   enabled: true
   size: 10Gi

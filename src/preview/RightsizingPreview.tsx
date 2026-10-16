@@ -74,6 +74,8 @@ export function RightsizingPreview() {
     last_purge_error: 'DELETE FROM rs_rollup_1d: no space left on device',
     process_rss_bytes: 2115 * 1024 * 1024,
     process_peak_rss_bytes: 2140 * 1024 * 1024,
+    engine_cache_bytes: 182 * 1024 * 1024,
+    engine_cache_rows: 41200,
   });
   const purgeCollected = async (mode: PurgeMode) => {
     const deleted = collected.tables.map((t) => ({ table: t.table, rows: mode === 'all' ? t.rows : t.table === 'rs_rollup_5m' ? 1200 : 0 }));

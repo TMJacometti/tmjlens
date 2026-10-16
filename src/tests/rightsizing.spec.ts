@@ -146,6 +146,7 @@ test.describe('collected data', () => {
     await expect(dialog).toContainText('The last retention run failed');
     await expect(dialog).toContainText('no space left on device');
     await expect(dialog).toContainText('Web process memory');
+    await expect(dialog).toContainText('182 MiB · 41,200 rows');
     await expect(dialog).toContainText(/2\.\d+ GiB now · peak 2\.\d+ GiB/);
   });
 

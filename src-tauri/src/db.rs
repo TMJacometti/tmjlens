@@ -1,124 +1,86 @@
-//! tmjLite behind a thread-safe handle: users, profiles, permissions and the
-//! audit log live in one `.tmjp` file on the pod's volume.
+//! tmjLite behind a thread-safe handle: users, profiles, permissions, the
+//! audit log and the Rightsizing rollups live in one `.tmjp` file on the
+//! pod's volume.
 //!
-//! The engine is loaded at runtime (`tmjlite_ffi.dll` / `libtmjlite_ffi.so`)
-//! rather than linked, so the same source builds on the Windows dev box and in
-//! the Linux container without platform link plumbing. Everything goes through
-//! `tmjlite_open_shared`: SELECTs run on MVCC snapshots in parallel, writes
-//! serialize inside the engine and are durable when the call returns, and each
-//! statement auto-commits — which is exactly the shape an HTTP server wants.
+//! The engine comes from the `tmjlite` crate, which ships the prebuilt native
+//! library and loads it at runtime. Everything goes through its
+//! `SharedConnection`: SELECTs run on MVCC snapshots in parallel, writes
+//! serialize inside the engine and are durable when the call returns, and
+//! BEGIN/COMMIT bind to the calling thread.
 //!
-//! tmjLite has no bind parameters over FFI: every value reaches SQL as a
-//! quoted literal. Nothing may interpolate a raw string into SQL — it must go
-//! through [`sql_str`], which doubles quotes the way the engine expects.
+//! This module keeps the narrow facade the rest of the server was written
+//! against — `exec`, `query`, `fold`, cells as text — so the engine can move
+//! underneath without touching a hundred call sites.
+//!
+//! Values still reach SQL as quoted literals through [`sql_str`]; nothing may
+//! interpolate a raw string into a statement.
 
-use std::ffi::{c_char, c_int, CStr, CString};
-use std::path::{Path, PathBuf};
+use std::borrow::Cow;
+use std::path::Path;
 
-type OpenSharedFn = unsafe extern "C" fn(*const c_char) -> *mut std::ffi::c_void;
-type CloseSharedFn = unsafe extern "C" fn(*mut std::ffi::c_void);
-type ExecSharedFn = unsafe extern "C" fn(*const std::ffi::c_void, *const c_char) -> c_int;
-type QuerySharedFn =
-    unsafe extern "C" fn(*const std::ffi::c_void, *const c_char) -> *mut std::ffi::c_void;
-type ErrmsgSharedFn = unsafe extern "C" fn(*const std::ffi::c_void) -> *const c_char;
-type ResultCountFn = unsafe extern "C" fn(*const std::ffi::c_void) -> c_int;
-type ResultNameFn = unsafe extern "C" fn(*const std::ffi::c_void, c_int) -> *const c_char;
-type ResultValueFn = unsafe extern "C" fn(*const std::ffi::c_void, c_int, c_int) -> *const c_char;
-type ResultFreeFn = unsafe extern "C" fn(*mut std::ffi::c_void);
-type VersionFn = unsafe extern "C" fn() -> *const c_char;
-type CursorOpenFn =
-    unsafe extern "C" fn(*const std::ffi::c_void, *const c_char) -> *mut std::ffi::c_void;
-type CursorStepFn = unsafe extern "C" fn(*mut std::ffi::c_void) -> c_int;
-type CursorTextFn = unsafe extern "C" fn(*const std::ffi::c_void, c_int) -> *const c_char;
-type CursorIsNullFn = unsafe extern "C" fn(*const std::ffi::c_void, c_int) -> c_int;
-type CursorI64Fn = unsafe extern "C" fn(*const std::ffi::c_void, c_int, *mut i64) -> c_int;
-type CursorF64Fn = unsafe extern "C" fn(*const std::ffi::c_void, c_int, *mut f64) -> c_int;
-type CursorBoolFn = unsafe extern "C" fn(*const std::ffi::c_void, c_int, *mut c_int) -> c_int;
-type CursorIsStreamingFn = unsafe extern "C" fn(*const std::ffi::c_void) -> c_int;
-type CursorErrmsgFn = unsafe extern "C" fn(*const std::ffi::c_void) -> *const c_char;
-type CursorCloseFn = unsafe extern "C" fn(*mut std::ffi::c_void);
-
-struct Api {
-    open_shared: OpenSharedFn,
-    close_shared: CloseSharedFn,
-    exec_shared: ExecSharedFn,
-    query_shared: QuerySharedFn,
-    errmsg_shared: ErrmsgSharedFn,
-    column_count: ResultCountFn,
-    column_name: ResultNameFn,
-    row_count: ResultCountFn,
-    value: ResultValueFn,
-    result_free: ResultFreeFn,
-    version: VersionFn,
-    cursor_open: CursorOpenFn,
-    cursor_step: CursorStepFn,
-    cursor_text: CursorTextFn,
-    cursor_is_null: CursorIsNullFn,
-    cursor_i64: CursorI64Fn,
-    cursor_f64: CursorF64Fn,
-    cursor_bool: CursorBoolFn,
-    cursor_is_streaming: CursorIsStreamingFn,
-    cursor_errmsg: CursorErrmsgFn,
-    cursor_close: CursorCloseFn,
+/// Cells come back from the driver typed (it parses the engine's text).
+/// The facade hands them on as text, which is what every caller was written
+/// against; numbers and booleans print the way the engine stored them.
+fn cell_text(value: &tmjlite::Value) -> Option<Cow<'_, str>> {
+    match value {
+        tmjlite::Value::Null => None,
+        tmjlite::Value::Text(s) => Some(Cow::Borrowed(s.as_str())),
+        other => Some(Cow::Owned(other.to_string())),
+    }
 }
 
-/// The current row of a streaming cursor. Everything here is borrowed from
-/// the engine and dies with the step — copy what you keep.
+fn err(e: tmjlite::Error) -> String {
+    e.to_string()
+}
+
+/// The current row of a streaming cursor. Copy what you keep: the row is
+/// dropped as soon as the fold step returns.
 pub struct Row<'c> {
-    api: &'c Api,
-    cursor: *const std::ffi::c_void,
+    inner: &'c tmjlite::Row,
+    cells: Vec<Option<Cow<'c, str>>>,
 }
 
-impl Row<'_> {
-    /// `None` for SQL NULL (the engine's own flag, not the "NULL" string).
+impl<'c> Row<'c> {
+    fn new(inner: &'c tmjlite::Row) -> Self {
+        Row { inner, cells: inner.values().iter().map(cell_text).collect() }
+    }
+
+    /// `None` for SQL NULL.
     pub fn text(&self, col: usize) -> Option<&str> {
-        unsafe {
-            if (self.api.cursor_is_null)(self.cursor, col as c_int) != 0 {
-                return None;
-            }
-            let ptr = (self.api.cursor_text)(self.cursor, col as c_int);
-            if ptr.is_null() {
-                return None;
-            }
-            CStr::from_ptr(ptr).to_str().ok()
-        }
+        self.cells.get(col).and_then(|c| c.as_deref())
     }
 
     pub fn i64(&self, col: usize) -> Option<i64> {
-        let mut out = 0i64;
-        let rc = unsafe { (self.api.cursor_i64)(self.cursor, col as c_int, &mut out) };
-        (rc == 0).then_some(out)
+        self.inner.get_int(col)
     }
 
     pub fn f64(&self, col: usize) -> Option<f64> {
-        let mut out = 0f64;
-        let rc = unsafe { (self.api.cursor_f64)(self.cursor, col as c_int, &mut out) };
-        (rc == 0).then_some(out)
+        self.inner.get_float(col)
     }
 
     pub fn bool(&self, col: usize) -> Option<bool> {
-        let mut out: c_int = 0;
-        let rc = unsafe { (self.api.cursor_bool)(self.cursor, col as c_int, &mut out) };
-        (rc == 0).then_some(out != 0)
+        self.inner.get_bool(col)
     }
+}
+
+/// Default ceiling for the engine's in-RAM table cache. The shared handle
+/// keeps every table it WROTE resident — the rollups, written all day by the
+/// collectors — and without a ceiling that was the web pod's 2 GiB that never
+/// came back. Above the budget, after a durable write, the engine drops the
+/// cache and returns the memory to the OS.
+const DEFAULT_MEMORY_BUDGET: u64 = 256 * 1024 * 1024;
+
+/// TMJLENS_DB_MEMORY_BUDGET in MiB; 0 turns the ceiling off.
+fn memory_budget() -> u64 {
+    std::env::var("TMJLENS_DB_MEMORY_BUDGET")
+        .ok()
+        .and_then(|raw| raw.trim().parse::<u64>().ok())
+        .map(|mib| mib * 1024 * 1024)
+        .unwrap_or(DEFAULT_MEMORY_BUDGET)
 }
 
 pub struct Db {
-    api: Api,
-    handle: *mut std::ffi::c_void,
-    // Dropped last (field order): the fn pointers in `api` live inside it.
-    _lib: libloading::Library,
-}
-
-// The header's contract for the shared handle: one handle, N threads, reads on
-// parallel snapshots, writes serialized internally. errmsg is thread-local.
-unsafe impl Send for Db {}
-unsafe impl Sync for Db {}
-
-impl Drop for Db {
-    fn drop(&mut self) {
-        unsafe { (self.api.close_shared)(self.handle) };
-    }
+    conn: tmjlite::SharedConnection,
 }
 
 /// Where the server keeps the database: TMJLENS_DB_PATH, or the dev default.
@@ -199,190 +161,83 @@ const MIGRATIONS: &[(i64, &[&str])] = &[
     ),
 ];
 
-/// The engine library ships in-repo under tools/tmjlite. Resolution order:
-/// explicit env override, next to the executable, the working directory, then
-/// the repo layout (also two levels up, which is where `cargo test` runs from).
-fn library_path() -> PathBuf {
-    if let Ok(path) = std::env::var("TMJLITE_FFI_PATH") {
-        return PathBuf::from(path);
-    }
-    let name = if cfg!(target_os = "windows") {
-        "tmjlite_ffi.dll"
-    } else if cfg!(target_os = "macos") {
-        "libtmjlite_ffi.dylib"
-    } else {
-        "libtmjlite_ffi.so"
-    };
-    let mut candidates: Vec<PathBuf> = Vec::new();
-    if let Ok(exe) = std::env::current_exe() {
-        if let Some(dir) = exe.parent() {
-            candidates.push(dir.join(name));
-        }
-    }
-    if let Ok(cwd) = std::env::current_dir() {
-        candidates.push(cwd.join(name));
-        candidates.push(cwd.join("tools").join("tmjlite").join(name));
-        candidates.push(cwd.join("..").join("tools").join("tmjlite").join(name));
-    }
-    candidates
-        .into_iter()
-        .find(|p| p.exists())
-        .unwrap_or_else(|| PathBuf::from(name))
-}
-
 impl Db {
     /// Open (or create) the database file and bring its schema up to date.
     pub fn open(path: &Path) -> Result<Db, String> {
-        let lib_path = library_path();
-        let lib = unsafe { libloading::Library::new(&lib_path) }.map_err(|e| {
-            format!(
-                "could not load the tmjLite engine from {}: {e}. Set TMJLITE_FFI_PATH \
-                 or place the library next to the executable.",
-                lib_path.display()
-            )
-        })?;
-        let api = unsafe {
-            Api {
-                open_shared: *lib.get(b"tmjlite_open_shared\0").map_err(err_sym)?,
-                close_shared: *lib.get(b"tmjlite_close_shared\0").map_err(err_sym)?,
-                exec_shared: *lib.get(b"tmjlite_exec_shared\0").map_err(err_sym)?,
-                query_shared: *lib.get(b"tmjlite_query_shared\0").map_err(err_sym)?,
-                errmsg_shared: *lib.get(b"tmjlite_errmsg_shared\0").map_err(err_sym)?,
-                column_count: *lib.get(b"tmjlite_result_column_count\0").map_err(err_sym)?,
-                column_name: *lib.get(b"tmjlite_result_column_name\0").map_err(err_sym)?,
-                row_count: *lib.get(b"tmjlite_result_row_count\0").map_err(err_sym)?,
-                value: *lib.get(b"tmjlite_result_value\0").map_err(err_sym)?,
-                result_free: *lib.get(b"tmjlite_result_free\0").map_err(err_sym)?,
-                version: *lib.get(b"tmjlite_version\0").map_err(err_sym)?,
-                cursor_open: *lib.get(b"tmjlite_cursor_open_shared\0").map_err(err_sym)?,
-                cursor_step: *lib.get(b"tmjlite_cursor_step\0").map_err(err_sym)?,
-                cursor_text: *lib.get(b"tmjlite_cursor_text\0").map_err(err_sym)?,
-                cursor_is_null: *lib.get(b"tmjlite_cursor_is_null\0").map_err(err_sym)?,
-                cursor_i64: *lib.get(b"tmjlite_cursor_i64\0").map_err(err_sym)?,
-                cursor_f64: *lib.get(b"tmjlite_cursor_f64\0").map_err(err_sym)?,
-                cursor_bool: *lib.get(b"tmjlite_cursor_bool\0").map_err(err_sym)?,
-                cursor_is_streaming: *lib.get(b"tmjlite_cursor_is_streaming\0").map_err(err_sym)?,
-                cursor_errmsg: *lib.get(b"tmjlite_cursor_errmsg\0").map_err(err_sym)?,
-                cursor_close: *lib.get(b"tmjlite_cursor_close\0").map_err(err_sym)?,
-            }
-        };
-        let c_path = CString::new(path.to_string_lossy().as_bytes())
-            .map_err(|_| "database path contains a NUL byte".to_string())?;
-        let handle = unsafe { (api.open_shared)(c_path.as_ptr()) };
-        if handle.is_null() {
-            return Err(format!(
+        let conn = tmjlite::SharedConnection::open(&path.to_string_lossy()).map_err(|e| match e {
+            tmjlite::Error::Library(why) => format!(
+                "could not load the tmjLite engine: {why}. Set TMJLITE_LIB_PATH to the \
+                 libtmjlite_ffi file, or place it next to the executable."
+            ),
+            tmjlite::Error::Database(_) => format!(
                 "could not open {} — if another tmjLens process has it open, stop it first \
                  (tmjLite is one process per file; look for a stale {}.lock)",
                 path.display(),
                 path.display()
-            ));
-        }
-        let db = Db { api, handle, _lib: lib };
+            ),
+        })?;
+        conn.set_memory_budget(memory_budget()).map_err(err)?;
+        // A cursor whose shape the engine cannot stream (joins, subqueries,
+        // DISTINCT, ORDER BY or LIMIT over aggregates) fails with the reason
+        // instead of materialising behind the same API — the memory profile
+        // `fold` exists to forbid must never come back without a sign.
+        conn.set_strict_streaming(true).map_err(err)?;
+        let db = Db { conn };
         db.ensure_schema()?;
         Ok(db)
     }
 
     pub fn engine_version(&self) -> String {
-        let ptr = unsafe { (self.api.version)() };
-        read_str(ptr).unwrap_or_else(|| "unknown".into())
+        tmjlite::version().unwrap_or_else(|_| "unknown".into())
     }
 
-    fn last_error(&self) -> String {
-        let ptr = unsafe { (self.api.errmsg_shared)(self.handle) };
-        read_str(ptr).unwrap_or_else(|| "unknown tmjLite error".into())
+    /// What the engine holds in RAM for this handle. `None` while another
+    /// thread is inside a transaction — said so, not shown as zero.
+    pub fn memory_stats(&self) -> Option<tmjlite::MemoryStats> {
+        self.conn.memory_stats().ok().flatten()
     }
 
     /// Run one non-SELECT statement.
     pub fn exec(&self, sql: &str) -> Result<(), String> {
-        let c_sql =
-            CString::new(sql).map_err(|_| "statement contains a NUL byte".to_string())?;
-        let rc = unsafe { (self.api.exec_shared)(self.handle, c_sql.as_ptr()) };
-        if rc == 0 { Ok(()) } else { Err(self.last_error()) }
+        self.conn.execute(sql).map(|_| ()).map_err(err)
     }
 
     /// Run one SELECT through a streaming cursor, one row in memory at a
-    /// time. This is how every read over the rollup tables must go: the
-    /// materialised `query` below holds the engine's copy AND ours, and on a
-    /// day of history that was the production OOM. Inside a BEGIN on this
-    /// thread the cursor sees the transaction's own writes; the cursor is
-    /// closed before this returns, so WAL checkpoints are never held up.
+    /// time. This is how every read over the rollup tables must go: a
+    /// materialised `query` over a day of history was the production OOM.
+    /// Inside a BEGIN on this thread the cursor sees the transaction's own
+    /// writes; it is closed before this returns, so WAL checkpoints are never
+    /// held up.
     pub fn fold<T>(
         &self,
         sql: &str,
         init: T,
         mut step: impl FnMut(T, &Row<'_>) -> Result<T, String>,
     ) -> Result<T, String> {
-        let c_sql =
-            CString::new(sql).map_err(|_| "statement contains a NUL byte".to_string())?;
-        let cursor = unsafe { (self.api.cursor_open)(self.handle, c_sql.as_ptr()) };
-        if cursor.is_null() {
-            return Err(self.last_error());
-        }
-        // Shapes the engine cannot stream (joins, subqueries, DISTINCT,
-        // ORDER BY or LIMIT over aggregates) silently fall back to a
-        // materialised result behind the same cursor API. That is the memory
-        // profile this function exists to forbid, so refuse instead of
-        // letting a future query bring the OOM back without a sign.
-        if unsafe { (self.api.cursor_is_streaming)(cursor) } != 1 {
-            unsafe { (self.api.cursor_close)(cursor) };
+        let mut cursor = self.conn.cursor(sql).map_err(err)?;
+        if !cursor.streaming() {
             return Err(format!(
                 "this query does not stream through the cursor (joins, subqueries, DISTINCT, \
                  ORDER BY or LIMIT over aggregates are materialised); rewrite it or use query(): {sql}"
             ));
         }
         let mut acc = init;
-        let outcome = loop {
-            match unsafe { (self.api.cursor_step)(cursor) } {
-                1 => {
-                    let row = Row { api: &self.api, cursor };
-                    match step(acc, &row) {
-                        Ok(next) => acc = next,
-                        Err(error) => break Err(error),
-                    }
-                }
-                0 => break Ok(acc),
-                _ => {
-                    let ptr = unsafe { (self.api.cursor_errmsg)(cursor) };
-                    break Err(read_str(ptr).unwrap_or_else(|| "cursor step failed".into()));
-                }
-            }
-        };
-        unsafe { (self.api.cursor_close)(cursor) };
-        outcome
+        while let Some(row) = cursor.next().map_err(err)? {
+            acc = step(acc, &Row::new(&row))?;
+        }
+        Ok(acc)
     }
 
     /// Run one SELECT and copy the whole result out. Fine for a screen of
     /// users or an audit page; never for the rollup tables — use `fold`.
     pub fn query(&self, sql: &str) -> Result<QueryResult, String> {
-        let c_sql =
-            CString::new(sql).map_err(|_| "statement contains a NUL byte".to_string())?;
-        let raw = unsafe { (self.api.query_shared)(self.handle, c_sql.as_ptr()) };
-        if raw.is_null() {
-            return Err(self.last_error());
-        }
-        let result = unsafe {
-            let cols = (self.api.column_count)(raw).max(0);
-            let rows = (self.api.row_count)(raw).max(0);
-            let mut columns = Vec::with_capacity(cols as usize);
-            for c in 0..cols {
-                columns.push(read_str((self.api.column_name)(raw, c)).unwrap_or_default());
-            }
-            let mut data = Vec::with_capacity(rows as usize);
-            for r in 0..rows {
-                let mut row = Vec::with_capacity(cols as usize);
-                for c in 0..cols {
-                    let cell = read_str((self.api.value)(raw, r, c));
-                    // The FFI spells NULL as the string "NULL"; every real
-                    // string in a result was quoted on the way in, so nothing
-                    // legitimate collides with it in our schema.
-                    row.push(cell.filter(|v| v != "NULL"));
-                }
-                data.push(row);
-            }
-            (self.api.result_free)(raw);
-            QueryResult { columns, rows: data }
-        };
-        Ok(result)
+        let result = self.conn.query(sql).map_err(err)?;
+        let rows = result
+            .rows
+            .iter()
+            .map(|row| row.values().iter().map(|v| cell_text(v).map(Cow::into_owned)).collect())
+            .collect();
+        Ok(QueryResult { columns: result.columns, rows })
     }
 
     /// Create the schema on a fresh file; verify the version on an existing
@@ -436,17 +291,6 @@ impl Db {
     }
 }
 
-fn err_sym(e: libloading::Error) -> String {
-    format!("tmjLite engine library is missing a symbol: {e}")
-}
-
-fn read_str(ptr: *const c_char) -> Option<String> {
-    if ptr.is_null() {
-        return None;
-    }
-    Some(unsafe { CStr::from_ptr(ptr) }.to_string_lossy().into_owned())
-}
-
 /// The REPL and the engine both choke on `--` comments that precede a
 /// statement (continuation lines are joined with spaces), so the schema file
 /// is stripped to bare statements before execution.
@@ -466,6 +310,7 @@ fn schema_statements() -> Vec<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::path::PathBuf;
 
     fn temp_db(tag: &str) -> PathBuf {
         let dir = std::env::temp_dir().join("tmjlens-db-tests");
@@ -503,21 +348,38 @@ mod tests {
         assert!(stmts.iter().any(|s| s.contains("CREATE TABLE schema_meta")));
     }
 
+    /// The engine is the tmjlite crate's bundled library; Cargo.lock pins the
+    /// crate. The library that actually loads must be that release.
     #[test]
-    fn the_vendored_engine_is_the_published_031() {
-        let version = include_str!("../../tools/tmjlite/VERSION.txt");
-        assert!(
-            version.starts_with("TMJLite 0.3.1"),
-            "expected the 0.3.1 engine, got {version}"
-        );
-        // 0.3.1 is the first engine whose tmjlite_version() tells the truth;
-        // the binary and VERSION.txt must agree or the drop-in is mixed.
+    fn the_engine_is_tmjlite_035() {
         let db = Db::open(&temp_db("engine-version")).expect("open");
         assert!(
-            db.engine_version().starts_with("0.3.1"),
-            "the FFI library says {}, VERSION.txt says 0.3.1",
+            db.engine_version().starts_with("0.3.5"),
+            "the loaded engine says {}, the crate is 0.3.5",
             db.engine_version()
         );
+    }
+
+    /// The shared handle keeps the tables it wrote in RAM. The budget set at
+    /// open is what lets the engine give that memory back.
+    #[test]
+    fn the_write_cache_is_measured_and_released() {
+        let db = Db::open(&temp_db("memory")).expect("open");
+        for i in 0..200 {
+            db.exec(&format!(
+                "INSERT INTO rs_rollup_5m (namespace, kind, workload, container, window_start, cpu_hist, mem_hist, \
+                 samples, oom_kills) VALUES ('shop', 'Deployment', 'checkout', 'api', \
+                 '2026-10-16T{:02}:{:02}:00+00:00', '[]', '[]', 1, 0);",
+                i / 12,
+                (i % 12) * 5
+            ))
+            .expect("seed");
+        }
+        let held = db.memory_stats().expect("no other thread is in a transaction");
+        assert!(held.rows >= 200, "the written table is resident: {held:?}");
+        db.conn.release_memory().expect("release");
+        let after = db.memory_stats().expect("stats");
+        assert!(after.total() < held.total(), "release gives memory back: {held:?} -> {after:?}");
     }
 
     /// The cursor is the only read path allowed over the rollup tables.
@@ -575,10 +437,7 @@ mod tests {
             0usize,
             |n, _| Ok(n + 1),
         );
-        assert!(
-            joined.as_ref().err().map_or(false, |e| e.contains("does not stream")),
-            "a join must be refused, got {joined:?}"
-        );
+        assert!(joined.is_err(), "a join must be refused, not materialised: {joined:?}");
 
         let stopped = db.fold("SELECT samples FROM rs_rollup_5m;", 0, |_, _| Err::<i32, _>("stop here".to_string()));
         assert_eq!(stopped, Err("stop here".to_string()));

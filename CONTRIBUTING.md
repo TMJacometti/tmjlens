@@ -54,8 +54,10 @@ production cluster.
 | Rust | stable; MSVC toolchain on Windows |
 | Kubernetes | a working kubeconfig context (development runs against it; in the cluster the pod's ServiceAccount takes over) |
 
-The tmjLite engine the server links against is vendored in `tools/tmjlite/` — nothing
-to install. Verify the toolchain:
+The tmjLite engine comes from the [`tmjlite`](https://crates.io/crates/tmjlite) crate,
+which bundles the prebuilt native library — nothing to install; `cargo build` fetches
+it. `tools/tmjlite/` only holds the CLI, `schema.sql` and the manual. Verify the
+toolchain:
 
 ```bash
 node --version && rustc --version && kubectl version --client
@@ -175,11 +177,11 @@ src-tauri/
   src/main.rs                 Command implementations over the kube client
   src/web.rs                  axum server: sessions, permission gate, audit, SSE logs
   src/auth.rs                 Users, the three fixed profiles, grants — on tmjLite
-  src/db.rs                   tmjLite FFI wrapper and schema migrations
+  src/db.rs                   tmjLite facade over the tmjlite crate, and schema migrations
   src/cluster.rs              Provider detection, capacity model, health, findings
 charts/tmjlens/               The Helm chart operators install from
 Dockerfile                    The in-cluster image: server + frontend + tmjLite
-tools/tmjlite/                tmjLite engine, CLI and schema.sql
+tools/tmjlite/                tmjLite CLI (Windows + Linux), schema.sql and the manual
 docs/ROADMAP.md               Milestones and product direction
 ```
 

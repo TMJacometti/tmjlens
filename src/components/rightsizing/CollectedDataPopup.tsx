@@ -106,6 +106,15 @@ export function CollectedDataPopup({ load, purge, onPurged, onClose }: Props) {
                   </strong>
                   <small>Peak far above now means a transient spike the allocator kept; both climbing together means a leak.</small>
                 </div>
+                <div>
+                  <span>Database cache in RAM</span>
+                  <strong>
+                    {data.engine_cache_bytes == null
+                      ? 'busy — a write is in progress'
+                      : `${formatBytes(data.engine_cache_bytes)} · ${count(data.engine_cache_rows ?? 0)} rows`}
+                  </strong>
+                  <small>Tables the server wrote stay resident up to the budget, then the engine gives the memory back.</small>
+                </div>
               </div>
 
               {data.last_purge_error && (

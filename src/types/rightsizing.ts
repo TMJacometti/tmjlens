@@ -90,6 +90,9 @@ export type CollectedData = {
   /** Resident memory of the web process now and at its peak; null off Linux. */
   process_rss_bytes: number | null;
   process_peak_rss_bytes: number | null;
+  /** tmjLite's in-RAM cache of the tables the server wrote; null while busy. */
+  engine_cache_bytes: number | null;
+  engine_cache_rows: number | null;
 };
 
 export type PurgeMode = 'retention' | 'all';

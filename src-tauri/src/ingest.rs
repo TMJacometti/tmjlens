@@ -698,6 +698,10 @@ pub struct CollectedData {
     /// None elsewhere). The two apart tell a transient peak from a leak.
     pub process_rss_bytes: Option<u64>,
     pub process_peak_rss_bytes: Option<u64>,
+    /// What tmjLite holds in RAM for the tables this server wrote. None while
+    /// another thread is inside a transaction — not a zero.
+    pub engine_cache_bytes: Option<u64>,
+    pub engine_cache_rows: Option<u64>,
 }
 
 /// VmRSS and VmHWM from a /proc/<pid>/status body, in bytes.
@@ -775,6 +779,7 @@ pub fn collected_data(db: &Db) -> Result<CollectedData, String> {
     let wal_bytes = [format!("{database_path}.pwal"), database_path.replace(".tmjp", ".pwal")]
         .iter()
         .find_map(|candidate| std::fs::metadata(candidate).ok().map(|m| m.len()));
+    let engine = db.memory_stats();
     let state = PURGE_STATE.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
     let last_purge_minutes_ago = state.last_attempt.map(|at| at.elapsed().as_secs() / 60);
     let last_purge_error = state.last_error.clone();
@@ -791,6 +796,8 @@ pub fn collected_data(db: &Db) -> Result<CollectedData, String> {
         last_purge_error,
         process_rss_bytes: process_memory().0,
         process_peak_rss_bytes: process_memory().1,
+        engine_cache_bytes: engine.as_ref().map(|s| s.total()),
+        engine_cache_rows: engine.as_ref().map(|s| s.rows),
     })
 }
 

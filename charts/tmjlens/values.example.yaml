@@ -79,3 +79,8 @@ hpaManager:
 # recommendation — no HPA. Dry-run preview, server-side apply, undo. Off by default.
 resourceEditor:
   enabled: false
+
+# tmjLite keeps the tables the server writes in RAM; above this many MiB it
+# gives the memory back after each durable write. 0 turns the ceiling off.
+database:
+  memoryBudgetMiB: 256

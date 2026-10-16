@@ -25,7 +25,7 @@ test.describe('settings about', () => {
   test('the release notes close the tab and name this release', async ({ page }) => {
     const dialog = page.getByRole('dialog', { name: 'Settings' });
     await expect(dialog).toContainText(`What's new in ${version}`);
-    await expect(dialog).toContainText('Retention is honest now');
+    await expect(dialog).toContainText('official Rust driver');
     await expect(dialog).toContainText('never a silent zero');
   });
 });
