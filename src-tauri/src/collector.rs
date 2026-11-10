@@ -12,6 +12,19 @@ use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 const DEFAULT_INTERVAL: Duration = Duration::from_secs(30);
 const DEFAULT_WINDOW: Duration = Duration::from_secs(300);
 const BUFFER_CAP_BYTES: u64 = 64 * 1024 * 1024;
+const SA_DIR: &str = "/var/run/secrets/kubernetes.io/serviceaccount";
+
+/// The ServiceAccount token, read fresh. The projected token expires (~24h
+/// on EKS) and the kubelet rotates the file in place: `token` is a symlink
+/// into a directory that is swapped atomically, so neither the contents nor
+/// an open fd may be cached. Reading it once at startup is what left every
+/// collector answering 401 a day after the 0.7.4 rollout, posting empty
+/// windows for 25 days.
+fn sa_token() -> Result<String, String> {
+    std::fs::read_to_string(format!("{SA_DIR}/token"))
+        .map(|token| token.trim().to_string())
+        .map_err(|e| format!("could not read the ServiceAccount token: {e}"))
+}
 
 #[derive(Clone)]
 struct Prev {
@@ -96,9 +109,10 @@ pub async fn run() -> Result<(), String> {
     // SNI and cert hostname are the node name; the Downward API IP is only the dial target.
     let cadvisor_url = format!("https://{node}:{port}/metrics/cadvisor");
 
-    let sa_token = std::fs::read_to_string("/var/run/secrets/kubernetes.io/serviceaccount/token")
-        .map_err(|e| format!("could not read the ServiceAccount token: {e}"))?;
-    let default_ca = PathBuf::from("/var/run/secrets/kubernetes.io/serviceaccount/ca.crt");
+    // Fail fast on a broken mount; the value is deliberately dropped —
+    // every scrape reads the file again. See sa_token().
+    sa_token()?;
+    let default_ca = PathBuf::from(format!("{SA_DIR}/ca.crt"));
 
     let kubelet = kubelet_client(&node, &node_ip, port, ca_file.as_deref(), default_ca.as_path())?;
     let ingest = reqwest::Client::builder()
@@ -130,9 +144,12 @@ pub async fn run() -> Result<(), String> {
 
     loop {
         tick.tick().await;
-        match scrape(&kubelet, &cadvisor_url, sa_token.trim()).await {
-            Ok(samples) => apply_samples(samples, &mut prev, &mut acc),
-            Err(error) => eprintln!("kubelet scrape failed: {error}"),
+        match sa_token() {
+            Ok(token) => match scrape(&kubelet, &cadvisor_url, &token).await {
+                Ok(samples) => apply_samples(samples, &mut prev, &mut acc),
+                Err(error) => eprintln!("kubelet scrape failed: {error}"),
+            },
+            Err(error) => eprintln!("kubelet scrape skipped: {error}"),
         }
         if last_flush.elapsed() >= window {
             let batch = take_batch(&node, window_start, window.as_secs(), &mut acc);
@@ -140,6 +157,16 @@ pub async fn run() -> Result<(), String> {
             last_flush = Instant::now();
             let containers = batch.samples.len();
             let observations: u64 = batch.samples.iter().map(|s| s.samples).sum();
+            // Nothing scraped at all: the node is running pods, so this is a
+            // dead scrape, not an idle node. Unsaid it reads as success in
+            // the log (`0 container(s) -> accepted:0`), which is what hid the
+            // 401s for 25 days.
+            if containers == 0 {
+                eprintln!(
+                    "window closed with ZERO containers — nothing was scraped from \
+                     this node's kubelet; the rollup posted for this window is empty"
+                );
+            }
             // A window that saw containers but measured nothing is the
             // parser or the kubelet format changing under us — say so.
             if containers > 0 && observations == 0 {

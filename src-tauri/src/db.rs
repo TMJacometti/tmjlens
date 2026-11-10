@@ -326,6 +326,40 @@ mod tests {
         dir.join(unique)
     }
 
+    /// Regression: the ingest path folds inside a write transaction, so a
+    /// cursor opened there must stream AND see the transaction own writes.
+    /// tmjLite 0.3.5 and 0.3.9 reported such a cursor as non-streaming, which
+    /// made `fold` refuse it and took the write path down in production —
+    /// every POST /api/ingest/rollups answered 400 for 25 days. The engine
+    /// fixed it in 0.4.0.
+    #[test]
+    fn a_cursor_inside_a_transaction_streams() {
+        let db = Db::open(&temp_db("tx-cursor")).expect("open");
+        let row = |window: &str| {
+            format!(
+                "INSERT INTO rs_rollup_5m (namespace, kind, workload, container, window_start, \
+                 cpu_hist, mem_hist, samples, oom_kills) VALUES ('shop', 'Deployment', 'api', \
+                 'app', '{window}', '[]', '[]', 1, 0);"
+            )
+        };
+        let select = "SELECT cpu_hist, mem_hist, mem_max_bytes, samples, oom_kills \
+             FROM rs_rollup_5m WHERE namespace = 'shop' AND kind = 'Deployment' \
+             AND workload = 'api' AND container = 'app' \
+             AND window_start >= '2026-11-10T00:00:00Z' \
+             AND window_start < '2026-11-10T01:00:00Z';";
+
+        db.exec(&row("2026-11-10T00:00:00Z")).expect("insert");
+        assert_eq!(db.fold(select, 0, |n, _| Ok(n + 1)), Ok(1), "outside a transaction");
+
+        // What compact_into does: write, then fold the window back inside the
+        // same transaction. The row written here must be visible to the cursor.
+        db.exec("BEGIN;").expect("begin");
+        db.exec(&row("2026-11-10T00:05:00Z")).expect("insert inside the transaction");
+        let inside = db.fold(select, 0, |n, _| Ok(n + 1));
+        db.exec("COMMIT;").expect("commit");
+        assert_eq!(inside, Ok(2), "inside a transaction, seeing its own write");
+    }
+
     #[test]
     fn escaping_doubles_quotes_and_refuses_nul() {
         assert_eq!(sql_str("plain").unwrap(), "'plain'");
@@ -351,11 +385,11 @@ mod tests {
     /// The engine is the tmjlite crate's bundled library; Cargo.lock pins the
     /// crate. The library that actually loads must be that release.
     #[test]
-    fn the_engine_is_tmjlite_035() {
+    fn the_engine_is_tmjlite_040() {
         let db = Db::open(&temp_db("engine-version")).expect("open");
         assert!(
-            db.engine_version().starts_with("0.3.5"),
-            "the loaded engine says {}, the crate is 0.3.5",
+            db.engine_version().starts_with("0.4.0"),
+            "the loaded engine says {}, the crate is 0.4.0",
             db.engine_version()
         );
     }
