@@ -41,19 +41,23 @@ CREATE UNIQUE INDEX idx_profiles_name ON profiles (name);
 -- strings are valid) lives in Rust; unknown strings are simply never matched.
 CREATE TABLE profile_permissions (
     id PK,
-    profile_id STRING(36) NOT NULL,
+    profile_id STRING(36) NOT NULL REFERENCES profiles ON DELETE CASCADE,
     permission STRING(100) NOT NULL
 );
 CREATE UNIQUE INDEX idx_profile_perms ON profile_permissions (profile_id, permission);
 
+-- Foreign keys (v5, tmjLite 0.5.0+): a grant cannot name a user or profile
+-- that does not exist, and goes with them. The engine does not index a
+-- foreign key by itself; the cascade from profiles needs idx_user_profiles_profile.
 CREATE TABLE user_profiles (
     id PK,
-    user_id STRING(36) NOT NULL,
-    profile_id STRING(36) NOT NULL,
+    user_id STRING(36) NOT NULL REFERENCES app_users ON DELETE CASCADE,
+    profile_id STRING(36) NOT NULL REFERENCES profiles ON DELETE CASCADE,
     granted_by_email STRING(320),
     granted_at DATETIME DEFAULT(TODAY)
 );
 CREATE UNIQUE INDEX idx_user_profiles ON user_profiles (user_id, profile_id);
+CREATE INDEX idx_user_profiles_profile ON user_profiles (profile_id);
 
 -- Instance-wide app settings (environment tags and the like), one JSON blob
 -- per named slot. Added in schema v2.

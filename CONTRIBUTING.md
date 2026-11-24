@@ -366,6 +366,28 @@ helm show values oci://ghcr.io/tmjacometti/tmjlens-chart --version 0.7.1
 Upgrades are the same command with a newer version. Never pass `--force`: the
 PVC holds the database.
 
+**Upgrading to 0.8.0 or later is one-way.** tmjLite 0.5.0 rewrites the database
+file in format v3 the first time it opens it, and older versions refuse that file
+(`unsupported page file version: 3`) — a `helm rollback` to 0.7.x will not start.
+Back up first, with the pod running so the file and its WAL are copied together:
+
+```bash
+POD=$(kubectl -n tmjlens get pod -l app.kubernetes.io/component=web -o name | head -1)
+kubectl -n tmjlens cp ${POD#pod/}:/var/lib/tmjlens/tmjlens.tmjp ./tmjlens-backup.tmjp
+kubectl -n tmjlens cp ${POD#pod/}:/var/lib/tmjlens/tmjlens.pwal ./tmjlens-backup.pwal
+```
+
+Use a relative destination on Windows: `kubectl cp` reads the `:` in `C:\` as a
+pod name. To rehearse the migration on a copy before upgrading:
+
+```bash
+cd src-tauri
+TMJLENS_REHEARSE_DB=../tmjlens-rehearsal.tmjp cargo test rehearse -- --ignored --nocapture
+```
+
+It prints how many users, profiles and grants the copy has after the migration.
+Point it at a copy only — opening the file upgrades it.
+
 ### 4. What you get
 
 In namespace `tmjlens`:
