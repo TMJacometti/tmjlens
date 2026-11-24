@@ -5,6 +5,6 @@
  */
 export const DATABASE_ENGINE = {
   name: 'tmjLite',
-  version: '0.3.5',
+  version: '0.5.0',
   driver: 'tmjlite crate (official Rust driver)',
 } as const;

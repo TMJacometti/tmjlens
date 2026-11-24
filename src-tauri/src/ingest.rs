@@ -1166,6 +1166,30 @@ mod tests {
     /// rebuild one hour. The query must be bounded to the window — this test
     /// seeds three hours and expects the hour to see only its own rows.
     #[test]
+    fn compaction_carries_numbers_kept_in_string_columns() {
+        // mem_max_bytes and throttle_ratio are STRING columns. Since tmjlite
+        // 0.5.0 they come back typed as text; the rebuild must still read them
+        // as numbers, or every hourly row would claim a zero memory peak.
+        let db = scratch_db("string-numbers");
+        for (window, max, thr) in [
+            ("2026-11-24T10:00:00+00:00", "536870912", "0.2"),
+            ("2026-11-24T10:05:00+00:00", "805306368", "0.4"),
+        ] {
+            db.exec(&format!(
+                "INSERT INTO rs_rollup_5m (namespace, kind, workload, container, window_start, cpu_hist, mem_hist,                  mem_max_bytes, samples, oom_kills, throttle_ratio) VALUES ('shop', 'Deployment', 'checkout', 'api',                  '{window}', '[]', '[]', '{max}', 1, 0, '{thr}');"
+            ))
+            .expect("seed");
+        }
+        let owner = WorkloadKey { namespace: "shop".into(), kind: "Deployment".into(), name: "checkout".into() };
+        merge_up(&db, &owner, "api", "2026-11-24T10:05:00+00:00").expect("merge");
+        let hour = db.query("SELECT mem_max_bytes, throttle_ratio FROM rs_rollup_1h;").expect("query");
+        assert_eq!(hour.rows.len(), 1);
+        assert_eq!(hour.rows[0][0].as_deref(), Some("805306368"), "the peak is the max, not zero");
+        let throttle: f64 = hour.rows[0][1].as_deref().and_then(|s| s.parse().ok()).expect("throttle is set");
+        assert!((throttle - 0.3).abs() < 1e-9, "throttle is the mean: {throttle}");
+    }
+
+    #[test]
     fn compaction_reads_only_the_window_it_rebuilds() {
         let db = scratch_db("bounded");
         seed_5m(&db, "2026-10-14T09:55:00+00:00", 100);

@@ -1988,7 +1988,7 @@ checksum = "1f3ccbac311fea05f86f61904b462b55fb3df8837a366dfc601a0161d0532f20"
 
 [[package]]
 name = "tmjlens"
-version = "0.7.5"
+version = "0.8.0"
 dependencies = [
  "axum",
  "base64",
@@ -2011,9 +2011,9 @@ dependencies = [
 
 [[package]]
 name = "tmjlite"
-version = "0.4.0"
+version = "0.5.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "70653329fbf10ec95cc316c11c3528ae92744d43dc26e7bbad157d9a07863f9c"
+checksum = "32885909e6d6b9f59ffdbbd7ee013a140e6396d95b60f619d963f7fd8675ec8a"
 dependencies = [
  "libloading",
  "serde_json",

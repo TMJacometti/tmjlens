@@ -50,16 +50,25 @@ impl<'c> Row<'c> {
         self.cells.get(col).and_then(|c| c.as_deref())
     }
 
+    // Since tmjlite 0.5.0 a cell carries the type the ENGINE stored: a STRING
+    // column holding '250' is text, not 250. The rollups keep requests,
+    // limits, mem_max_bytes and throttle_ratio in STRING columns, so the
+    // numeric accessors read the text when the stored type is text — without
+    // this, compaction would read None and silently zero the memory peak.
     pub fn i64(&self, col: usize) -> Option<i64> {
-        self.inner.get_int(col)
+        self.inner.get_int(col).or_else(|| self.text(col)?.trim().parse().ok())
     }
 
     pub fn f64(&self, col: usize) -> Option<f64> {
-        self.inner.get_float(col)
+        self.inner.get_float(col).or_else(|| self.text(col)?.trim().parse().ok())
     }
 
     pub fn bool(&self, col: usize) -> Option<bool> {
-        self.inner.get_bool(col)
+        self.inner.get_bool(col).or_else(|| match self.text(col)? {
+            "true" => Some(true),
+            "false" => Some(false),
+            _ => None,
+        })
     }
 }
 
@@ -121,7 +130,7 @@ pub fn sql_opt(value: Option<&str>) -> Result<String, String> {
 }
 
 const SCHEMA: &str = include_str!("../../tools/tmjlite/schema.sql");
-const SCHEMA_VERSION: i64 = 4;
+const SCHEMA_VERSION: i64 = 5;
 
 /// What upgrades an older database to each version. schema.sql always creates
 /// the CURRENT shape, so migrations only run on files born before the change.
@@ -159,6 +168,24 @@ const MIGRATIONS: &[(i64, &[&str])] = &[
             "CREATE UNIQUE INDEX idx_resources_managed ON resources_managed (namespace, kind, name, container);",
         ],
     ),
+    (
+        5,
+        &[
+            "ALTER TABLE profile_permissions ADD FOREIGN KEY (profile_id) REFERENCES profiles ON DELETE CASCADE;",
+            "ALTER TABLE user_profiles ADD FOREIGN KEY (user_id) REFERENCES app_users ON DELETE CASCADE;",
+            "ALTER TABLE user_profiles ADD FOREIGN KEY (profile_id) REFERENCES profiles ON DELETE CASCADE;",
+            "CREATE INDEX idx_user_profiles_profile ON user_profiles (profile_id);",
+        ],
+    ),
+];
+
+/// (child table, column, parent table) for every foreign key v5 adds. The
+/// engine refuses to add one over rows that point nowhere, and it cannot
+/// DELETE with a NOT IN subquery, so orphans are found and removed here first.
+const FOREIGN_KEYS: &[(&str, &str, &str)] = &[
+    ("profile_permissions", "profile_id", "profiles"),
+    ("user_profiles", "user_id", "app_users"),
+    ("user_profiles", "profile_id", "profiles"),
 ];
 
 impl Db {
@@ -259,6 +286,9 @@ impl Db {
                     if *version <= found {
                         continue;
                     }
+                    if *version == 5 {
+                        self.drop_orphans()?;
+                    }
                     for stmt in *statements {
                         if let Err(error) = self.exec(stmt) {
                             let tolerable = error.contains("already")
@@ -288,6 +318,52 @@ impl Db {
                 ))
             }
         }
+    }
+
+    /// Delete grants and permissions whose user or profile no longer exists,
+    /// so the v5 foreign keys can be added. Says how many it removed: a grant
+    /// that pointed nowhere was dead already, but it is still a change.
+    fn drop_orphans(&self) -> Result<(), String> {
+        for (child, column, parent) in FOREIGN_KEYS {
+            let parents: std::collections::HashSet<String> = self
+                .query(&format!("SELECT id FROM {parent};"))?
+                .rows
+                .into_iter()
+                .filter_map(|row| row.into_iter().next().flatten())
+                .collect();
+            let rows = self.query(&format!("SELECT id, {column} FROM {child};"))?.rows;
+            let total = rows.len();
+            let orphans: Vec<String> = rows
+                .into_iter()
+                .filter_map(|row| {
+                    let mut cells = row.into_iter();
+                    let id = cells.next().flatten()?;
+                    let points_to = cells.next().flatten();
+                    match points_to {
+                        Some(target) if parents.contains(&target) => None,
+                        _ => Some(id),
+                    }
+                })
+                .collect();
+            // Every row an orphan means the ids did not match — a format or
+            // engine surprise, not dead grants. Deleting them would leave every
+            // user a guest; stop with nothing touched instead.
+            if total > 0 && orphans.len() == total {
+                return Err(format!(
+                    "schema v5 refused: all {total} row(s) of {child}.{column} look orphaned against {parent}.                      Nothing was deleted. This points at mismatched ids, not dead grants — keep the previous                      tmjLens running and report it."
+                ));
+            }
+            for id in &orphans {
+                self.exec(&format!("DELETE FROM {child} WHERE id = {};", sql_str(id)?))?;
+            }
+            if !orphans.is_empty() {
+                eprintln!(
+                    "schema v5: removed {} row(s) from {child} whose {column} named no {parent} row",
+                    orphans.len()
+                );
+            }
+        }
+        Ok(())
     }
 }
 
@@ -385,13 +461,33 @@ mod tests {
     /// The engine is the tmjlite crate's bundled library; Cargo.lock pins the
     /// crate. The library that actually loads must be that release.
     #[test]
-    fn the_engine_is_tmjlite_040() {
+    fn the_engine_is_tmjlite_050() {
         let db = Db::open(&temp_db("engine-version")).expect("open");
         assert!(
-            db.engine_version().starts_with("0.4.0"),
-            "the loaded engine says {}, the crate is 0.4.0",
+            db.engine_version().starts_with("0.5.0"),
+            "the loaded engine says {}, the crate is 0.5.0",
             db.engine_version()
         );
+    }
+
+    /// 0.5.0 stopped guessing types from text: '007' in a text column stays
+    /// '007'. That is the point of the upgrade — pinned here so a driver that
+    /// went back to guessing would fail loudly.
+    #[test]
+    fn text_that_looks_numeric_stays_text() {
+        let db = Db::open(&temp_db("text-types")).expect("open");
+        db.exec(&format!(
+            "INSERT INTO app_users (email, display_name) VALUES ({}, {});",
+            sql_str("zero-padded@example.com").unwrap(),
+            sql_str("007").unwrap()
+        ))
+        .expect("insert");
+        let got = db.query("SELECT display_name FROM app_users;").expect("select");
+        assert_eq!(got.single(), Some("007"), "the leading zero survives a query");
+        let streamed = db
+            .fold("SELECT display_name FROM app_users;", None, |_, row| Ok(row.text(0).map(str::to_string)))
+            .expect("fold");
+        assert_eq!(streamed.as_deref(), Some("007"), "and a cursor");
     }
 
     /// The shared handle keeps the tables it wrote in RAM. The budget set at
@@ -536,6 +632,137 @@ mod tests {
         assert_eq!(got.single(), Some("viewer"));
         let meta = db.query("SELECT version FROM schema_meta;").expect("meta");
         assert_eq!(meta.rows.len(), 1, "version row must not duplicate");
+    }
+
+    fn first_id(db: &Db, table: &str) -> String {
+        db.query(&format!("SELECT id FROM {table};")).expect("ids").single().expect("a row").to_string()
+    }
+
+    fn count(db: &Db, table: &str) -> String {
+        db.query(&format!("SELECT COUNT(*) FROM {table};")).expect("count").single().unwrap_or("?").to_string()
+    }
+
+    /// A fresh file is born with the v5 foreign keys: a grant must name a
+    /// real user and profile, and goes away with either.
+    #[test]
+    fn grants_need_a_real_user_and_profile_and_go_with_them() {
+        let db = Db::open(&temp_db("fk-fresh")).expect("open");
+        db.exec("INSERT INTO app_users (email) VALUES ('fk@example.com');").expect("user");
+        db.exec("INSERT INTO profiles (name) VALUES ('fk-viewer');").expect("profile");
+        let (user, profile) = (first_id(&db, "app_users"), first_id(&db, "profiles"));
+
+        let dangling = db
+            .exec("INSERT INTO user_profiles (user_id, profile_id) VALUES ('no-such-user', 'no-such-profile');")
+            .expect_err("a grant to nobody is refused");
+        assert!(dangling.contains("foreign key"), "{dangling}");
+        let perm = db
+            .exec("INSERT INTO profile_permissions (profile_id, permission) VALUES ('no-such-profile', 'view');")
+            .expect_err("a permission of no profile is refused");
+        assert!(perm.contains("foreign key"), "{perm}");
+
+        db.exec(&format!("INSERT INTO user_profiles (user_id, profile_id) VALUES ('{user}', '{profile}');")).expect("grant");
+        db.exec(&format!("INSERT INTO profile_permissions (profile_id, permission) VALUES ('{profile}', 'view');")).expect("perm");
+        db.exec(&format!("DELETE FROM app_users WHERE id = '{user}';")).expect("delete user");
+        assert_eq!(count(&db, "user_profiles"), "0", "the user's grants went with the user");
+        db.exec(&format!("DELETE FROM profiles WHERE id = '{profile}';")).expect("delete profile");
+        assert_eq!(count(&db, "profile_permissions"), "0", "the profile's permissions went with it");
+    }
+
+    /// A v4 file has no foreign keys and may hold grants that point nowhere.
+    /// Opening it must remove exactly those, add the keys, and start enforcing.
+    #[test]
+    fn a_v4_database_loses_its_orphans_and_gains_foreign_keys() {
+        let path = temp_db("fk-migrate");
+        {
+            let db = Db::open(&path).expect("open");
+            for (table, column) in [("profile_permissions", "profile_id"), ("user_profiles", "user_id"), ("user_profiles", "profile_id")] {
+                db.exec(&format!("ALTER TABLE {table} DROP FOREIGN KEY {column};")).expect("make it look like v4");
+            }
+            db.exec("INSERT INTO app_users (email) VALUES ('kept@example.com');").expect("user");
+            db.exec("INSERT INTO profiles (name) VALUES ('kept');").expect("profile");
+            let (user, profile) = (first_id(&db, "app_users"), first_id(&db, "profiles"));
+            db.exec(&format!("INSERT INTO user_profiles (user_id, profile_id) VALUES ('{user}', '{profile}');")).expect("good grant");
+            db.exec(&format!("INSERT INTO user_profiles (user_id, profile_id) VALUES ('gone-user', '{profile}');")).expect("orphan grant");
+            db.exec(&format!("INSERT INTO user_profiles (user_id, profile_id) VALUES ('{user}', 'gone-profile');")).expect("orphan grant");
+            db.exec(&format!("INSERT INTO profile_permissions (profile_id, permission) VALUES ('{profile}', 'view');")).expect("good perm");
+            db.exec("INSERT INTO profile_permissions (profile_id, permission) VALUES ('gone-profile', 'view');").expect("orphan perm");
+            db.exec("UPDATE schema_meta SET version = 4;").expect("rewind");
+        }
+        let db = Db::open(&path).expect("reopen migrates to v5");
+        let meta = db.query("SELECT version FROM schema_meta;").expect("meta");
+        assert_eq!(meta.single(), Some("5"));
+        assert_eq!(count(&db, "user_profiles"), "1", "only the grant that pointed somewhere is left");
+        assert_eq!(count(&db, "profile_permissions"), "1");
+        let refused = db
+            .exec("INSERT INTO user_profiles (user_id, profile_id) VALUES ('gone-user', 'gone-profile');")
+            .expect_err("the keys are enforced after the migration");
+        assert!(refused.contains("foreign key"), "{refused}");
+    }
+
+    /// If every grant looked orphaned, the migration must stop without
+    /// deleting a thing: that is mismatched ids, and the cost of guessing
+    /// wrong is every user falling back to guest.
+    #[test]
+    fn a_migration_that_would_orphan_every_grant_deletes_nothing() {
+        let path = temp_db("fk-guard");
+        {
+            let db = Db::open(&path).expect("open");
+            for (table, column) in [("profile_permissions", "profile_id"), ("user_profiles", "user_id"), ("user_profiles", "profile_id")] {
+                db.exec(&format!("ALTER TABLE {table} DROP FOREIGN KEY {column};")).expect("look like v4");
+            }
+            db.exec("INSERT INTO profiles (name) VALUES ('admin-like');").expect("profile");
+            let profile = first_id(&db, "profiles");
+            db.exec(&format!("INSERT INTO profile_permissions (profile_id, permission) VALUES ('{profile}', 'view');")).expect("perm");
+            db.exec(&format!("INSERT INTO user_profiles (user_id, profile_id) VALUES ('not-a-user-1', '{profile}');")).expect("grant");
+            db.exec(&format!("INSERT INTO user_profiles (user_id, profile_id) VALUES ('not-a-user-2', '{profile}');")).expect("grant");
+            db.exec("UPDATE schema_meta SET version = 4;").expect("rewind");
+        }
+        let refused = Db::open(&path).err().expect("the open is refused");
+        assert!(refused.contains("Nothing was deleted"), "{refused}");
+        // Reopen at the engine level only: the rows are all still there.
+        let raw = tmjlite::SharedConnection::open(&path.to_string_lossy()).expect("raw open");
+        let left = raw.query("SELECT COUNT(*) FROM user_profiles;").expect("count");
+        assert_eq!(left.rows[0].get_int(0), Some(2));
+    }
+
+    /// Rehearse the migration on a COPY of a real database before upgrading:
+    ///   TMJLENS_REHEARSE_DB=path/to/copy.tmjp cargo test rehearse -- --ignored --nocapture
+    /// Prints who has which profile before and after. Never point it at the
+    /// live file: opening upgrades the file format for good.
+    #[test]
+    #[ignore]
+    fn rehearse_the_migration_on_a_copy() {
+        let Ok(path) = std::env::var("TMJLENS_REHEARSE_DB") else {
+            panic!("set TMJLENS_REHEARSE_DB to a COPY of the database");
+        };
+        let grants = |db: &Db| -> Vec<String> {
+            let users: std::collections::HashMap<String, String> = db.query("SELECT id, email FROM app_users;").unwrap().rows
+                .into_iter().filter_map(|r| Some((r[0].clone()?, r[1].clone()?))).collect();
+            let profiles: std::collections::HashMap<String, String> = db.query("SELECT id, name FROM profiles;").unwrap().rows
+                .into_iter().filter_map(|r| Some((r[0].clone()?, r[1].clone()?))).collect();
+            let mut out: Vec<String> = db.query("SELECT user_id, profile_id FROM user_profiles;").unwrap().rows.into_iter()
+                .map(|r| format!(
+                    "{} -> {}",
+                    r[0].as_ref().and_then(|u| users.get(u)).cloned().unwrap_or_else(|| format!("<no user {:?}>", r[0])),
+                    r[1].as_ref().and_then(|p| profiles.get(p)).cloned().unwrap_or_else(|| format!("<no profile {:?}>", r[1])),
+                ))
+                .collect();
+            out.sort();
+            out
+        };
+        let db = Db::open(std::path::Path::new(&path)).expect("open migrates the copy");
+        println!("schema now v{}", db.query("SELECT version FROM schema_meta;").unwrap().single().unwrap_or("?"));
+        for table in ["app_users", "profiles", "user_profiles", "profile_permissions"] {
+            println!("{table}: {}", count(&db, table));
+        }
+        let after = grants(&db);
+        let profiles_per = |list: &[String]| -> std::collections::BTreeMap<String, usize> {
+            let mut m = std::collections::BTreeMap::new();
+            for g in list { *m.entry(g.rsplit(" -> ").next().unwrap_or("").to_string()).or_insert(0) += 1; }
+            m
+        };
+        println!("grants per profile after: {:?}", profiles_per(&after));
+        println!("grants pointing nowhere after: {}", after.iter().filter(|g| g.contains("<no ")).count());
     }
 
     #[test]
