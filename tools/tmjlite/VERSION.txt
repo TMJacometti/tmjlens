@@ -1,4 +1,4 @@
-TMJLite CLI 0.5.0 (tmjlite-linux, tmjlite.exe) — for inspecting a .tmjp by hand.
+TMJLite CLI 0.6.3 (tmjlite-linux, tmjlite.exe) — for inspecting a .tmjp by hand.
 The engine the server uses comes from the tmjlite crate (src-tauri/Cargo.toml).
-0.5.0 writes file format v3: older CLIs and engines cannot open a file it has opened.
-source=https://github.com/TMJacometti/tmjlite/releases/tag/v0.5.0
+File format v3 since 0.5.0: engines 0.4.0 and older cannot open these files.
+source=https://github.com/TMJacometti/tmjlite/releases/tag/v0.6.3

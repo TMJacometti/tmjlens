@@ -251,16 +251,17 @@ impl<'a> AuthStore<'a> {
         if !is_known_permission(permission) {
             return Err(format!("'{permission}' is not a permission tmjLens knows"));
         }
-        match self.db.exec(&format!(
-            "INSERT INTO profile_permissions (profile_id, permission) VALUES ({}, {});",
-            sql_str(profile_id)?,
-            sql_str(permission)?
-        )) {
-            Ok(()) => Ok(()),
-            // Granting what is already granted is not an error worth surfacing.
-            Err(e) if e.contains("unique") => Ok(()),
-            Err(e) => Err(e),
-        }
+        // Granting what is already granted is not an error worth surfacing.
+        self.db
+            .exec_tolerating(
+                &format!(
+                    "INSERT INTO profile_permissions (profile_id, permission) VALUES ({}, {});",
+                    sql_str(profile_id)?,
+                    sql_str(permission)?
+                ),
+                &[tmjlite::ErrorCode::UniqueViolation],
+            )
+            .map(|_| ())
     }
 
     pub fn remove_permission(&self, profile_id: &str, permission: &str) -> Result<(), String> {
@@ -278,17 +279,16 @@ impl<'a> AuthStore<'a> {
         profile_id: &str,
         granted_by_email: &str,
     ) -> Result<bool, String> {
-        match self.db.exec(&format!(
-            "INSERT INTO user_profiles (user_id, profile_id, granted_by_email) \
-             VALUES ({}, {}, {});",
-            sql_str(user_id)?,
-            sql_str(profile_id)?,
-            sql_str(granted_by_email)?
-        )) {
-            Ok(()) => Ok(true),
-            Err(e) if e.contains("unique") => Ok(false),
-            Err(e) => Err(e),
-        }
+        self.db.exec_tolerating(
+            &format!(
+                "INSERT INTO user_profiles (user_id, profile_id, granted_by_email) \
+                 VALUES ({}, {}, {});",
+                sql_str(user_id)?,
+                sql_str(profile_id)?,
+                sql_str(granted_by_email)?
+            ),
+            &[tmjlite::ErrorCode::UniqueViolation],
+        )
     }
 
     pub fn revoke_profile(&self, user_id: &str, profile_id: &str) -> Result<(), String> {

@@ -17,7 +17,7 @@ test.describe('settings about', () => {
 
   test('the database engine and its driver are named', async ({ page }) => {
     const dialog = page.getByRole('dialog', { name: 'Settings' });
-    await expect(dialog).toContainText('tmjLite 0.5.0 · tmjlite crate (official Rust driver)');
+    await expect(dialog).toContainText('tmjLite 0.6.3 · tmjlite crate (official Rust driver)');
     await expect(dialog).toContainText('Where your data lives');
     await expect(dialog).toContainText('database.memoryBudgetMiB');
   });
@@ -32,7 +32,7 @@ test.describe('settings about', () => {
   test('the release notes close the tab and name this release', async ({ page }) => {
     const dialog = page.getByRole('dialog', { name: 'Settings' });
     await expect(dialog).toContainText(`What's new in ${version}`);
-    await expect(dialog).toContainText('foreign keys');
+    await expect(dialog).toContainText('error codes');
     await expect(dialog).toContainText('never a silent zero');
   });
 });

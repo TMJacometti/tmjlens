@@ -113,7 +113,7 @@ export function CollectedDataPopup({ load, purge, onPurged, onClose }: Props) {
                       ? 'busy — a write is in progress'
                       : `${formatBytes(data.engine_cache_bytes)} · ${count(data.engine_cache_rows ?? 0)} rows`}
                   </strong>
-                  <small>Tables the server wrote stay resident up to the budget, then the engine gives the memory back.</small>
+                  <small>What the database engine reports holding in memory for this server, capped by database.memoryBudgetMiB.</small>
                 </div>
               </div>
 
