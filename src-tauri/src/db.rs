@@ -191,17 +191,20 @@ const FOREIGN_KEYS: &[(&str, &str, &str)] = &[
 impl Db {
     /// Open (or create) the database file and bring its schema up to date.
     pub fn open(path: &Path) -> Result<Db, String> {
+        // Every open failure used to read as "another process has it": a
+        // full disk, a permission or a file that is not a database sent the
+        // operator hunting for a lock. Only a Locked failure says that now.
         let conn = tmjlite::SharedConnection::open(&path.to_string_lossy()).map_err(|e| match e {
             tmjlite::Error::Library(why) => format!(
                 "could not load the tmjLite engine: {why}. Set TMJLITE_LIB_PATH to the \
                  libtmjlite_ffi file, or place it next to the executable."
             ),
-            tmjlite::Error::Database(_) => format!(
-                "could not open {} — if another tmjLens process has it open, stop it first \
-                 (tmjLite is one process per file; look for a stale {}.lock)",
-                path.display(),
+            locked if locked.code() == tmjlite::ErrorCode::Locked => format!(
+                "could not open {} — another tmjLens process has it open; stop it first \
+                 (tmjLite is one process per file)",
                 path.display()
             ),
+            other => format!("could not open {}: {other} [{}]", path.display(), other.code()),
         })?;
         conn.set_memory_budget(memory_budget()).map_err(err)?;
         // A cursor whose shape the engine cannot stream (joins, subqueries,
@@ -227,6 +230,17 @@ impl Db {
     /// Run one non-SELECT statement.
     pub fn exec(&self, sql: &str) -> Result<(), String> {
         self.conn.execute(sql).map(|_| ()).map_err(err)
+    }
+
+    /// Run one statement; `Ok(false)` when it failed with one of `tolerate`.
+    /// Decides on the engine's error code — the message is text for people,
+    /// and the driver says not to match it.
+    pub fn exec_tolerating(&self, sql: &str, tolerate: &[tmjlite::ErrorCode]) -> Result<bool, String> {
+        match self.conn.execute(sql) {
+            Ok(_) => Ok(true),
+            Err(e) if tolerate.contains(&e.code()) => Ok(false),
+            Err(e) => Err(err(e)),
+        }
     }
 
     /// Run one SELECT through a streaming cursor, one row in memory at a
@@ -290,14 +304,14 @@ impl Db {
                         self.drop_orphans()?;
                     }
                     for stmt in *statements {
-                        if let Err(error) = self.exec(stmt) {
-                            let tolerable = error.contains("already")
-                                || error.contains("exists")
-                                || error.contains("reused");
-                            if !tolerable {
+                        match self.conn.execute(stmt) {
+                            Ok(_) => {}
+                            Err(error) if already_applied(stmt, &error) => {}
+                            Err(error) => {
                                 return Err(format!(
-                                    "migration to schema v{version} failed on `{stmt}`: {error}"
-                                ));
+                                    "migration to schema v{version} failed on `{stmt}`: {error} [{}]",
+                                    error.code()
+                                ))
                             }
                         }
                     }
@@ -364,6 +378,23 @@ impl Db {
             }
         }
         Ok(())
+    }
+}
+
+/// A migration statement that fails because its work is already there is
+/// not a failure: a crash between a migration and the version bump must not
+/// brick the file. Decided on the error code.
+fn already_applied(stmt: &str, error: &tmjlite::Error) -> bool {
+    use tmjlite::ErrorCode;
+    match error.code() {
+        ErrorCode::TableExists | ErrorCode::IndexExists | ErrorCode::ColumnExists => true,
+        // tmjlite has no dedicated code for "this column already has a foreign
+        // key" — it is the generic SCHEMA (200), which also covers real DDL
+        // mistakes. Accept it only for ADD FOREIGN KEY and only with that cause.
+        ErrorCode::Schema => {
+            stmt.contains("ADD FOREIGN KEY") && error.to_string().contains("already has a foreign key")
+        }
+        _ => false,
     }
 }
 
@@ -461,11 +492,11 @@ mod tests {
     /// The engine is the tmjlite crate's bundled library; Cargo.lock pins the
     /// crate. The library that actually loads must be that release.
     #[test]
-    fn the_engine_is_tmjlite_050() {
+    fn the_engine_is_tmjlite_063() {
         let db = Db::open(&temp_db("engine-version")).expect("open");
         assert!(
-            db.engine_version().starts_with("0.5.0"),
-            "the loaded engine says {}, the crate is 0.5.0",
+            db.engine_version().starts_with("0.6.3"),
+            "the loaded engine says {}, the crate is 0.6.3",
             db.engine_version()
         );
     }
@@ -490,10 +521,13 @@ mod tests {
         assert_eq!(streamed.as_deref(), Some("007"), "and a cursor");
     }
 
-    /// The shared handle keeps the tables it wrote in RAM. The budget set at
-    /// open is what lets the engine give that memory back.
+    /// Up to tmjlite 0.5.0 the shared handle kept every table it WROTE in RAM,
+    /// which is what pinned the web pod near 2 GiB; the budget set at open is
+    /// what made the engine give it back. 0.6.3 writes straight through and
+    /// holds nothing, but the contract tmjLens relies on is the same: never
+    /// more than the budget, and stats always readable from this thread.
     #[test]
-    fn the_write_cache_is_measured_and_released() {
+    fn the_engine_never_holds_more_than_the_budget() {
         let db = Db::open(&temp_db("memory")).expect("open");
         for i in 0..200 {
             db.exec(&format!(
@@ -506,10 +540,10 @@ mod tests {
             .expect("seed");
         }
         let held = db.memory_stats().expect("no other thread is in a transaction");
-        assert!(held.rows >= 200, "the written table is resident: {held:?}");
+        assert!(held.total() <= memory_budget(), "over the budget: {held:?}");
         db.conn.release_memory().expect("release");
         let after = db.memory_stats().expect("stats");
-        assert!(after.total() < held.total(), "release gives memory back: {held:?} -> {after:?}");
+        assert!(after.total() <= held.total(), "release never grows it: {held:?} -> {after:?}");
     }
 
     /// The cursor is the only read path allowed over the rollup tables.
@@ -599,6 +633,38 @@ mod tests {
         // NULL comes back as None, and the BOOL default was applied.
         assert_eq!(row[2], None);
         assert_eq!(row[3].as_deref(), Some("true"));
+    }
+
+    /// Opening used to blame "another process" for every failure. A file
+    /// that is not a database must say so; a real lock must still say lock.
+    #[test]
+    fn open_failures_name_their_real_cause() {
+        let junk = temp_db("not-a-db");
+        std::fs::write(&junk, b"this is not a tmjLite file, just text on a volume").expect("write");
+        let error = Db::open(&junk).err().expect("junk is refused");
+        assert!(!error.contains("another tmjLens process"), "not a lock: {error}");
+        assert!(error.contains("NOT_A_DATABASE") || error.to_lowercase().contains("not a tmjlite"), "{error}");
+
+        let path = temp_db("locked");
+        let _first = Db::open(&path).expect("first open");
+        let locked = Db::open(&path).err().expect("second open is refused");
+        assert!(locked.contains("another tmjLens process"), "{locked}");
+    }
+
+    #[test]
+    fn migrations_tolerate_work_already_done_by_code_not_by_text() {
+        let db = Db::open(&temp_db("already")).expect("open");
+        let try_stmt = |stmt: &str| db.conn.execute(stmt).map(|_| ()).map_err(|e| already_applied(stmt, &e));
+        assert_eq!(try_stmt("CREATE TABLE app_users (id PK, email STRING(320));"), Err(true), "table exists");
+        assert_eq!(try_stmt("CREATE UNIQUE INDEX idx_users_email ON app_users (email);"), Err(true), "index exists");
+        assert_eq!(
+            try_stmt("ALTER TABLE user_profiles ADD FOREIGN KEY (user_id) REFERENCES app_users ON DELETE CASCADE;"),
+            Err(true),
+            "foreign key exists"
+        );
+        // A real DDL mistake is never swallowed.
+        assert_eq!(try_stmt("ALTER TABLE app_settings ADD FOREIGN KEY (name) REFERENCES no_such_table;"), Err(false));
+        assert_eq!(try_stmt("CREATE TABLE broken (id PK, x NOTATYPE);"), Err(false));
     }
 
     #[test]

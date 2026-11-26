@@ -4,6 +4,7 @@
  * The version number itself comes from package.json; only the story lives here.
  */
 export const WHATS_NEW: string[] = [
+  'tmjLite 0.6.3. Database decisions use the engine’s stable error codes instead of reading English messages, and a database that cannot be opened now says why — locked, not a database, permission, missing directory — instead of blaming another process every time. The engine no longer keeps the tables it writes in memory at all. Same file format as 0.8.0: rolling back to 0.8.0 still works.',
   'tmjLite 0.5.0. Grants and permissions now have foreign keys: a grant must name a real user and profile, and goes with them. The upgrade keeps every user, profile and grant — it only drops rows that already pointed nowhere, and refuses to touch anything if that would be every grant. Cells come back as the type the engine stored, so text such as 007 stays 007.',
   'One-way: tmjLite 0.5.0 rewrites the database file in a format older versions cannot open. Back up the volume before upgrading; after it, a rollback to 0.7.x will not start.',
   'tmjLite 0.3.5 through its official Rust driver (the tmjlite crate) instead of a hand-written FFI layer. The engine keeps the tables it writes in RAM only up to a budget (database.memoryBudgetMiB, 256 by default) and gives the rest back to the OS — the web pod no longer holds its peak forever. Cursors whose shape cannot stream fail instead of materialising, and the Collected data popup shows what the database cache holds.',
